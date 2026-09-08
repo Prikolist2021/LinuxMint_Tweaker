@@ -1,0 +1,25 @@
+name: Build AppImage Online
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout files
+        uses: actions/checkout@v4
+
+      - name: Fix Windows line endings
+        run: sed -i 's/\r$//' build_appimage.sh
+
+      - name: Build AppImage
+        run: bash build_appimage.sh
+
+      - name: Save finished AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemTuneup-AppImage
+          path: SystemTuneup-x86_64.AppImage
