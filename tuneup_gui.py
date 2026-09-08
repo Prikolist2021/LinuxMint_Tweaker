@@ -1726,8 +1726,8 @@ class TuneupApp:
 
         tk.Label(
             header,
-            text="⚙️ System Tuneup",
-            font=("Arial", 18, "bold"),
+            text="⚙ System Tuneup",
+            font=("DejaVu Sans", 18, "bold"),
             bg=COLORS["bg"],
             fg=COLORS["green"],
         ).pack(side="left")
@@ -1735,7 +1735,7 @@ class TuneupApp:
         tk.Label(
             header,
             text="v3.2.0",
-            font=("Arial", 10),
+            font=("DejaVu Sans", 10),
             bg=COLORS["bg"],
             fg=COLORS["gray"],
         ).pack(side="left", padx=(10, 0))
@@ -1750,7 +1750,7 @@ class TuneupApp:
             activebackground=COLORS["bg"],
             activeforeground=COLORS["yellow"],
             selectcolor="#333333",
-            font=("Arial", 10, "bold"),
+            font=("DejaVu Sans", 10, "bold"),
         ).pack(side="right")
 
         ttk.Separator(self.root, orient="horizontal").pack(fill="x", padx=10, pady=5)
@@ -1763,9 +1763,9 @@ class TuneupApp:
         self.tab_services = ttk.Frame(self.notebook)
         self.tab_status = ttk.Frame(self.notebook)
 
-        self.notebook.add(self.tab_tuneup, text="🔧 Тюнинг")
-        self.notebook.add(self.tab_services, text="📋 Службы")
-        self.notebook.add(self.tab_status, text="📊 Статус")
+        self.notebook.add(self.tab_tuneup, text="Тюнинг")
+        self.notebook.add(self.tab_services, text="Службы")
+        self.notebook.add(self.tab_status, text="Статус")
 
         self.create_tuning_tab()
         self.create_services_tab()
@@ -1777,11 +1777,11 @@ class TuneupApp:
 
         self.run_button = tk.Button(
             buttons,
-            text="▶️ Применить",
+            text="▶ Применить",
             command=self.apply_selected,
             bg=COLORS["green"],
             fg="white",
-            font=("Arial", 11, "bold"),
+            font=("DejaVu Sans", 11, "bold"),
             padx=20,
             pady=8,
         )
@@ -1789,7 +1789,7 @@ class TuneupApp:
 
         tk.Button(
             buttons,
-            text="☑️ Выбрать все",
+            text="☑ Выбрать все",
             command=self.select_all,
             bg="#444444",
             fg="white",
@@ -1799,7 +1799,7 @@ class TuneupApp:
 
         tk.Button(
             buttons,
-            text="🔄 Сбросить",
+            text="☐ Сбросить",
             command=self.reset_all,
             bg="#444444",
             fg="white",
@@ -1809,7 +1809,7 @@ class TuneupApp:
 
         tk.Button(
             buttons,
-            text="💾 Экспорт",
+            text="↓ Экспорт",
             command=self.export_config,
             bg="#444444",
             fg="white",
@@ -1819,7 +1819,7 @@ class TuneupApp:
 
         tk.Button(
             buttons,
-            text="❓ Помощь",
+            text="Помощь",
             command=self.show_help,
             bg="#444444",
             fg="white",
@@ -1836,7 +1836,7 @@ class TuneupApp:
             text="Терминальный вывод:",
             bg=COLORS["bg"],
             fg=COLORS["gray"],
-            font=("Arial", 9),
+            font=("DejaVu Sans", 9),
             anchor="w",
         ).pack(fill="x")
 
@@ -1845,7 +1845,7 @@ class TuneupApp:
             height=12,
             bg=COLORS["terminal"],
             fg=COLORS["fg"],
-            font=("Courier New", 10),
+            font=("DejaVu Sans Mono", 10),
             insertbackground="white",
             wrap="word",
             relief="sunken",
@@ -1873,7 +1873,7 @@ class TuneupApp:
             textvariable=self.status_text,
             bg=COLORS["bg"],
             fg=COLORS["gray"],
-            font=("Arial", 9),
+            font=("DejaVu Sans", 9),
             anchor="w",
         ).pack(side="left")
 
@@ -1926,7 +1926,7 @@ class TuneupApp:
                 text=f"── {cat} ──",
                 bg=COLORS["bg"],
                 fg=COLORS["yellow"],
-                font=("Arial", 10, "bold"),
+                font=("DejaVu Sans", 10, "bold"),
                 anchor="w",
             ).pack(fill="x", pady=(10, 3))
 
@@ -1951,7 +1951,7 @@ class TuneupApp:
             activebackground=COLORS["bg"],
             activeforeground=COLORS["fg"],
             selectcolor="#333333",
-            font=("Arial", 10),
+            font=("DejaVu Sans", 10),
             anchor="w",
         )
         cb.pack(side="left")
@@ -1964,7 +1964,7 @@ class TuneupApp:
                 text="Группа:",
                 bg=COLORS["bg"],
                 fg=COLORS["gray"],
-                font=("Arial", 9),
+                font=("DejaVu Sans", 9),
             ).pack(side="left", padx=(15, 2))
 
             tk.Entry(
@@ -1982,7 +1982,7 @@ class TuneupApp:
                 text="Значение:",
                 bg=COLORS["bg"],
                 fg=COLORS["gray"],
-                font=("Arial", 9),
+                font=("DejaVu Sans", 9),
             ).pack(side="left", padx=(15, 2))
 
             tk.Entry(
@@ -2000,7 +2000,7 @@ class TuneupApp:
                 text="Расписание:",
                 bg=COLORS["bg"],
                 fg=COLORS["gray"],
-                font=("Arial", 9),
+                font=("DejaVu Sans", 9),
             ).pack(side="left", padx=(15, 2))
 
             ttk.Combobox(
@@ -2022,7 +2022,7 @@ class TuneupApp:
             text=option["desc"],
             bg=COLORS["bg"],
             fg=COLORS["gray"],
-            font=("Arial", 8),
+            font=("DejaVu Sans", 8),
             anchor="w",
         ).pack(fill="x", padx=(28, 0))
 
@@ -2035,7 +2035,7 @@ class TuneupApp:
 
         tk.Button(
             buttons,
-            text="🔄 Обновить",
+            text="Обновить",
             command=self.refresh_services,
             bg="#444444",
             fg="white",
@@ -2045,7 +2045,7 @@ class TuneupApp:
 
         tk.Button(
             buttons,
-            text="🚫 Отключить рекомендуемые",
+            text="✗ Отключить рекомендуемые",
             command=self.disable_recommended,
             bg="#444444",
             fg="white",
@@ -2055,7 +2055,7 @@ class TuneupApp:
 
         tk.Button(
             buttons,
-            text="✅ Включить выбранные",
+            text="✓ Включить выбранные",
             command=self.enable_selected,
             bg="#444444",
             fg="white",
@@ -2065,7 +2065,7 @@ class TuneupApp:
 
         tk.Button(
             buttons,
-            text="🚫 Отключить выбранные",
+            text="✗ Отключить выбранные",
             command=self.disable_selected,
             bg="#444444",
             fg="white",
@@ -2109,7 +2109,7 @@ class TuneupApp:
             text="Служб: 0",
             bg=COLORS["bg"],
             fg=COLORS["gray"],
-            font=("Arial", 9),
+            font=("DejaVu Sans", 9),
             anchor="w",
         )
         self.services_count_label.pack(fill="x", pady=(6, 0))
@@ -2120,7 +2120,7 @@ class TuneupApp:
 
         tk.Button(
             container,
-            text="🔄 Обновить статус",
+            text="Обновить статус",
             command=self.refresh_status,
             bg="#444444",
             fg="white",
@@ -2132,7 +2132,7 @@ class TuneupApp:
             container,
             bg=COLORS["terminal"],
             fg=COLORS["fg"],
-            font=("Courier New", 10),
+            font=("DejaVu Sans Mono", 10),
             state="disabled",
         )
         self.status_text_widget.pack(fill="both", expand=True)
