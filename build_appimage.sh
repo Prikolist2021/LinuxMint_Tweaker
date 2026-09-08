@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+﻿   #!/usr/bin/env bash
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -28,17 +28,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
 
-apt-get install -y --no-install-recommends \
-    python3 \
-    python3-tk \
-    python3-pip \
-    wget \
-    ca-certificates \
-    file \
-    desktop-file-utils \
-    libglib2.0-bin \
-    binutils \
-    patchelf
+apt-get install -y --no-install-recommends python3 python3-tk python3-pip libpython3.8 libpython3.8-dev wget ca-certificates file desktop-file-utils libglib2.0-bin binutils patchelf
 
 python3 -m pip install --upgrade pip
 python3 -m pip install pyinstaller
