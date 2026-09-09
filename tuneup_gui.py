@@ -1772,7 +1772,10 @@ class TuneupApp:
                     continue
         return False
 
-    def _corectrl_found(self, ops):
+    def _corectrl_found(self, ops=None):
+        if ops is None:
+            ops = SystemOps(self.sudo, self.state,
+                            lambda m, t="normal": None, True)
         # 1) Обычным пользователем: список папок и чтение файлов
         for d in ("/etc/polkit-1/rules.d",
                   "/usr/share/polkit-1/rules.d",
