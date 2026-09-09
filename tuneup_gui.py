@@ -1740,7 +1740,8 @@ class TuneupApp:
             lines.append("")
             lines.append("=== CONFIGS ===")
             j = ops.read_file("/etc/systemd/journald.conf") or ""
-            lines.append(f"  journald volatile: {'yes' if re.search(r'^\\s*Storage\\s*=\\s*volatile\\s*$', j, re.M) else 'no'}")
+            is_volatile = "yes" if re.search(r"^\s*Storage\s*=\s*volatile\s*$", j, re.M) else "no"
+            lines.append(f"  journald volatile: {is_volatile}")
             env = ops.read_file("/etc/environment") or ""
             lines.append(f"  MESA_SHADER_CACHE=4G: {'yes' if 'MESA_SHADER_CACHE_MAX_SIZE=4G' in env else 'no'}")
             lines.append(f"  RADV_PERFTEST=sam: {'yes' if 'RADV_PERFTEST=sam' in env else 'no'}")
