@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-System Tuneup GUI v0.2
+System Tuneup GUI v0.3
 Графическая оболочка тюнинга Linux Mint / Ubuntu / Debian.
-RU/EN интерфейс, темы, детект уже применённых настроек.
+RU/EN, темы, детект применённых настроек, откат через бэкапы.
 """
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, simpledialog, filedialog
 import subprocess, os, sys, threading, queue, re, pwd, grp, time, shutil
 
-APP_VERSION = "0.2"
+APP_VERSION = "0.3"
 
 THEMES = {
     "light": {"bg": "#f5f5f5", "fg": "#1e1e1e", "green": "#2e7d32", "yellow": "#b26a00",
@@ -32,56 +32,65 @@ THEMES = {
              "scrollbar_slider": "#6a6a6a"},
 }
 
-# label, desc, category, short  (ru / en)
+# label, desc, category, short (нейтральная формулировка!)
 OPTIONS_META = {
     "rsyslog": {
-        "ru": ("Отключить rsyslog", "Система постоянно пишет подробные журналы на диск. На домашнем ПК это лишняя нагрузка: отключение экономит ресурс SSD и слегка ускоряет работу. Краткие журналы при этом остаются в памяти (см. следующий пункт).", "Логи системы", "журналы rsyslog отключены"),
-        "en": ("Disable rsyslog", "The system constantly writes detailed logs to disk. On a home PC this is unnecessary wear: disabling saves SSD life and slightly speeds things up. Short logs remain in RAM (see next item).", "System logs", "rsyslog logging disabled")},
+        "ru": ("Отключить rsyslog", "Система постоянно пишет подробные журналы на диск. На домашнем ПК это лишняя нагрузка: отключение экономит ресурс SSD и слегка ускоряет работу. Краткие журналы при этом остаются в памяти (см. следующий пункт).", "Логи системы", "запись подробных журналов rsyslog на диск"),
+        "en": ("Disable rsyslog", "The system constantly writes detailed logs to disk. On a home PC this is unnecessary wear: disabling saves SSD life and slightly speeds things up. Short logs remain in RAM (see next item).", "System logs", "detailed rsyslog logging to disk")},
     "journald": {
-        "ru": ("Логи в ОЗУ (journald)", "Переносит журналы systemd в оперативную память и ограничивает их 50 МБ. Диски не изнашиваются, старые логи не накапливаются годами.", "Логи системы", "journald хранит логи в ОЗУ"),
-        "en": ("Logs in RAM (journald)", "Moves systemd journals to RAM and caps them at 50 MB. No disk wear, old logs do not pile up for years.", "System logs", "journald stores logs in RAM")},
+        "ru": ("Логи в ОЗУ (journald)", "Переносит журналы systemd в оперативную память и ограничивает их 50 МБ. Диски не изнашиваются, старые логи не накапливаются годами.", "Логи системы", "хранение журналов systemd в ОЗУ (50 МБ)"),
+        "en": ("Logs in RAM (journald)", "Moves systemd journals to RAM and caps them at 50 MB. No disk wear, old logs do not pile up for years.", "System logs", "systemd journals stored in RAM (50 MB)")},
     "audit": {
-        "ru": ("audit=0 (GRUB)", "Отключает встроенный аудит ядра: система перестаёт протоколировать каждый системный вызов. Меньше накладных расходов — чуть быстрее загрузка и работа.", "Ядро и загрузка", "аудит ядра отключён"),
-        "en": ("audit=0 (GRUB)", "Disables kernel auditing: the kernel stops logging every syscall. Less overhead — slightly faster boot and runtime.", "Kernel & boot", "kernel audit disabled")},
+        "ru": ("audit=0 (GRUB)", "Отключает встроенный аудит ядра: система перестаёт протоколировать каждый системный вызов. Меньше накладных расходов — чуть быстрее загрузка и работа.", "Ядро и загрузка", "аудит ядра (audit=0)"),
+        "en": ("audit=0 (GRUB)", "Disables kernel auditing: the kernel stops logging every syscall. Less overhead — slightly faster boot and runtime.", "Kernel & boot", "kernel auditing (audit=0)")},
     "raid": {
-        "ru": ("raid=noautodetect (GRUB)", "Если у вас нет RAID-массива, при каждой загрузке система тратит время на его поиск. Параметр отключает этот поиск — загрузка быстрее.", "Ядро и загрузка", "поиск RAID при загрузке отключён"),
-        "en": ("raid=noautodetect (GRUB)", "If you have no RAID array, the system wastes boot time probing for one. This option skips the probe — faster boot.", "Kernel & boot", "RAID probing at boot disabled")},
+        "ru": ("raid=noautodetect (GRUB)", "Если у вас нет RAID-массива, при каждой загрузке система тратит время на его поиск. Параметр отключает этот поиск — загрузка быстрее.", "Ядро и загрузка", "поиск RAID при загрузке"),
+        "en": ("raid=noautodetect (GRUB)", "If you have no RAID array, the system wastes boot time probing for one. This option skips the probe — faster boot.", "Kernel & boot", "RAID probing at boot")},
     "corectrl": {
-        "ru": ("CoreCtrl (Polkit)", "Правило Polkit для программы CoreCtrl: позволяет управлять частотами и вентиляторами видеокарты AMD без ввода пароля. В поле указывается группа пользователей, которым это разрешено (по умолчанию — ваша).", "Видеокарта и графика", "правило Polkit для CoreCtrl создано"),
-        "en": ("CoreCtrl (Polkit)", "Polkit rule for CoreCtrl: allows controlling AMD GPU clocks and fans without a password. The field sets the user group allowed to do so (defaults to yours).", "GPU & graphics", "CoreCtrl Polkit rule present")},
+        "ru": ("CoreCtrl (Polkit)", "Правило Polkit для программы CoreCtrl: позволяет управлять частотами и вентиляторами видеокарты AMD без ввода пароля. В поле указывается группа пользователей, которым это разрешено (по умолчанию — ваша).", "Видеокарта и графика", "polkit-правило для CoreCtrl"),
+        "en": ("CoreCtrl (Polkit)", "Polkit rule for CoreCtrl: allows controlling AMD GPU clocks and fans without a password. The field sets the user group allowed to do so (defaults to yours).", "GPU & graphics", "Polkit rule for CoreCtrl")},
     "ppfeaturemask": {
-        "ru": ("amdgpu.ppfeaturemask", "Разблокирует скрытые возможности управления питанием AMD GPU (нужно на старых ядрах). Открывает CoreCtrl полный контроль над частотами.", "Видеокарта и графика", "управление питанием AMD разблокировано"),
-        "en": ("amdgpu.ppfeaturemask", "Unlocks hidden AMD GPU power-management features (needed on older kernels). Gives CoreCtrl full clock control.", "GPU & graphics", "AMD power management unlocked")},
+        "ru": ("amdgpu.ppfeaturemask", "Разблокирует скрытые возможности управления питанием AMD GPU (нужно на старых ядрах). Открывает CoreCtrl полный контроль над частотами.", "Видеокарта и графика", "разблокировка управления питанием AMD"),
+        "en": ("amdgpu.ppfeaturemask", "Unlocks hidden AMD GPU power-management features (needed on older kernels). Gives CoreCtrl full clock control.", "GPU & graphics", "AMD power management unlock")},
     "vrr": {
-        "ru": ("VRR/FreeSync", "Включает переменную частоту обновления (FreeSync) для AMD: картинка в играх без разрывов при плавающем FPS. Работает в X11 с драйвером amdgpu.", "Видеокарта и графика", "VRR/FreeSync включён"),
-        "en": ("VRR/FreeSync", "Enables variable refresh rate (FreeSync) on AMD: tear-free gaming at fluctuating FPS. Works in X11 with the amdgpu driver.", "GPU & graphics", "VRR/FreeSync enabled")},
+        "ru": ("VRR/FreeSync", "Включает переменную частоту обновления (FreeSync) для AMD: картинка в играх без разрывов при плавающем FPS. Работает в X11 с драйвером amdgpu.", "Видеокарта и графика", "VRR/FreeSync (X11, amdgpu)"),
+        "en": ("VRR/FreeSync", "Enables variable refresh rate (FreeSync) on AMD: tear-free gaming at fluctuating FPS. Works in X11 with the amdgpu driver.", "GPU & graphics", "VRR/FreeSync (X11, amdgpu)")},
     "radv": {
-        "ru": ("RADV_PERFTEST=sam", "Включает в драйвере RADV оптимизацию SAM / Resizable BAR: процессор получает доступ ко всей видеопамяти сразу — небольшой прирост FPS в играх.", "Видеокарта и графика", "SAM/ReBAR оптимизация включена"),
-        "en": ("RADV_PERFTEST=sam", "Enables SAM / Resizable BAR optimization in the RADV driver: the CPU accesses all VRAM at once — a small FPS gain in games.", "GPU & graphics", "SAM/ReBAR optimization enabled")},
+        "ru": ("RADV_PERFTEST=sam", "Включает в драйвере RADV оптимизацию SAM / Resizable BAR: процессор получает доступ ко всей видеопамяти сразу — небольшой прирост FPS в играх.", "Видеокарта и графика", "SAM / Resizable BAR в RADV"),
+        "en": ("RADV_PERFTEST=sam", "Enables SAM / Resizable BAR optimization in the RADV driver: the CPU accesses all VRAM at once — a small FPS gain in games.", "GPU & graphics", "SAM / Resizable BAR in RADV")},
     "mesa": {
-        "ru": ("MESA_SHADER_CACHE=4G", "Увеличивает кэш скомпилированных шейдеров до 4 ГБ. Игры и GL-приложения реже перекомпилируют шейдеры — меньше подтормаживаний в первые минуты игры.", "Видеокарта и графика", "кэш шейдеров увеличен до 4 ГБ"),
-        "en": ("MESA_SHADER_CACHE=4G", "Raises the compiled shader cache to 4 GB. Games and GL apps recompile shaders less often — fewer hitches in the first minutes of play.", "GPU & graphics", "shader cache raised to 4 GB")},
+        "ru": ("MESA_SHADER_CACHE=4G", "Увеличивает кэш скомпилированных шейдеров до 4 ГБ. Игры и GL-приложения реже перекомпилируют шейдеры — меньше подтормаживаний в первые минуты игры.", "Видеокарта и графика", "кэш шейдеров MESA 4 ГБ"),
+        "en": ("MESA_SHADER_CACHE=4G", "Raises the compiled shader cache to 4 GB. Games and GL apps recompile shaders less often — fewer hitches in the first minutes of play.", "GPU & graphics", "MESA shader cache 4 GB")},
     "pipewire": {
-        "ru": ("PipeWire (звук)", "Увеличивает буферы (кванты) звукового сервера PipeWire. Убирает треск, щелчки и прерывистый звук в наушниках и колонках.", "Звук", "буферы PipeWire увеличены"),
-        "en": ("PipeWire (sound)", "Increases PipeWire sound-server quanta. Removes crackling, pops and stuttering audio in headphones and speakers.", "Sound", "PipeWire quanta increased")},
+        "ru": ("PipeWire (звук)", "Увеличивает буферы (кванты) звукового сервера PipeWire. Убирает треск, щелчки и прерывистый звук в наушниках и колонках.", "Звук", "увеличенные буферы PipeWire"),
+        "en": ("PipeWire (sound)", "Increases PipeWire sound-server quanta. Removes crackling, pops and stuttering audio in headphones and speakers.", "Sound", "increased PipeWire quanta")},
     "swap": {
-        "ru": ("Тюнинг swap", "Настраивает vm.swappiness — насколько охотно система сбрасывает память в swap. Для сжатого zram выгодно 150, для диска/SSD — 10: меньше лишних обращений к диску.", "Память и swap", "vm.swappiness настроен"),
-        "en": ("Swap tuning", "Sets vm.swappiness — how eagerly memory is pushed to swap. 150 suits compressed zram, 10 suits disk/SSD: fewer pointless disk accesses.", "Memory & swap", "vm.swappiness tuned")},
+        "ru": ("Тюнинг swap", "Настраивает vm.swappiness — насколько охотно система сбрасывает память в swap. Для сжатого zram выгодно 150, для диска/SSD — 10: меньше лишних обращений к диску.", "Память и swap", "настройка vm.swappiness"),
+        "en": ("Swap tuning", "Sets vm.swappiness — how eagerly memory is pushed to swap. 150 suits compressed zram, 10 suits disk/SSD: fewer pointless disk accesses.", "Memory & swap", "vm.swappiness tuning")},
     "sysctl": {
-        "ru": ("Тюнинг sysctl", "vfs_cache_pressure=50 — система дольше держит кэш каталогов в памяти (быстрее работа с файлами). numa_balancing=0 — отключает лишнюю миграцию памяти между ядрами (полезно играм).", "Ядро и загрузка", "sysctl-тюнинг применён"),
-        "en": ("sysctl tuning", "vfs_cache_pressure=50 — directory cache stays in RAM longer (faster file access). numa_balancing=0 — disables needless memory migration between cores (good for games).", "Kernel & boot", "sysctl tuning applied")},
+        "ru": ("Тюнинг sysctl", "vfs_cache_pressure=50 — система дольше держит кэш каталогов в памяти (быстрее работа с файлами). numa_balancing=0 — отключает лишнюю миграцию памяти между ядрами (полезно играм).", "Ядро и загрузка", "sysctl-тюнинг (vfs_cache, numa)"),
+        "en": ("sysctl tuning", "vfs_cache_pressure=50 — directory cache stays in RAM longer (faster file access). numa_balancing=0 — disables needless memory migration between cores (good for games).", "Kernel & boot", "sysctl tuning (vfs_cache, numa)")},
     "ntsync": {
-        "ru": ("ntsync (модуль ядра)", "Включает модуль ntsync — новый ускоритель синхронизации для Wine/Proton. Заметный прирост FPS в части игр. Требуется ядро 6.14+ или с патчем ntsync.", "Игры и совместимость", "модуль ntsync в автозагрузке"),
-        "en": ("ntsync (kernel module)", "Enables the ntsync module — a new synchronization accelerator for Wine/Proton. Noticeable FPS gain in some games. Needs kernel 6.14+ or an ntsync-patched one.", "Gaming & compatibility", "ntsync module autoloaded")},
+        "ru": ("ntsync (модуль ядра)", "Включает модуль ntsync — новый ускоритель синхронизации для Wine/Proton. Заметный прирост FPS в части игр. Требуется ядро 6.14+ или с патчем ntsync.", "Игры и совместимость", "модуль ядра ntsync"),
+        "en": ("ntsync (kernel module)", "Enables the ntsync module — a new synchronization accelerator for Wine/Proton. Noticeable FPS gain in some games. Needs kernel 6.14+ or an ntsync-patched one.", "Gaming & compatibility", "ntsync kernel module")},
     "ntfs3": {
-        "ru": ("ntfs3 драйвер", "Включает быстрый встроенный драйвер ntfs3 для NTFS-дисков вместо медленного ntfs-3g. Linux Mint по умолчанию его блокирует — опция снимает блокировку.", "Диски и файловые системы", "драйвер ntfs3 разблокирован"),
-        "en": ("ntfs3 driver", "Enables the fast in-kernel ntfs3 driver for NTFS disks instead of slow ntfs-3g. Linux Mint blocks it by default — this option lifts the block.", "Drives & filesystems", "ntfs3 driver unblocked")},
+        "ru": ("ntfs3 драйвер", "Включает быстрый встроенный драйвер ntfs3 для NTFS-дисков вместо медленного ntfs-3g. Linux Mint по умолчанию его блокирует — опция снимает блокировку.", "Диски и файловые системы", "быстрый драйвер ntfs3"),
+        "en": ("ntfs3 driver", "Enables the fast in-kernel ntfs3 driver for NTFS disks instead of slow ntfs-3g. Linux Mint blocks it by default — this option lifts the block.", "Drives & filesystems", "fast ntfs3 driver")},
     "aliases": {
-        "ru": ("Команды в .bashrc", "Добавляет удобные команды терминала: upd, upgr, update_all (обновление всей системы), clean (очистка), space (место на диске), mem (очистка памяти) и другие.", "Удобство", "команды добавлены в .bashrc"),
-        "en": ("Commands in .bashrc", "Adds handy shell commands: upd, upgr, update_all (full system update), clean, space (disk free), mem (memory clean) and more.", "Convenience", "commands added to .bashrc")},
+        "ru": ("Команды в .bashrc", "Добавляет удобные команды терминала: upd, upgr, update_all (обновление всей системы), clean (очистка), space (место на диске), mem (очистка памяти) и другие.", "Удобство", "команды upd/upgr/clean в .bashrc"),
+        "en": ("Commands in .bashrc", "Adds handy shell commands: upd, upgr, update_all (full system update), clean, space (disk free), mem (memory clean) and more.", "Convenience", "upd/upgr/clean commands in .bashrc")},
     "autoupdate": {
-        "ru": ("Автообновления", "Создаёт systemd-таймер, который по выбранному расписанию сам обновляет APT-пакеты и Flatpak без вашего участия.", "Обновления", "таймер автообновлений активен"),
-        "en": ("Auto-updates", "Creates a systemd timer that updates APT packages and Flatpak on the chosen schedule without you.", "Updates", "auto-update timer active")},
+        "ru": ("Автообновления", "Создаёт systemd-таймер, который по выбранному расписанию сам обновляет APT-пакеты и Flatpak без вашего участия.", "Обновления", "systemd-таймер автообновлений"),
+        "en": ("Auto-updates", "Creates a systemd timer that updates APT packages and Flatpak on the chosen schedule without you.", "Updates", "systemd auto-update timer")},
+}
+
+CAT_ORDER = {
+    "ru": ["Видеокарта и графика", "Ядро и загрузка", "Логи системы", "Звук",
+           "Память и swap", "Диски и файловые системы", "Игры и совместимость",
+           "Удобство", "Обновления"],
+    "en": ["GPU & graphics", "Kernel & boot", "System logs", "Sound",
+           "Memory & swap", "Drives & filesystems", "Gaming & compatibility",
+           "Convenience", "Updates"],
 }
 
 SERVICES_META = {
@@ -116,7 +125,7 @@ STR = {
         "svc_on": "[ON] работает", "svc_onoff": "[ON/off] включена, не запущена",
         "svc_off": "[OFF] отключена", "svc_masked": "[MASKED] заблокирована",
         "svc_na": "[N/A] нет в системе", "run_yes": "работает", "run_no": "остановлена",
-        "svc_count": "Служб: {n}",
+        "svc_count": "Служб: {n}", "svc_detail_hint": "Выберите строку, чтобы увидеть полное описание службы.",
         "stat_refresh": "Обновить статус",
         "st_hw": "=== ОБОРУДОВАНИЕ ===", "st_tweaks": "=== НАСТРОЙКИ (применены ли) ===",
         "st_services": "=== СЛУЖБЫ ===", "st_kernel": "=== ЯДРО (текущие значения) ===",
@@ -124,14 +133,19 @@ STR = {
         "gpu_note": "видеокарта", "raid_note": "RAID-массив", "swap_note": "подкачка",
         "ntsync_note": "ускоритель Wine/Proton", "cinn_note": "оболочка Cinnamon",
         "user_note": "пользователь", "home_note": "домашняя папка",
+        "ram_note": "оперативная память", "kernel_note": "версия ядра",
+        "de_note": "графическая оболочка", "host_note": "имя компьютера",
+        "gb": "ГБ", "no_swap": "нет",
         "yes": "ПРИМЕНЕНО", "no": "НЕ ПРИМЕНЕНО",
         "rec_title": "Отключение лишних служб",
-        "rec_text": "Будут отключены службы, которые почти не нужны на домашнем ПК:\n",
+        "rec_text": "Будут отключены службы, которые почти не нужны на домашнем ПК:",
+        "rec_hint": "Вернуть любую службу можно на вкладке «Службы»: выделите строки и нажмите «Включить выбранные».",
+        "dlg_yes": "Да, отключить", "dlg_no": "Отмена",
         "msg_run_title": "Выполняется", "msg_run_text": "Скрипт уже запущен. Дождитесь завершения.",
         "msg_noopt_title": "Нет выбранных опций", "msg_noopt_text": "Отметьте хотя бы одну опцию.",
         "msg_sel_title": "Службы", "msg_sel_text": "Сначала выберите строки в таблице (Ctrl/Shift + клик).",
         "help_title": "Справка",
-        "help": """System Tuneup GUI v0.2
+        "help": """System Tuneup GUI v0.3
 
 Графическая оболочка для безопасного тюнинга Linux Mint / Ubuntu / Debian.
 
@@ -148,18 +162,28 @@ STR = {
 
 ВКЛАДКА «СЛУЖБЫ»
 Показывает состояние служб, которые обычно не нужны на домашнем ПК.
+Клик по строке выводит полное описание службы в панели под таблицей.
 Кнопка «Отключить лишние службы» перед действием покажет их список
 с пояснениями и попросит подтверждение.
-Строки выделяются мышью с Ctrl/Shift; кнопки включают/отключают выделенное.
 «Выбрать все» и «Сбросить» внизу на этой вкладке выделяют/снимают выделение строк.
 
 ВКЛАДКА «СТАТУС»
 Сводка по системе. Зелёным — настройка применена, красным — нет,
-рядом краткое пояснение.
+рядом краткое пояснение, что это за настройка.
 
-БЭКАПЫ
+ОТКАТ ИЗМЕНЕНИЙ
 Перед изменением любого файла копия сохраняется в ~/system-tuneup-backups
-(хранится одна последняя копия каждого файла).
+(одна последняя копия каждого файла). Для отката:
+- rsyslog: sudo systemctl unmask rsyslog && sudo systemctl enable --now rsyslog
+- journald: верните /etc/systemd/journald.conf из бэкапа и выполните
+  sudo systemctl restart systemd-journald
+- GRUB (audit=0, raid=..., ppfeaturemask): верните /etc/default/grub из бэкапа
+  и выполните sudo update-grub
+- environment / sysctl / modules-load / polkit / xorg: верните нужный файл
+  из бэкапа (для sysctl затем: sudo sysctl --system)
+- алиасы в .bashrc: удалите блок между маркерами system-tuneup commands
+- таймер автообновлений: выберите расписание «Отключено» и нажмите «Применить»
+- службы: выделите на вкладке «Службы» и нажмите «Включить выбранные»
 """,
     },
     "en": {
@@ -179,7 +203,7 @@ STR = {
         "svc_on": "[ON] running", "svc_onoff": "[ON/off] enabled, not running",
         "svc_off": "[OFF] disabled", "svc_masked": "[MASKED] blocked",
         "svc_na": "[N/A] not installed", "run_yes": "running", "run_no": "stopped",
-        "svc_count": "Services: {n}",
+        "svc_count": "Services: {n}", "svc_detail_hint": "Select a row to see the full service description.",
         "stat_refresh": "Refresh status",
         "st_hw": "=== HARDWARE ===", "st_tweaks": "=== TWEAKS (applied or not) ===",
         "st_services": "=== SERVICES ===", "st_kernel": "=== KERNEL (live values) ===",
@@ -187,41 +211,52 @@ STR = {
         "gpu_note": "GPU", "raid_note": "RAID array", "swap_note": "swap",
         "ntsync_note": "Wine/Proton accelerator", "cinn_note": "Cinnamon shell",
         "user_note": "user", "home_note": "home folder",
+        "ram_note": "RAM", "kernel_note": "kernel version",
+        "de_note": "desktop environment", "host_note": "hostname",
+        "gb": "GB", "no_swap": "none",
         "yes": "APPLIED", "no": "NOT APPLIED",
         "rec_title": "Disabling unneeded services",
-        "rec_text": "These services, rarely needed on a home PC, will be disabled:\n",
+        "rec_text": "These services, rarely needed on a home PC, will be disabled:",
+        "rec_hint": "Any service can be restored on the Services tab: select rows and press Enable selected.",
+        "dlg_yes": "Yes, disable", "dlg_no": "Cancel",
         "msg_run_title": "Running", "msg_run_text": "A job is already running. Wait for it to finish.",
         "msg_noopt_title": "No options selected", "msg_noopt_text": "Tick at least one option.",
         "msg_sel_title": "Services", "msg_sel_text": "Select table rows first (Ctrl/Shift + click).",
         "help_title": "Help",
-        "help": """System Tuneup GUI v0.2
+        "help": """System Tuneup GUI v0.3
 
 A graphical shell for safe tuning of Linux Mint / Ubuntu / Debian.
 
 HOW TO USE
-1. "Tuning" tab: tick the options you want. A green "✓ applied" mark means
+1. Tuning tab: tick the options you want. A green "applied" mark means
    the setting is already active (even if you configured it manually).
 2. Fill in parameters if needed: CoreCtrl group, swappiness, update schedule.
-3. Press "Apply" and enter your sudo password when asked.
+3. Press Apply and enter your sudo password when asked.
 
 DRY RUN
-Tick "Dry run" at the top: commands are only printed to the log,
-no changes are made.
+Tick "Dry run" at the top: commands are only printed to the log, no changes are made.
 
 SERVICES TAB
 Shows services usually unneeded on a home PC.
-"Disable unneeded services" shows the list with explanations
-and asks for confirmation first.
-Select rows with Ctrl/Shift + click; the buttons enable/disable the selection.
+Clicking a row shows the full description in the panel below the table.
+"Disable unneeded services" shows the list with explanations and asks confirmation.
 "Select all"/"Reset" at the bottom select/clear table rows on this tab.
 
 STATUS TAB
-System summary. Green — tweak applied, red — not applied,
-with a short explanation next to each line.
+System summary. Green — tweak applied, red — not applied, with a short explanation.
 
-BACKUPS
+ROLLBACK
 Before modifying any file a copy is saved to ~/system-tuneup-backups
-(one latest copy per file is kept).
+(one latest copy per file). To roll back:
+- rsyslog: sudo systemctl unmask rsyslog && sudo systemctl enable --now rsyslog
+- journald: restore /etc/systemd/journald.conf from backup, then
+  sudo systemctl restart systemd-journald
+- GRUB params: restore /etc/default/grub from backup, then sudo update-grub
+- environment / sysctl / modules-load / polkit / xorg: restore the file from backup
+  (for sysctl then: sudo sysctl --system)
+- .bashrc aliases: delete the block between system-tuneup markers
+- auto-update timer: pick "Disabled" schedule and press Apply
+- services: select on the Services tab and press "Enable selected"
 """,
     },
 }
@@ -231,6 +266,28 @@ def decode_bytes(value):
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+def cpu_model():
+    try:
+        with open("/proc/cpuinfo", "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return "?"
+
+
+def ram_total_gb():
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("MemTotal"):
+                    return int(line.split()[1]) / 1024.0 / 1024.0
+    except Exception:
+        pass
+    return None
 
 
 class SudoManager:
@@ -416,7 +473,6 @@ class SystemOps:
         self.log = log
         self.dry_run = dry_run
         self.grub_changed = False
-        # Бэкапы: одна последняя копия каждого файла, в домашней папке
         self.backup_dir = os.path.join(state.user_home, "system-tuneup-backups")
 
     def backup_file(self, path):
@@ -892,36 +948,36 @@ class SystemOps:
             cleaned.append(line)
         spices = self._has_cinnamon_spices()
         block = [start_marker, "# Пользовательские команды обновлений (system-tuneup)", ""]
-        block += ["upd() {", '    echo "🔍 Поиск обновлений APT..."', "    sudo apt update", "}", ""]
-        block += ["upgr() {", '    echo "📦 Обновление пакетов APT..."', "    sudo apt full-upgrade",
-                  '    echo "📦 Обновление Flatpak..."']
+        block += ["upd() {", '    echo "Поиск обновлений APT..."', "    sudo apt update", "}", ""]
+        block += ["upgr() {", '    echo "Обновление пакетов APT..."', "    sudo apt full-upgrade",
+                  '    echo "Обновление Flatpak..."']
         if spices:
             block.append("    flatpak update && cinnamon-spice-updater --update-all")
         else:
             block.append("    flatpak update")
         block += ["}", ""]
         if spices:
-            block += ["spices() {", '    echo "🧂 Обновление апплетов Cinnamon..."',
+            block += ["spices() {", '    echo "Обновление апплетов Cinnamon..."',
                       "    cinnamon-spice-updater --update-all", "}", ""]
         block += ["update_all() {", "    sudo apt update && sudo apt full-upgrade -y",
                   "    flatpak update -y"]
         if spices:
             block.append("    cinnamon-spice-updater --update-all")
-        block += ['    echo "✅ Все обновления завершены!"', "}", ""]
+        block += ['    echo "Все обновления завершены!"', "}", ""]
         block += ["# Дополнительные команды (system-tuneup)",
                   'inst() { sudo apt install "$@"; }',
                   'remove() { sudo apt purge --autoremove "$@"; }',
                   'search() { apt search "$@"; }',
                   'info() { apt show "$@"; }', ""]
-        block += ["clean() {", '    echo "🧹 Очистка системы..."', "    sudo apt autoremove -y",
+        block += ["clean() {", '    echo "Очистка системы..."', "    sudo apt autoremove -y",
                   "    sudo apt autoclean", "    sudo apt clean",
-                  '    echo "✅ Очистка завершена"', "}", ""]
-        block += ["space() {", '    df -h / | awk \'NR==2 {print "📁 /: " $4 " свободно из " $2}\'',
+                  '    echo "Очистка завершена"', "}", ""]
+        block += ["space() {", "    df -h / | awk 'NR==2 {print \"/: \" $4 \" свободно из \" $2}'",
                   "}", ""]
-        block += ["fix() {", '    echo "🔧 Исправление сломанных пакетов..."',
+        block += ["fix() {", '    echo "Исправление сломанных пакетов..."',
                   "    sudo apt --fix-broken install -y", "    sudo dpkg --configure -a",
-                  '    echo "✅ Готово!"', "}", ""]
-        block += ["mem() {", '    echo "🧠 Очистка памяти..."', "    sync",
+                  '    echo "Готово!"', "}", ""]
+        block += ["mem() {", '    echo "Очистка памяти..."', "    sync",
                   "    sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'", "    free -h", "}", ""]
         block += ["serv() {", "    systemctl list-unit-files --type=service | less", "}", ""]
         block += ["update_time() {",
@@ -959,8 +1015,7 @@ class SystemOps:
         svc = "/etc/systemd/system/biweekly-upgrade.service"
         tmr = "/etc/systemd/system/biweekly-upgrade.timer"
         exists = self.path_exists(tmr) or self.path_exists(svc)
-        off = schedule_ui in ("Отключено", "Disabled")
-        if off:
+        if schedule_ui in ("Отключено", "Disabled"):
             if not exists:
                 self.log("Таймер автообновлений не найден", "info"); return True
             if self.dry_run:
@@ -985,7 +1040,7 @@ class SystemOps:
                        % (desc, oncalendar))
         ex_svc = self.read_file(svc)
         ex_tmr = self.read_file(tmr)
-        if (exists and ex_svc == svc_content and ex_tmr == tmr_content):
+        if exists and ex_svc == svc_content and ex_tmr == tmr_content:
             self.log("Таймер уже настроен: %s" % desc, "info")
             if self.service_enabled("biweekly-upgrade.timer") != "enabled":
                 if not self.dry_run:
@@ -1044,8 +1099,8 @@ class TuneupApp:
         else:
             self.log("Для применения нужен пароль sudo", "warning")
         self.root.after(400, self.refresh_services)
-        self.root.after(600, self.refresh_status)
-        self.root.after(800, self.refresh_applied)
+        self.root.after(900, self.refresh_applied)
+        self.root.after(1200, self.refresh_status)
 
     # ─── helpers ───
     def t(self, key):
@@ -1060,6 +1115,10 @@ class TuneupApp:
     def _fix(self, widget, color_key):
         widget._fixed_fg = color_key
         return widget
+
+    def _alive(self, name):
+        w = getattr(self, name, None)
+        return w is not None and w.winfo_exists()
 
     # ─── theme ───
     def apply_theme(self, theme_name=None):
@@ -1098,12 +1157,12 @@ class TuneupApp:
         style.configure("Horizontal.TProgressbar", troughcolor=t["scrollbar_trough"],
                         background=t["accent_bg"])
         self._update_tk_widgets(t)
-        if hasattr(self, "services_tree"):
+        if self._alive("services_tree"):
             self.services_tree.tag_configure("g", foreground=t["green"])
             self.services_tree.tag_configure("y", foreground=t["yellow"])
             self.services_tree.tag_configure("r", foreground=t["red"])
             self.services_tree.tag_configure("gr", foreground=t["gray"])
-        if hasattr(self, "status_text_widget"):
+        if self._alive("status_text_widget"):
             mono = ("DejaVu Sans Mono", self._scaled(9))
             mono_b = ("DejaVu Sans Mono", self._scaled(9), "bold")
             self.status_text_widget.tag_configure("ok", foreground=t["green"])
@@ -1149,7 +1208,7 @@ class TuneupApp:
             for child in w.winfo_children():
                 update_widget(child)
         update_widget(self.root)
-        if hasattr(self, "terminal"):
+        if self._alive("terminal"):
             self.terminal.tag_configure("normal", foreground=t["terminal_fg"])
             self.terminal.tag_configure("success", foreground=t["green"])
             self.terminal.tag_configure("error", foreground=t["red"])
@@ -1166,16 +1225,24 @@ class TuneupApp:
         self.rebuild_ui()
 
     def _update_header_buttons(self):
-        if hasattr(self, "theme_button"):
+        if hasattr(self, "theme_button") and self.theme_button.winfo_exists():
             self.theme_button.config(
                 text=self.t("theme_dark") if self.current_theme == "light"
                 else self.t("theme_light"))
-        if hasattr(self, "lang_button"):
+        if hasattr(self, "lang_button") and self.lang_button.winfo_exists():
             self.lang_button.config(text="EN" if self.lang == "ru" else "RU")
 
     def rebuild_ui(self):
         for w in self.root.winfo_children():
             w.destroy()
+        for attr in ("terminal", "services_tree", "status_text_widget", "svc_detail",
+                     "tune_canvas", "options_inner", "notebook", "run_button",
+                     "theme_button", "lang_button", "services_count_label"):
+            if hasattr(self, attr):
+                try:
+                    delattr(self, attr)
+                except Exception:
+                    pass
         self.option_widgets = {}
         self.applied_labels = {}
         self.create_ui()
@@ -1265,7 +1332,8 @@ class TuneupApp:
         ttk.Progressbar(status_frame, variable=self.progress_var, maximum=100,
                         length=self._scaled(180),
                         mode="determinate").pack(side="right")
-        self._update_header_buttons()
+        # Финальное применение темы: виджеты уже существуют, теги цветов встанут корректно
+        self.apply_theme()
 
     # ─── wheel ───
     def _on_wheel(self, event):
@@ -1310,7 +1378,10 @@ class TuneupApp:
         categories = {}
         for key in self.options:
             categories.setdefault(self.om(key)[2], []).append(key)
-        for cat in sorted(categories.keys()):
+        order = CAT_ORDER[self.lang]
+        cats = [c for c in order if c in categories]
+        cats += [c for c in sorted(categories) if c not in order]
+        for cat in cats:
             self._fix(tk.Label(self.options_inner, text="─── %s ───" % cat,
                                font=("DejaVu Sans", self._scaled(10), "bold"),
                                anchor="w"), "yellow").pack(
@@ -1382,19 +1453,44 @@ class TuneupApp:
         self.services_tree.heading("enabled", text=self.t("svc_col_en"))
         self.services_tree.heading("active", text=self.t("svc_col_act"))
         self.services_tree.heading("desc", text=self.t("svc_col_desc"))
-        self.services_tree.column("name", width=self._scaled(220), anchor="w")
-        self.services_tree.column("enabled", width=self._scaled(170), anchor="w")
-        self.services_tree.column("active", width=self._scaled(100), anchor="center")
-        self.services_tree.column("desc", width=self._scaled(430), anchor="w")
+        self.services_tree.column("name", width=self._scaled(210), anchor="w", stretch=False)
+        self.services_tree.column("enabled", width=self._scaled(160), anchor="w", stretch=False)
+        self.services_tree.column("active", width=self._scaled(90), anchor="center", stretch=False)
+        self.services_tree.column("desc", width=self._scaled(400), anchor="w", stretch=True)
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical",
                                   command=self.services_tree.yview)
         self.services_tree.configure(yscrollcommand=scrollbar.set)
         self.services_tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        self.services_count_label = tk.Label(container, text=self.t("svc_count").format(n=0),
+        self.services_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        # Панель полного описания выбранной службы
+        self._fix(tk.Label(container, text=self.t("svc_detail_hint"),
+                           font=("DejaVu Sans", self._scaled(8)), anchor="w"),
+                  "gray").pack(fill="x", pady=(self._scaled(6), 0))
+        self.svc_detail = tk.Text(container, height=3, wrap="word",
+                                  font=("DejaVu Sans", self._scaled(9)),
+                                  relief="flat", bd=0, state="disabled")
+        self.svc_detail.pack(fill="x", pady=(self._scaled(2), 0))
+        self.services_count_label = tk.Label(container,
+                                             text=self.t("svc_count").format(n=0),
                                              font=("DejaVu Sans", self._scaled(8)))
         self._fix(self.services_count_label, "gray").pack(fill="x",
-                                                          pady=(self._scaled(6), 0))
+                                                          pady=(self._scaled(4), 0))
+
+    def _on_tree_select(self, event=None):
+        if not self._alive("svc_detail") or not self._alive("services_tree"):
+            return
+        items = self.services_tree.selection()
+        parts = []
+        for it in items[:3]:
+            name = str(self.services_tree.item(it)["values"][0])
+            desc = SERVICES_META.get(name, {}).get(self.lang, "")
+            parts.append("%s — %s" % (name, desc))
+        w = self.svc_detail
+        w.configure(state="normal")
+        w.delete("1.0", tk.END)
+        w.insert("1.0", "\n".join(parts))
+        w.configure(state="disabled")
 
     def create_status_tab(self):
         container = tk.Frame(self.tab_status)
@@ -1417,6 +1513,24 @@ class TuneupApp:
             self.q.put(("applied", self.detect_applied()))
         except Exception:
             pass
+
+    def _corectrl_found(self):
+        for d in ("/etc/polkit-1/rules.d", "/usr/share/polkit-1/rules.d"):
+            try:
+                names = os.listdir(d)
+            except Exception:
+                continue
+            for fn in names:
+                if "corectrl" in fn.lower():
+                    return True
+                try:
+                    with open(os.path.join(d, fn), "r",
+                              encoding="utf-8", errors="replace") as f:
+                        if "org.corectrl" in f.read():
+                            return True
+                except Exception:
+                    continue
+        return False
 
     def detect_applied(self):
         ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, True)
@@ -1442,7 +1556,7 @@ class TuneupApp:
             "journald": bool(re.search(r"^\s*Storage\s*=\s*volatile\s*$", j, re.M)),
             "audit": "audit=0" in grub,
             "raid": "raid=noautodetect" in grub,
-            "corectrl": ops.path_exists("/etc/polkit-1/rules.d/90-corectrl.rules"),
+            "corectrl": self._corectrl_found(),
             "ppfeaturemask": "amdgpu.ppfeaturemask" in grub,
             "vrr": ops.path_exists("/etc/X11/xorg.conf.d/20-amdgpu.conf"),
             "radv": "RADV_PERFTEST=sam" in env,
@@ -1460,6 +1574,8 @@ class TuneupApp:
     def _update_applied_labels(self):
         t = THEMES[self.current_theme]
         for key, lbl in self.applied_labels.items():
+            if not lbl.winfo_exists():
+                continue
             val = self.applied.get(key, False)
             lbl.configure(text=self.t("applied_yes") if val else self.t("applied_no"),
                           bg=t["bg"], fg=t["green"] if val else t["gray"])
@@ -1477,29 +1593,39 @@ class TuneupApp:
                 item = self.q.get_nowait()
                 kind = item[0]
                 if kind == "log":
+                    if not self._alive("terminal"):
+                        continue
                     self.terminal.configure(state="normal")
                     self.terminal.insert(tk.END, item[1], item[2])
                     self.terminal.see(tk.END)
                     self.terminal.configure(state="disabled")
                 elif kind == "statusbar":
-                    self.status_text.set(item[1])
+                    if hasattr(self, "status_text"):
+                        self.status_text.set(item[1])
                 elif kind == "progress":
-                    self.progress_var.set(item[1])
+                    if hasattr(self, "progress_var"):
+                        self.progress_var.set(item[1])
                 elif kind == "running":
                     self.is_running = item[1]
-                    self.run_button.config(state="disabled" if item[1] else "normal")
+                    if self._alive("run_button"):
+                        self.run_button.config(state="disabled" if item[1] else "normal")
                 elif kind == "applied":
                     self.applied = item[1]
                     self._update_applied_labels()
                 elif kind == "services_rows":
+                    if not self._alive("services_tree"):
+                        continue
                     for child in self.services_tree.get_children():
                         self.services_tree.delete(child)
                     for row in item[1]:
                         self.services_tree.insert("", "end", values=row[:4],
                                                   tags=(row[4],))
-                    self.services_count_label.config(
-                        text=self.t("svc_count").format(n=len(item[1])))
+                    if self._alive("services_count_label"):
+                        self.services_count_label.config(
+                            text=self.t("svc_count").format(n=len(item[1])))
                 elif kind == "status_lines":
+                    if not self._alive("status_text_widget"):
+                        continue
                     w = self.status_text_widget
                     w.configure(state="normal")
                     w.delete("1.0", tk.END)
@@ -1572,7 +1698,8 @@ class TuneupApp:
 
     def select_all(self):
         if self._on_services_tab():
-            self.services_tree.selection_set(self.services_tree.get_children())
+            if self._alive("services_tree"):
+                self.services_tree.selection_set(self.services_tree.get_children())
             return
         for k, o in self.options.items():
             w = self.option_widgets.get(k)
@@ -1581,7 +1708,8 @@ class TuneupApp:
 
     def reset_all(self):
         if self._on_services_tab():
-            self.services_tree.selection_remove(self.services_tree.selection())
+            if self._alive("services_tree"):
+                self.services_tree.selection_remove(self.services_tree.selection())
             return
         for o in self.options.values():
             o["var"].set(False)
@@ -1633,7 +1761,7 @@ class TuneupApp:
     def show_help(self):
         win = tk.Toplevel(self.root)
         win.title(self.t("help_title"))
-        win.geometry("%dx%d" % (self._scaled(680), self._scaled(520)))
+        win.geometry("%dx%d" % (self._scaled(700), self._scaled(560)))
         t = THEMES[self.current_theme]
         win.configure(bg=t["bg"])
         text = scrolledtext.ScrolledText(win, font=("DejaVu Sans Mono", self._scaled(9)),
@@ -1643,6 +1771,45 @@ class TuneupApp:
         text.pack(fill="both", expand=True)
         text.insert("1.0", self.t("help"))
         text.configure(state="disabled")
+
+    # ─── themed confirm dialog ───
+    def _confirm_dialog(self, title, lines):
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.geometry("%dx%d" % (self._scaled(640), self._scaled(440)))
+        win.transient(self.root)
+        win.grab_set()
+        t = THEMES[self.current_theme]
+        win.configure(bg=t["bg"])
+        txt = scrolledtext.ScrolledText(win, font=("DejaVu Sans", self._scaled(9)),
+                                        bg=t["terminal_bg"], fg=t["terminal_fg"],
+                                        wrap="word", relief="flat",
+                                        padx=self._scaled(8), pady=self._scaled(8))
+        txt.pack(fill="both", expand=True, padx=self._scaled(8), pady=self._scaled(8))
+        txt.insert("1.0", "\n".join(lines))
+        txt.configure(state="disabled")
+        var = tk.BooleanVar(value=False)
+        bf = tk.Frame(win, bg=t["bg"])
+        bf.pack(fill="x", padx=self._scaled(8), pady=(0, self._scaled(8)))
+
+        def ok():
+            var.set(True)
+            win.destroy()
+
+        def cancel():
+            win.destroy()
+        tk.Button(bf, text=self.t("dlg_yes"), command=ok,
+                  font=("DejaVu Sans", self._scaled(10), "bold"),
+                  bg=t["accent_bg"], fg=t["accent_fg"],
+                  padx=self._scaled(14), pady=self._scaled(4)).pack(
+            side="left", padx=self._scaled(4))
+        tk.Button(bf, text=self.t("dlg_no"), command=cancel,
+                  font=("DejaVu Sans", self._scaled(10)),
+                  bg=t["button_bg"], fg=t["button_fg"],
+                  padx=self._scaled(14), pady=self._scaled(4)).pack(
+            side="left", padx=self._scaled(4))
+        win.wait_window()
+        return var.get()
 
     # ─── services ───
     def refresh_services(self):
@@ -1677,10 +1844,10 @@ class TuneupApp:
         return self.sudo.ensure()
 
     def disable_recommended(self):
-        listing = "\n".join("• %s — %s" % (n, SERVICES_META[n][self.lang])
-                            for n in SERVICES_ORDER)
-        if not messagebox.askyesno(self.t("rec_title"),
-                                   self.t("rec_text") + "\n" + listing):
+        lines = [self.t("rec_text"), ""]
+        lines += ["• %s — %s" % (n, SERVICES_META[n][self.lang]) for n in SERVICES_ORDER]
+        lines += ["", self.t("rec_hint")]
+        if not self._confirm_dialog(self.t("rec_title"), lines):
             return
         if not self._ensure_service_action():
             return
@@ -1753,18 +1920,28 @@ class TuneupApp:
 
     def _refresh_status_worker(self):
         ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, True)
-        A = self.applied
+        try:
+            A = self.detect_applied()
+            self.q.put(("applied", A))
+        except Exception:
+            A = self.applied
+        yn = lambda v: self.t("yes") if v else self.t("no")
         rows = []
         rows.append((self.t("st_hw"), "head"))
         rows.append(("GPU: %s — %s" % (self.state.gpu, self.t("gpu_note")), "info"))
-        rows.append(("RAID: %s — %s" % ("yes" if self.state.has_raid else "no",
-                                        self.t("raid_note")), "info"))
+        rows.append(("CPU: %s" % cpu_model(), "info"))
+        ram = ram_total_gb()
+        if ram is not None:
+            rows.append(("RAM: %.1f %s — %s" % (ram, self.t("gb"), self.t("ram_note")), "info"))
+        rows.append(("Kernel: %s — %s" % (os.uname().release, self.t("kernel_note")), "info"))
+        rows.append(("Host: %s — %s" % (os.uname().nodename, self.t("host_note")), "info"))
+        de = os.environ.get("XDG_CURRENT_DESKTOP", "") or os.environ.get("DESKTOP_SESSION", "") or "?"
+        rows.append(("DE: %s — %s" % (de, self.t("de_note")), "info"))
+        rows.append(("RAID: %s — %s" % (yn(self.state.has_raid), self.t("raid_note")), "info"))
         rows.append(("Swap: %s — %s" % (self.state.swap_type if self.state.has_swap
-                                        else "none", self.t("swap_note")), "info"))
-        rows.append(("ntsync: %s — %s" % ("yes" if self.state.ntsync else "no",
-                                          self.t("ntsync_note")), "info"))
-        rows.append(("Cinnamon: %s — %s" % ("yes" if self.state.cinnamon else "no",
-                                            self.t("cinn_note")), "info"))
+                                        else self.t("no_swap"), self.t("swap_note")), "info"))
+        rows.append(("ntsync: %s — %s" % (yn(self.state.ntsync), self.t("ntsync_note")), "info"))
+        rows.append(("Cinnamon: %s — %s" % (yn(self.state.cinnamon), self.t("cinn_note")), "info"))
         rows.append(("%s: %s" % (self.t("user_note"), self.state.user_name), "info"))
         rows.append(("%s: %s" % (self.t("home_note"), self.state.user_home), "info"))
         rows.append(("", "info"))
