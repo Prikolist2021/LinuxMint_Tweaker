@@ -1,115 +1,237 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-═══════════════════════════════════════════════════════════════════════════════
-  SYSTEM TUNEUP GUI v0.1
-  Графическая оболочка для тюнинга Linux Mint / Ubuntu / Debian
-═══════════════════════════════════════════════════════════════════════════════
+System Tuneup GUI v0.2
+Графическая оболочка тюнинга Linux Mint / Ubuntu / Debian.
+RU/EN интерфейс, темы, детект уже применённых настроек.
 """
-
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, simpledialog, filedialog
+import subprocess, os, sys, threading, queue, re, pwd, grp, time, shutil
 
-import subprocess
-import os
-import sys
-import threading
-import queue
-import re
-import pwd
-import grp
-import time
-import shutil
-
-APP_VERSION = "0.1"
-
-
-# ─── ТЕМЫ ─────────────────────────────────────────────────────────────────────
+APP_VERSION = "0.2"
 
 THEMES = {
-    "light": {
-        "bg": "#f5f5f5",
-        "fg": "#1e1e1e",
-        "green": "#2e7d32",
-        "yellow": "#f57f17",
-        "red": "#c62828",
-        "blue": "#1565c0",
-        "orange": "#e65100",
-        "gray": "#757575",
-        "terminal_bg": "#ffffff",
-        "terminal_fg": "#1e1e1e",
-        "entry_bg": "#ffffff",
-        "entry_fg": "#1e1e1e",
-        "select_color": "#e0e0e0",
-        "button_bg": "#e0e0e0",
-        "button_fg": "#1e1e1e",
-        "accent_bg": "#4caf50",
-        "accent_fg": "#ffffff",
-        "tree_bg": "#ffffff",
-        "tree_fg": "#1e1e1e",
-        "tree_heading_bg": "#e0e0e0",
-        "tree_heading_fg": "#1e1e1e",
-        "notebook_tab_bg": "#e0e0e0",
-        "notebook_tab_selected": "#ffffff",
-        "scrollbar_trough": "#e0e0e0",
-        "scrollbar_slider": "#bdbdbd",
+    "light": {"bg": "#f5f5f5", "fg": "#1e1e1e", "green": "#2e7d32", "yellow": "#b26a00",
+              "red": "#c62828", "blue": "#1565c0", "orange": "#e65100", "gray": "#616161",
+              "terminal_bg": "#ffffff", "terminal_fg": "#1e1e1e", "entry_bg": "#ffffff",
+              "entry_fg": "#1e1e1e", "select_color": "#e0e0e0", "button_bg": "#e0e0e0",
+              "button_fg": "#1e1e1e", "accent_bg": "#4caf50", "accent_fg": "#ffffff",
+              "tree_bg": "#ffffff", "tree_fg": "#1e1e1e", "tree_heading_bg": "#e0e0e0",
+              "tree_heading_fg": "#1e1e1e", "notebook_tab_bg": "#e0e0e0",
+              "notebook_tab_selected": "#ffffff", "scrollbar_trough": "#e8e8e8",
+              "scrollbar_slider": "#9e9e9e"},
+    "dark": {"bg": "#1e1e1e", "fg": "#d4d4d4", "green": "#4ec9b0", "yellow": "#d7ba7d",
+             "red": "#f44747", "blue": "#569cd6", "orange": "#ce9178", "gray": "#9a9a9a",
+             "terminal_bg": "#0c0c0c", "terminal_fg": "#d4d4d4", "entry_bg": "#333333",
+             "entry_fg": "#d4d4d4", "select_color": "#333333", "button_bg": "#444444",
+             "button_fg": "#d4d4d4", "accent_bg": "#4ec9b0", "accent_fg": "#1e1e1e",
+             "tree_bg": "#252525", "tree_fg": "#d4d4d4", "tree_heading_bg": "#333333",
+             "tree_heading_fg": "#ffffff", "notebook_tab_bg": "#333333",
+             "notebook_tab_selected": "#555555", "scrollbar_trough": "#2d2d2d",
+             "scrollbar_slider": "#6a6a6a"},
+}
+
+# label, desc, category, short  (ru / en)
+OPTIONS_META = {
+    "rsyslog": {
+        "ru": ("Отключить rsyslog", "Система постоянно пишет подробные журналы на диск. На домашнем ПК это лишняя нагрузка: отключение экономит ресурс SSD и слегка ускоряет работу. Краткие журналы при этом остаются в памяти (см. следующий пункт).", "Логи системы", "журналы rsyslog отключены"),
+        "en": ("Disable rsyslog", "The system constantly writes detailed logs to disk. On a home PC this is unnecessary wear: disabling saves SSD life and slightly speeds things up. Short logs remain in RAM (see next item).", "System logs", "rsyslog logging disabled")},
+    "journald": {
+        "ru": ("Логи в ОЗУ (journald)", "Переносит журналы systemd в оперативную память и ограничивает их 50 МБ. Диски не изнашиваются, старые логи не накапливаются годами.", "Логи системы", "journald хранит логи в ОЗУ"),
+        "en": ("Logs in RAM (journald)", "Moves systemd journals to RAM and caps them at 50 MB. No disk wear, old logs do not pile up for years.", "System logs", "journald stores logs in RAM")},
+    "audit": {
+        "ru": ("audit=0 (GRUB)", "Отключает встроенный аудит ядра: система перестаёт протоколировать каждый системный вызов. Меньше накладных расходов — чуть быстрее загрузка и работа.", "Ядро и загрузка", "аудит ядра отключён"),
+        "en": ("audit=0 (GRUB)", "Disables kernel auditing: the kernel stops logging every syscall. Less overhead — slightly faster boot and runtime.", "Kernel & boot", "kernel audit disabled")},
+    "raid": {
+        "ru": ("raid=noautodetect (GRUB)", "Если у вас нет RAID-массива, при каждой загрузке система тратит время на его поиск. Параметр отключает этот поиск — загрузка быстрее.", "Ядро и загрузка", "поиск RAID при загрузке отключён"),
+        "en": ("raid=noautodetect (GRUB)", "If you have no RAID array, the system wastes boot time probing for one. This option skips the probe — faster boot.", "Kernel & boot", "RAID probing at boot disabled")},
+    "corectrl": {
+        "ru": ("CoreCtrl (Polkit)", "Правило Polkit для программы CoreCtrl: позволяет управлять частотами и вентиляторами видеокарты AMD без ввода пароля. В поле указывается группа пользователей, которым это разрешено (по умолчанию — ваша).", "Видеокарта и графика", "правило Polkit для CoreCtrl создано"),
+        "en": ("CoreCtrl (Polkit)", "Polkit rule for CoreCtrl: allows controlling AMD GPU clocks and fans without a password. The field sets the user group allowed to do so (defaults to yours).", "GPU & graphics", "CoreCtrl Polkit rule present")},
+    "ppfeaturemask": {
+        "ru": ("amdgpu.ppfeaturemask", "Разблокирует скрытые возможности управления питанием AMD GPU (нужно на старых ядрах). Открывает CoreCtrl полный контроль над частотами.", "Видеокарта и графика", "управление питанием AMD разблокировано"),
+        "en": ("amdgpu.ppfeaturemask", "Unlocks hidden AMD GPU power-management features (needed on older kernels). Gives CoreCtrl full clock control.", "GPU & graphics", "AMD power management unlocked")},
+    "vrr": {
+        "ru": ("VRR/FreeSync", "Включает переменную частоту обновления (FreeSync) для AMD: картинка в играх без разрывов при плавающем FPS. Работает в X11 с драйвером amdgpu.", "Видеокарта и графика", "VRR/FreeSync включён"),
+        "en": ("VRR/FreeSync", "Enables variable refresh rate (FreeSync) on AMD: tear-free gaming at fluctuating FPS. Works in X11 with the amdgpu driver.", "GPU & graphics", "VRR/FreeSync enabled")},
+    "radv": {
+        "ru": ("RADV_PERFTEST=sam", "Включает в драйвере RADV оптимизацию SAM / Resizable BAR: процессор получает доступ ко всей видеопамяти сразу — небольшой прирост FPS в играх.", "Видеокарта и графика", "SAM/ReBAR оптимизация включена"),
+        "en": ("RADV_PERFTEST=sam", "Enables SAM / Resizable BAR optimization in the RADV driver: the CPU accesses all VRAM at once — a small FPS gain in games.", "GPU & graphics", "SAM/ReBAR optimization enabled")},
+    "mesa": {
+        "ru": ("MESA_SHADER_CACHE=4G", "Увеличивает кэш скомпилированных шейдеров до 4 ГБ. Игры и GL-приложения реже перекомпилируют шейдеры — меньше подтормаживаний в первые минуты игры.", "Видеокарта и графика", "кэш шейдеров увеличен до 4 ГБ"),
+        "en": ("MESA_SHADER_CACHE=4G", "Raises the compiled shader cache to 4 GB. Games and GL apps recompile shaders less often — fewer hitches in the first minutes of play.", "GPU & graphics", "shader cache raised to 4 GB")},
+    "pipewire": {
+        "ru": ("PipeWire (звук)", "Увеличивает буферы (кванты) звукового сервера PipeWire. Убирает треск, щелчки и прерывистый звук в наушниках и колонках.", "Звук", "буферы PipeWire увеличены"),
+        "en": ("PipeWire (sound)", "Increases PipeWire sound-server quanta. Removes crackling, pops and stuttering audio in headphones and speakers.", "Sound", "PipeWire quanta increased")},
+    "swap": {
+        "ru": ("Тюнинг swap", "Настраивает vm.swappiness — насколько охотно система сбрасывает память в swap. Для сжатого zram выгодно 150, для диска/SSD — 10: меньше лишних обращений к диску.", "Память и swap", "vm.swappiness настроен"),
+        "en": ("Swap tuning", "Sets vm.swappiness — how eagerly memory is pushed to swap. 150 suits compressed zram, 10 suits disk/SSD: fewer pointless disk accesses.", "Memory & swap", "vm.swappiness tuned")},
+    "sysctl": {
+        "ru": ("Тюнинг sysctl", "vfs_cache_pressure=50 — система дольше держит кэш каталогов в памяти (быстрее работа с файлами). numa_balancing=0 — отключает лишнюю миграцию памяти между ядрами (полезно играм).", "Ядро и загрузка", "sysctl-тюнинг применён"),
+        "en": ("sysctl tuning", "vfs_cache_pressure=50 — directory cache stays in RAM longer (faster file access). numa_balancing=0 — disables needless memory migration between cores (good for games).", "Kernel & boot", "sysctl tuning applied")},
+    "ntsync": {
+        "ru": ("ntsync (модуль ядра)", "Включает модуль ntsync — новый ускоритель синхронизации для Wine/Proton. Заметный прирост FPS в части игр. Требуется ядро 6.14+ или с патчем ntsync.", "Игры и совместимость", "модуль ntsync в автозагрузке"),
+        "en": ("ntsync (kernel module)", "Enables the ntsync module — a new synchronization accelerator for Wine/Proton. Noticeable FPS gain in some games. Needs kernel 6.14+ or an ntsync-patched one.", "Gaming & compatibility", "ntsync module autoloaded")},
+    "ntfs3": {
+        "ru": ("ntfs3 драйвер", "Включает быстрый встроенный драйвер ntfs3 для NTFS-дисков вместо медленного ntfs-3g. Linux Mint по умолчанию его блокирует — опция снимает блокировку.", "Диски и файловые системы", "драйвер ntfs3 разблокирован"),
+        "en": ("ntfs3 driver", "Enables the fast in-kernel ntfs3 driver for NTFS disks instead of slow ntfs-3g. Linux Mint blocks it by default — this option lifts the block.", "Drives & filesystems", "ntfs3 driver unblocked")},
+    "aliases": {
+        "ru": ("Команды в .bashrc", "Добавляет удобные команды терминала: upd, upgr, update_all (обновление всей системы), clean (очистка), space (место на диске), mem (очистка памяти) и другие.", "Удобство", "команды добавлены в .bashrc"),
+        "en": ("Commands in .bashrc", "Adds handy shell commands: upd, upgr, update_all (full system update), clean, space (disk free), mem (memory clean) and more.", "Convenience", "commands added to .bashrc")},
+    "autoupdate": {
+        "ru": ("Автообновления", "Создаёт systemd-таймер, который по выбранному расписанию сам обновляет APT-пакеты и Flatpak без вашего участия.", "Обновления", "таймер автообновлений активен"),
+        "en": ("Auto-updates", "Creates a systemd timer that updates APT packages and Flatpak on the chosen schedule without you.", "Updates", "auto-update timer active")},
+}
+
+SERVICES_META = {
+    "avahi-daemon.service": {"ru": "Сетевое обнаружение устройств (принтеры, ТВ, Chromecast). На домашнем ПК без сетевой печати почти не нужно.", "en": "Network device discovery (printers, TVs, Chromecast). Rarely needed on a home PC without network printing."},
+    "avahi-daemon.socket": {"ru": "Сокет-активатор Avahi: будит службу при обращении из сети. Отключается вместе со службой.", "en": "Avahi socket activator: wakes the service on network requests. Disabled together with the service."},
+    "cups-browsed.service": {"ru": "Автоматический поиск сетевых принтеров. Если у вас нет сетевого принтера — служба простаивает зря.", "en": "Automatic network printer discovery. Useless if you have no network printer."},
+    "ModemManager.service": {"ru": "Управление USB-модемами (3G/4G). Без модема не нужен; иногда мешает serial-устройствам и Arduino.", "en": "USB modem (3G/4G) management. Useless without a modem; can interfere with serial devices and Arduino."},
+    "openvpn.service": {"ru": "Встроенный VPN-сервер. Если не поднимаете собственный VPN — не нужен.", "en": "Built-in VPN server. Useless unless you run your own VPN."},
+    "lvm2-monitor.service": {"ru": "Мониторинг LVM-томов. При обычной установке без LVM не нужен.", "en": "LVM volume monitoring. Useless on a plain install without LVM."},
+    "switcheroo-control.service": {"ru": "Переключение встроенной и дискретной графики на ноутбуках. На настольном ПК не нужен.", "en": "Switching integrated/discrete graphics on laptops. Useless on a desktop."},
+    "touchegg.service": {"ru": "Распознавание мультитач-жестов тачпада. На настольном ПК без тачскрина не нужен.", "en": "Multitouch gesture recognition. Useless on a desktop without a touchscreen."},
+    "zfs-zed.service": {"ru": "Мониторинг ZFS-пулов (дисковые массивы ZFS). Без ZFS не нужен.", "en": "ZFS pool monitoring. Useless without ZFS."},
+    "kerneloops.service": {"ru": "Отправка разработчикам отчётов о сбоях ядра. На домашнем ПК не нужна.", "en": "Sends kernel crash reports to developers. Unneeded on a home PC."},
+}
+SERVICES_ORDER = list(SERVICES_META.keys())
+
+STR = {
+    "ru": {
+        "tab_tune": " Тюнинг ", "tab_serv": " Службы ", "tab_stat": " Статус ",
+        "btn_apply": "Применить", "btn_selall": "Выбрать все", "btn_reset": "Сбросить",
+        "btn_export": "Экспорт", "btn_help": "Помощь",
+        "theme_dark": "Тёмная тема", "theme_light": "Светлая тема",
+        "lbl_dry": "Сухой прогон", "lbl_terminal": "Терминальный вывод:",
+        "lbl_group": "Группа:", "lbl_value": "Значение:", "lbl_schedule": "Расписание:",
+        "status_ready": "Готово", "status_running": "Выполнение...",
+        "status_done": "Готово", "status_error": "Ошибка",
+        "applied_yes": "✓ применено", "applied_no": "не применено",
+        "svc_refresh": "Обновить", "svc_rec": "Отключить лишние службы",
+        "svc_on_sel": "Включить выбранные", "svc_off_sel": "Отключить выбранные",
+        "svc_col_name": "Служба", "svc_col_en": "Состояние", "svc_col_act": "Запуск",
+        "svc_col_desc": "Описание и зачем отключать",
+        "svc_on": "[ON] работает", "svc_onoff": "[ON/off] включена, не запущена",
+        "svc_off": "[OFF] отключена", "svc_masked": "[MASKED] заблокирована",
+        "svc_na": "[N/A] нет в системе", "run_yes": "работает", "run_no": "остановлена",
+        "svc_count": "Служб: {n}",
+        "stat_refresh": "Обновить статус",
+        "st_hw": "=== ОБОРУДОВАНИЕ ===", "st_tweaks": "=== НАСТРОЙКИ (применены ли) ===",
+        "st_services": "=== СЛУЖБЫ ===", "st_kernel": "=== ЯДРО (текущие значения) ===",
+        "st_timer": "Таймер автообновлений",
+        "gpu_note": "видеокарта", "raid_note": "RAID-массив", "swap_note": "подкачка",
+        "ntsync_note": "ускоритель Wine/Proton", "cinn_note": "оболочка Cinnamon",
+        "user_note": "пользователь", "home_note": "домашняя папка",
+        "yes": "ПРИМЕНЕНО", "no": "НЕ ПРИМЕНЕНО",
+        "rec_title": "Отключение лишних служб",
+        "rec_text": "Будут отключены службы, которые почти не нужны на домашнем ПК:\n",
+        "msg_run_title": "Выполняется", "msg_run_text": "Скрипт уже запущен. Дождитесь завершения.",
+        "msg_noopt_title": "Нет выбранных опций", "msg_noopt_text": "Отметьте хотя бы одну опцию.",
+        "msg_sel_title": "Службы", "msg_sel_text": "Сначала выберите строки в таблице (Ctrl/Shift + клик).",
+        "help_title": "Справка",
+        "help": """System Tuneup GUI v0.2
+
+Графическая оболочка для безопасного тюнинга Linux Mint / Ubuntu / Debian.
+
+КАК ПОЛЬЗОВАТЬСЯ
+1. Вкладка «Тюнинг»: отметьте нужные опции. Зелёная пометка «✓ применено»
+   означает, что настройка уже активна в системе (даже если вы делали её вручную).
+2. При необходимости укажите параметры: группа CoreCtrl, значение swappiness,
+   расписание автообновлений.
+3. Нажмите «Применить» и введите пароль sudo при запросе.
+
+СУХОЙ ПРОГОН
+Галочка «Сухой прогон» сверху: команды только показываются в логе,
+изменения в систему не вносятся.
+
+ВКЛАДКА «СЛУЖБЫ»
+Показывает состояние служб, которые обычно не нужны на домашнем ПК.
+Кнопка «Отключить лишние службы» перед действием покажет их список
+с пояснениями и попросит подтверждение.
+Строки выделяются мышью с Ctrl/Shift; кнопки включают/отключают выделенное.
+«Выбрать все» и «Сбросить» внизу на этой вкладке выделяют/снимают выделение строк.
+
+ВКЛАДКА «СТАТУС»
+Сводка по системе. Зелёным — настройка применена, красным — нет,
+рядом краткое пояснение.
+
+БЭКАПЫ
+Перед изменением любого файла копия сохраняется в ~/system-tuneup-backups
+(хранится одна последняя копия каждого файла).
+""",
     },
-    "dark": {
-        "bg": "#1e1e1e",
-        "fg": "#d4d4d4",
-        "green": "#4ec9b0",
-        "yellow": "#d7ba7d",
-        "red": "#f44747",
-        "blue": "#569cd6",
-        "orange": "#ce9178",
-        "gray": "#808080",
-        "terminal_bg": "#0c0c0c",
-        "terminal_fg": "#d4d4d4",
-        "entry_bg": "#333333",
-        "entry_fg": "#d4d4d4",
-        "select_color": "#333333",
-        "button_bg": "#444444",
-        "button_fg": "#d4d4d4",
-        "accent_bg": "#4ec9b0",
-        "accent_fg": "#1e1e1e",
-        "tree_bg": "#252525",
-        "tree_fg": "#d4d4d4",
-        "tree_heading_bg": "#333333",
-        "tree_heading_fg": "#ffffff",
-        "notebook_tab_bg": "#333333",
-        "notebook_tab_selected": "#555555",
-        "scrollbar_trough": "#2d2d2d",
-        "scrollbar_slider": "#555555",
+    "en": {
+        "tab_tune": " Tuning ", "tab_serv": " Services ", "tab_stat": " Status ",
+        "btn_apply": "Apply", "btn_selall": "Select all", "btn_reset": "Reset",
+        "btn_export": "Export", "btn_help": "Help",
+        "theme_dark": "Dark theme", "theme_light": "Light theme",
+        "lbl_dry": "Dry run", "lbl_terminal": "Terminal output:",
+        "lbl_group": "Group:", "lbl_value": "Value:", "lbl_schedule": "Schedule:",
+        "status_ready": "Ready", "status_running": "Running...",
+        "status_done": "Done", "status_error": "Error",
+        "applied_yes": "✓ applied", "applied_no": "not applied",
+        "svc_refresh": "Refresh", "svc_rec": "Disable unneeded services",
+        "svc_on_sel": "Enable selected", "svc_off_sel": "Disable selected",
+        "svc_col_name": "Service", "svc_col_en": "State", "svc_col_act": "Running",
+        "svc_col_desc": "Description & why disable",
+        "svc_on": "[ON] running", "svc_onoff": "[ON/off] enabled, not running",
+        "svc_off": "[OFF] disabled", "svc_masked": "[MASKED] blocked",
+        "svc_na": "[N/A] not installed", "run_yes": "running", "run_no": "stopped",
+        "svc_count": "Services: {n}",
+        "stat_refresh": "Refresh status",
+        "st_hw": "=== HARDWARE ===", "st_tweaks": "=== TWEAKS (applied or not) ===",
+        "st_services": "=== SERVICES ===", "st_kernel": "=== KERNEL (live values) ===",
+        "st_timer": "Auto-update timer",
+        "gpu_note": "GPU", "raid_note": "RAID array", "swap_note": "swap",
+        "ntsync_note": "Wine/Proton accelerator", "cinn_note": "Cinnamon shell",
+        "user_note": "user", "home_note": "home folder",
+        "yes": "APPLIED", "no": "NOT APPLIED",
+        "rec_title": "Disabling unneeded services",
+        "rec_text": "These services, rarely needed on a home PC, will be disabled:\n",
+        "msg_run_title": "Running", "msg_run_text": "A job is already running. Wait for it to finish.",
+        "msg_noopt_title": "No options selected", "msg_noopt_text": "Tick at least one option.",
+        "msg_sel_title": "Services", "msg_sel_text": "Select table rows first (Ctrl/Shift + click).",
+        "help_title": "Help",
+        "help": """System Tuneup GUI v0.2
+
+A graphical shell for safe tuning of Linux Mint / Ubuntu / Debian.
+
+HOW TO USE
+1. "Tuning" tab: tick the options you want. A green "✓ applied" mark means
+   the setting is already active (even if you configured it manually).
+2. Fill in parameters if needed: CoreCtrl group, swappiness, update schedule.
+3. Press "Apply" and enter your sudo password when asked.
+
+DRY RUN
+Tick "Dry run" at the top: commands are only printed to the log,
+no changes are made.
+
+SERVICES TAB
+Shows services usually unneeded on a home PC.
+"Disable unneeded services" shows the list with explanations
+and asks for confirmation first.
+Select rows with Ctrl/Shift + click; the buttons enable/disable the selection.
+"Select all"/"Reset" at the bottom select/clear table rows on this tab.
+
+STATUS TAB
+System summary. Green — tweak applied, red — not applied,
+with a short explanation next to each line.
+
+BACKUPS
+Before modifying any file a copy is saved to ~/system-tuneup-backups
+(one latest copy per file is kept).
+""",
     },
 }
 
-
-# ─── РЕКОМЕНДУЕМЫЕ СЛУЖБЫ ────────────────────────────────────────────────────
-
-SERVICES = [
-    {"name": "avahi-daemon.service", "desc": "Сетевое обнаружение устройств"},
-    {"name": "avahi-daemon.socket", "desc": "Сокет-активатор Avahi"},
-    {"name": "cups-browsed.service", "desc": "Поиск сетевых принтеров"},
-    {"name": "ModemManager.service", "desc": "Управление USB-модемами"},
-    {"name": "openvpn.service", "desc": "Встроенный VPN-сервер"},
-    {"name": "lvm2-monitor.service", "desc": "Мониторинг LVM-томов"},
-    {"name": "switcheroo-control.service", "desc": "Переключение видеокарт"},
-    {"name": "touchegg.service", "desc": "Жесты тачпада"},
-    {"name": "zfs-zed.service", "desc": "Мониторинг ZFS"},
-    {"name": "kerneloops.service", "desc": "Отчёты об ошибках ядра"},
-]
-
-
-# ─── УТИЛИТЫ ─────────────────────────────────────────────────────────────────
 
 def decode_bytes(value):
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
 
-
-# ─── SUDO MANAGER ────────────────────────────────────────────────────────────
 
 class SudoManager:
     def __init__(self):
@@ -122,9 +244,7 @@ class SudoManager:
 
     def _sudo_cached(self):
         try:
-            res = subprocess.run(
-                ["sudo", "-n", "true"], capture_output=True, timeout=3
-            )
+            res = subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=3)
             return res.returncode == 0
         except Exception:
             return False
@@ -134,45 +254,28 @@ class SudoManager:
             self.authenticated = True
             self._start_keepalive()
             return True
-
         for attempt in range(1, 4):
-            password = None
+            password = simpledialog.askstring(
+                "sudo", "Password (attempt %d/3):" % attempt,
+                parent=self.parent, show="*",
+            )
+            if password is None:
+                return False
+            if not password:
+                messagebox.showwarning("sudo", "Empty password.", parent=self.parent)
+                continue
             try:
-                password = simpledialog.askstring(
-                    "Авторизация",
-                    f"Введите пароль sudo (попытка {attempt} из 3):",
-                    parent=self.parent,
-                    show="*",
-                )
-                if password is None:
-                    return False
-                if not password:
-                    messagebox.showwarning(
-                        "Пароль", "Пароль не может быть пустым.",
-                        parent=self.parent,
-                    )
-                    continue
-                res = subprocess.run(
-                    ["sudo", "-S", "-v"],
-                    input=(password + "\n").encode(),
-                    capture_output=True, timeout=15,
-                )
+                res = subprocess.run(["sudo", "-S", "-v"],
+                                     input=(password + "\n").encode(),
+                                     capture_output=True, timeout=15)
                 if res.returncode == 0:
                     self.authenticated = True
                     self._start_keepalive()
                     return True
-                messagebox.showerror(
-                    "Ошибка sudo",
-                    "Неверный пароль или нет прав sudo.",
-                    parent=self.parent,
-                )
+                messagebox.showerror("sudo", "Wrong password or no sudo rights.",
+                                     parent=self.parent)
             except Exception as e:
-                messagebox.showerror(
-                    "Ошибка sudo", f"Не удалось выполнить sudo:\n{e}",
-                    parent=self.parent,
-                )
-            finally:
-                password = None
+                messagebox.showerror("sudo", "sudo failed:\n%s" % e, parent=self.parent)
         return False
 
     def ensure(self):
@@ -184,13 +287,9 @@ class SudoManager:
 
     def run(self, args, input=None):
         if not self._sudo_cached():
-            raise PermissionError(
-                "Сессия sudo истекла. Нажмите Применить заново."
-            )
-        return subprocess.run(
-            ["sudo", "-n"] + list(args),
-            input=input, capture_output=True, timeout=180,
-        )
+            raise PermissionError("Sudo session expired. Press Apply again.")
+        return subprocess.run(["sudo", "-n"] + list(args), input=input,
+                              capture_output=True, timeout=180)
 
     def _start_keepalive(self):
         if self._keepalive_running:
@@ -198,26 +297,18 @@ class SudoManager:
         self._keepalive_running = True
 
         def loop():
-            try:
-                while True:
-                    time.sleep(50)
-                    try:
-                        if not self._sudo_cached():
-                            break
-                        subprocess.run(
-                            ["sudo", "-n", "-v"],
-                            capture_output=True, timeout=5,
-                        )
-                    except Exception:
-                        pass
-            finally:
-                self._keepalive_running = False
-                self.authenticated = False
-
+            while True:
+                time.sleep(50)
+                try:
+                    if not self._sudo_cached():
+                        break
+                    subprocess.run(["sudo", "-n", "-v"], capture_output=True, timeout=5)
+                except Exception:
+                    pass
+            self._keepalive_running = False
+            self.authenticated = False
         threading.Thread(target=loop, daemon=True).start()
 
-
-# ─── СОСТОЯНИЕ СИСТЕМЫ ───────────────────────────────────────────────────────
 
 class SystemState:
     def __init__(self):
@@ -227,8 +318,6 @@ class SystemState:
         self.swap_type = ""
         self.ntsync = False
         self.cinnamon = False
-        self.has_flatpak = False
-        self.has_spice_updater = False
         self.user_name = "root"
         self.user_home = "/root"
 
@@ -241,13 +330,10 @@ class SystemState:
             self.user_home = pwd.getpwnam(self.user_name).pw_dir
         except Exception:
             self.user_home = os.path.expanduser("~")
-
         try:
-            res = subprocess.run(
-                ["lspci"], capture_output=True, text=True, timeout=5
-            )
+            res = subprocess.run(["lspci"], capture_output=True, text=True, timeout=5)
             for line in res.stdout.lower().splitlines():
-                if "vga" in line or "3d controller" in line:
+                if "vga" in line or "3d controller" in line or "display controller" in line:
                     if "amd" in line or "radeon" in line:
                         self.gpu = "AMD"; break
                     elif "nvidia" in line:
@@ -256,7 +342,6 @@ class SystemState:
                         self.gpu = "Intel"; break
         except Exception:
             pass
-
         try:
             if os.path.isfile("/proc/mdstat"):
                 with open("/proc/mdstat", "r", encoding="utf-8", errors="replace") as f:
@@ -264,22 +349,16 @@ class SystemState:
                         self.has_raid = True
         except Exception:
             pass
-
         try:
-            res = subprocess.run(
-                ["lsblk", "-n", "-o", "TYPE"],
-                capture_output=True, text=True, timeout=5,
-            )
+            res = subprocess.run(["lsblk", "-n", "-o", "TYPE"], capture_output=True,
+                                 text=True, timeout=5)
             if "raid" in res.stdout:
                 self.has_raid = True
         except Exception:
             pass
-
         try:
-            res = subprocess.run(
-                ["swapon", "--show=TYPE", "--noheadings"],
-                capture_output=True, text=True, timeout=5,
-            )
+            res = subprocess.run(["swapon", "--show=TYPE", "--noheadings"],
+                                 capture_output=True, text=True, timeout=5)
             out = res.stdout.strip()
             if out:
                 self.has_swap = True
@@ -291,28 +370,17 @@ class SystemState:
                     self.swap_type = "file"
         except Exception:
             pass
-
         self.ntsync = os.path.exists("/dev/ntsync")
-
         desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
         session = os.environ.get("DESKTOP_SESSION", "").lower()
         if "cinnamon" in desktop or session == "cinnamon":
             self.cinnamon = True
         else:
             try:
-                res = subprocess.run(
-                    ["pgrep", "-x", "cinnamon"],
-                    capture_output=True, timeout=3,
-                )
+                res = subprocess.run(["pgrep", "-x", "cinnamon"], capture_output=True, timeout=3)
                 self.cinnamon = res.returncode == 0
             except Exception:
                 pass
-
-        self.has_flatpak = bool(shutil.which("flatpak"))
-        self.has_spice_updater = bool(
-            shutil.which("cinnamon-spice-updater")
-            or os.path.exists("/usr/bin/cinnamon-spice-updater")
-        )
 
     def _get_real_user(self):
         sudo_user = os.environ.get("SUDO_USER")
@@ -341,8 +409,6 @@ class SystemState:
         return "root"
 
 
-# ─── ОПЕРАЦИИ СИСТЕМЫ ────────────────────────────────────────────────────────
-
 class SystemOps:
     def __init__(self, sudo, state, log, dry_run):
         self.sudo = sudo
@@ -350,9 +416,8 @@ class SystemOps:
         self.log = log
         self.dry_run = dry_run
         self.grub_changed = False
-        self.backup_dir = os.path.join(
-            state.user_home, ".local", "share", "system-tuneup", "backups"
-        )
+        # Бэкапы: одна последняя копия каждого файла, в домашней папке
+        self.backup_dir = os.path.join(state.user_home, "system-tuneup-backups")
 
     def backup_file(self, path):
         if self.dry_run:
@@ -360,13 +425,12 @@ class SystemOps:
         try:
             if not self.path_exists(path):
                 return
-            os.makedirs(self.backup_dir, exist_ok=True)
-            safe_name = path.lstrip("/").replace("/", "_")
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            backup_path = os.path.join(self.backup_dir, f"{safe_name}.{ts}.bak")
             content = self.read_file(path)
             if content is None:
                 return
+            os.makedirs(self.backup_dir, exist_ok=True)
+            safe_name = path.lstrip("/").replace("/", "_")
+            backup_path = os.path.join(self.backup_dir, safe_name + ".bak")
             with open(backup_path, "w", encoding="utf-8") as f:
                 f.write(content)
             if self.state.user_name and self.state.user_name != "root":
@@ -375,19 +439,9 @@ class SystemOps:
                     os.chown(backup_path, pw.pw_uid, pw.pw_gid)
                 except Exception:
                     pass
-            backups = sorted(
-                [f for f in os.listdir(self.backup_dir)
-                 if f.startswith(safe_name) and f.endswith(".bak")],
-                reverse=True,
-            )
-            for old in backups[5:]:
-                try:
-                    os.remove(os.path.join(self.backup_dir, old))
-                except Exception:
-                    pass
-            self.log(f"[BACKUP] {os.path.basename(backup_path)}", "info")
+            self.log("[BACKUP] %s" % os.path.basename(backup_path), "info")
         except Exception as e:
-            self.log(f"[WARN] Бэкап {path}: {e}", "warning")
+            self.log("[WARN] Бэкап %s: %s" % (path, e), "warning")
 
     def sudo_run(self, args, input=None, ok_msg=None, err_msg=None, ignore_error=False):
         if self.dry_run:
@@ -399,32 +453,27 @@ class SystemOps:
             self.log(str(e), "error")
             return False
         except Exception as e:
-            self.log(f"Ошибка команды: {e}", "error")
+            self.log("Ошибка команды: %s" % e, "error")
             return False
         if res.returncode == 0:
             if ok_msg:
                 self.log(ok_msg, "success")
             return True
-        err = decode_bytes(res.stderr).strip()
         if not ignore_error:
-            msg = err_msg or f"Ошибка: {' '.join(args)}"
+            err = decode_bytes(res.stderr).strip()
+            msg = err_msg or "Команда завершилась с ошибкой: " + " ".join(args)
             if err:
-                self.log(f"[ERR] {msg}\n   {err}", "error")
+                self.log("[ERR] %s\n   %s" % (msg, err), "error")
             else:
-                self.log(f"[ERR] {msg}", "error")
-        else:
-            if err and "already" not in err.lower() and "not found" not in err.lower():
-                self.log(f"[WARN] {' '.join(args)}: {err[:120]}", "warning")
+                self.log("[ERR] %s" % msg, "error")
         return False
 
     def path_exists(self, path):
         if os.path.exists(path):
             return True
         try:
-            res = subprocess.run(
-                ["sudo", "-n", "test", "-e", path],
-                capture_output=True, timeout=3,
-            )
+            res = subprocess.run(["sudo", "-n", "test", "-e", path],
+                                 capture_output=True, timeout=3)
             return res.returncode == 0
         except Exception:
             return False
@@ -433,10 +482,7 @@ class SystemOps:
         if not self.path_exists(path):
             return ""
         try:
-            res = subprocess.run(
-                ["sudo", "-n", "cat", path],
-                capture_output=True, timeout=5,
-            )
+            res = subprocess.run(["sudo", "-n", "cat", path], capture_output=True, timeout=5)
             if res.returncode == 0:
                 return decode_bytes(res.stdout)
         except Exception:
@@ -449,7 +495,7 @@ class SystemOps:
 
     def write_file(self, path, content, chmod="644", owner=None, mkdir=False, backup=True):
         if self.dry_run:
-            self.log(f"[DRY RUN] Запись: {path}", "warning")
+            self.log("[DRY RUN] Запись файла: %s" % path, "warning")
             return True
         if mkdir:
             d = os.path.dirname(path)
@@ -463,10 +509,10 @@ class SystemOps:
             self.log(str(e), "error")
             return False
         except Exception as e:
-            self.log(f"Ошибка записи {path}: {e}", "error")
+            self.log("Ошибка записи %s: %s" % (path, e), "error")
             return False
         if res.returncode != 0:
-            self.log(f"Не удалось записать {path}", "error")
+            self.log("Не удалось записать %s" % path, "error")
             return False
         if chmod:
             self.sudo_run(["chmod", chmod, path], ignore_error=True)
@@ -476,11 +522,11 @@ class SystemOps:
 
     def ensure_line(self, path, line, pattern, chmod="644", owner=None, mkdir=False):
         if self.dry_run:
-            self.log(f"[DRY RUN] {path}: {line}", "warning")
+            self.log("[DRY RUN] %s: %s" % (path, line), "warning")
             return True
         content = self.read_file(path)
         if content is None:
-            self.log(f"Не удалось прочитать {path}", "error")
+            self.log("Не удалось прочитать %s" % path, "error")
             return False
         lines = content.splitlines()
         new_lines = []
@@ -505,20 +551,17 @@ class SystemOps:
             new_lines.append(line)
             changed = True
         if not changed:
-            self.log(f"Уже настроено: {path}", "info")
+            self.log("Уже настроено: %s" % path, "info")
             return True
         self.backup_file(path)
-        return self.write_file(
-            path, "\n".join(new_lines) + "\n",
-            chmod=chmod, owner=owner, mkdir=mkdir, backup=False,
-        )
+        return self.write_file(path, "\n".join(new_lines) + "\n",
+                               chmod=chmod, owner=owner, mkdir=mkdir, backup=False)
 
     def unit_exists(self, name):
         try:
-            res = subprocess.run(
-                ["systemctl", "list-unit-files", name, "--no-legend", "--no-pager"],
-                capture_output=True, timeout=5,
-            )
+            res = subprocess.run(["systemctl", "list-unit-files", name,
+                                  "--no-legend", "--no-pager"],
+                                 capture_output=True, timeout=5)
             for line in decode_bytes(res.stdout).splitlines():
                 parts = line.split()
                 if parts and parts[0] == name:
@@ -531,41 +574,38 @@ class SystemOps:
         if not self.unit_exists(name):
             return "not-found"
         try:
-            res = subprocess.run(
-                ["systemctl", "is-enabled", name],
-                capture_output=True, timeout=5,
-            )
+            res = subprocess.run(["systemctl", "is-enabled", name],
+                                 capture_output=True, timeout=5)
             return decode_bytes(res.stdout).strip() or "unknown"
         except Exception:
             return "unknown"
 
     def service_active(self, name):
         try:
-            res = subprocess.run(
-                ["systemctl", "is-active", name],
-                capture_output=True, timeout=5,
-            )
+            res = subprocess.run(["systemctl", "is-active", name],
+                                 capture_output=True, timeout=5)
             return decode_bytes(res.stdout).strip() or "unknown"
         except Exception:
             return "unknown"
 
     def _has_cinnamon_spices(self):
-        return self.state.cinnamon and self.state.has_spice_updater
-
-    def _has_flatpak(self):
-        return self.state.has_flatpak
+        if not self.state.cinnamon:
+            return False
+        if shutil.which("cinnamon-spice-updater"):
+            return True
+        return os.path.exists("/usr/bin/cinnamon-spice-updater")
 
     def add_grub_params(self, params):
         if self.dry_run:
-            self.log("[DRY RUN] GRUB: " + " ".join(params), "warning")
+            self.log("[DRY RUN] GRUB добавить: " + " ".join(params), "warning")
             return True
         path = "/etc/default/grub"
         if not self.path_exists(path):
-            self.log(f"{path} не найден", "warning")
+            self.log("%s не найден" % path, "warning")
             return False
         content = self.read_file(path)
         if content is None:
-            self.log(f"Не удалось прочитать {path}", "error")
+            self.log("Не удалось прочитать %s" % path, "error")
             return False
         lines = content.splitlines()
         new_lines = []
@@ -588,14 +628,14 @@ class SystemOps:
                     if param not in parts:
                         parts.append(param)
                 if parts != orig_parts:
-                    new_lines.append(f'GRUB_CMDLINE_LINUX_DEFAULT="{" ".join(parts)}"')
+                    new_lines.append('GRUB_CMDLINE_LINUX_DEFAULT="' + " ".join(parts) + '"')
                     changed = True
                 else:
                     new_lines.append(line)
             else:
                 new_lines.append(line)
         if not found:
-            new_lines.append(f'GRUB_CMDLINE_LINUX_DEFAULT="{" ".join(params)}"')
+            new_lines.append('GRUB_CMDLINE_LINUX_DEFAULT="' + " ".join(params) + '"')
             changed = True
         if not changed:
             self.log("GRUB уже содержит нужные параметры", "info")
@@ -613,42 +653,33 @@ class SystemOps:
         if self.dry_run:
             self.log("[DRY RUN] update-grub", "warning")
             return
-        cmd = None
         if shutil.which("update-grub"):
-            cmd = ["update-grub"]
-        elif os.path.exists("/usr/sbin/update-grub"):
-            cmd = ["/usr/sbin/update-grub"]
+            self.sudo_run(["update-grub"], ok_msg="GRUB обновлён", err_msg="Ошибка update-grub")
         elif shutil.which("grub-mkconfig"):
-            cmd = ["grub-mkconfig", "-o", "/boot/grub/grub.cfg"]
-        elif os.path.exists("/usr/sbin/grub-mkconfig"):
-            cmd = ["/usr/sbin/grub-mkconfig", "-o", "/boot/grub/grub.cfg"]
-        if cmd:
-            self.sudo_run(cmd, ok_msg="GRUB обновлён", err_msg="Ошибка GRUB")
+            self.sudo_run(["grub-mkconfig", "-o", "/boot/grub/grub.cfg"],
+                          ok_msg="GRUB обновлён", err_msg="Ошибка grub-mkconfig")
         else:
-            self.log("update-grub / grub-mkconfig не найдены", "warning")
+            self.log("Не найдена команда update-grub или grub-mkconfig", "warning")
         self.grub_changed = False
-
-    # --- apply_* методы (сокращённые для компактности, логика идентична v2.2) ---
 
     def apply_rsyslog(self, params=None):
         if self.dry_run:
-            self.log("[DRY RUN] disable --now + mask rsyslog", "warning"); return True
-        enabled = self.service_enabled("rsyslog.service")
-        if enabled in ("disabled", "masked", "not-found"):
+            self.log("[DRY RUN] disable + mask rsyslog", "warning"); return True
+        if self.service_enabled("rsyslog.service") in ("disabled", "masked", "not-found"):
             self.log("rsyslog уже отключён", "info"); return True
         ok1 = self.sudo_run(["systemctl", "disable", "--now", "rsyslog"], ignore_error=True)
         ok2 = self.sudo_run(["systemctl", "mask", "rsyslog"], ignore_error=True)
         if ok1 or ok2:
-            self.log("[OK] rsyslog отключён", "success"); return True
-        self.log("[ERR] Не удалось отключить rsyslog", "error"); return False
+            self.log("✓ rsyslog отключён", "success"); return True
+        self.log("Не удалось отключить rsyslog", "error"); return False
 
     def apply_journald(self, params=None):
         if self.dry_run:
-            self.log("[DRY RUN] journald -> volatile", "warning"); return True
+            self.log("[DRY RUN] journald → volatile, 50M", "warning"); return True
         path = "/etc/systemd/journald.conf"
         content = self.read_file(path)
         if content is None:
-            self.log(f"Не удалось прочитать {path}", "error"); return False
+            self.log("Не удалось прочитать %s" % path, "error"); return False
         if (re.search(r"^\s*Storage\s*=\s*volatile\s*$", content, re.M)
                 and re.search(r"^\s*RuntimeMaxUse\s*=\s*50M\s*$", content, re.M)):
             self.log("journald уже настроен", "info"); return True
@@ -664,42 +695,42 @@ class SystemOps:
         if not self.write_file(path, "\n".join(new_lines) + "\n", backup=False):
             return False
         self.sudo_run(["systemctl", "restart", "systemd-journald"], ignore_error=True)
-        self.sudo_run(["journalctl", "--vacuum-size=200M", "--vacuum-time=1months"], ignore_error=True)
-        self.log("[OK] journald -> volatile (50M)", "success"); return True
+        self.sudo_run(["journalctl", "--vacuum-size=200M", "--vacuum-time=1months"],
+                      ignore_error=True)
+        self.log("✓ journald → volatile (50M)", "success"); return True
 
     def apply_audit(self, params=None):
         return self.add_grub_params(["audit=0"])
 
     def apply_raid(self, params=None):
         if self.state.has_raid:
-            self.log("RAID обнаружен, пропуск", "warning"); return True
+            self.log("Обнаружен RAID, пропуск raid=noautodetect", "warning"); return True
         return self.add_grub_params(["raid=noautodetect"])
 
     def apply_corectrl(self, params=None):
         params = params or {}
-        group = params.get("corectrl_group", "sudo").strip() or "sudo"
+        group = params.get("corectrl_group", "").strip() or self.state.user_name
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", group):
-            self.log(f"Некорректная группа: {group}", "error"); return False
+            self.log("Некорректное имя группы: %s" % group, "error"); return False
         if self.dry_run:
-            self.log(f"[DRY RUN] CoreCtrl для {group}", "warning"); return True
+            self.log("[DRY RUN] CoreCtrl polkit rule для группы %s" % group, "warning"); return True
         try:
             grp.getgrnam(group)
         except KeyError:
-            self.log(f"Группа не найдена: {group}", "error"); return False
+            self.log("Группа не найдена: %s" % group, "error"); return False
+        content = (
+            "polkit.addRule(function(action, subject) {\n"
+            '    if ((action.id == "org.corectrl.helper.init" ||\n'
+            '         action.id == "org.corectrl.helperkiller.init") &&\n'
+            "        subject.local == true && subject.active == true &&\n"
+            '        subject.isInGroup("' + group + '")) {\n'
+            "        return polkit.Result.YES;\n"
+            "    }\n"
+            "});\n"
+        )
         path = "/etc/polkit-1/rules.d/90-corectrl.rules"
-        if self.path_exists(path):
-            self.log(f"[WARN] {path} будет перезаписан", "warning")
-        content = f"""polkit.addRule(function(action, subject) {{
-    if ((action.id == "org.corectrl.helper.init" ||
-         action.id == "org.corectrl.helperkiller.init") &&
-        subject.local == true && subject.active == true &&
-        subject.isInGroup("{group}")) {{
-        return polkit.Result.YES;
-    }}
-}});
-"""
         if self.write_file(path, content, chmod="644", mkdir=True):
-            self.log(f"[OK] CoreCtrl для {group}", "success"); return True
+            self.log("✓ CoreCtrl настроен для группы %s" % group, "success"); return True
         return False
 
     def apply_ppfeaturemask(self, params=None):
@@ -707,36 +738,33 @@ class SystemOps:
 
     def apply_vrr(self, params=None):
         if self.state.gpu not in ("AMD", "Unknown"):
-            self.log("VRR только для AMD", "warning"); return True
+            self.log("VRR доступен только для AMD GPU", "warning"); return True
         if self.dry_run:
-            self.log("[DRY RUN] VRR/FreeSync", "warning"); return True
+            self.log("[DRY RUN] VRR/FreeSync конфиг", "warning"); return True
+        content = ('Section "Device"\n    Identifier "AMD"\n    Driver "amdgpu"\n'
+                   '    Option "VariableRefresh" "true"\nEndSection\n')
         path = "/etc/X11/xorg.conf.d/20-amdgpu.conf"
-        if self.path_exists(path):
-            self.log(f"[WARN] {path} будет перезаписан", "warning")
-        content = 'Section "Device"\n    Identifier "AMD"\n    Driver "amdgpu"\n    Option "VariableRefresh" "true"\nEndSection\n'
         if self.write_file(path, content, chmod="644", mkdir=True):
-            self.log("[OK] VRR/FreeSync включён", "success"); return True
+            self.log("✓ VRR/FreeSync включён", "success"); return True
         return False
 
     def apply_pipewire(self, params=None):
         d = os.path.join(self.state.user_home, ".config", "pipewire", "pipewire.conf.d")
         path = os.path.join(d, "10-sound.conf")
         if self.dry_run:
-            self.log(f"[DRY RUN] PipeWire: {path}", "warning"); return True
-        if self.path_exists(path):
-            self.log(f"[WARN] {path} будет перезаписан", "warning")
-        content = "context.properties = {\n    default.clock.min-quantum = 512\n    default.clock.quantum = 4096\n    default.clock.max-quantum = 8192\n}\n"
+            self.log("[DRY RUN] PipeWire конфиг: %s" % path, "warning"); return True
+        content = ("context.properties = {\n    default.clock.min-quantum = 512\n"
+                   "    default.clock.quantum = 4096\n    default.clock.max-quantum = 8192\n}\n")
         if not self.sudo_run(["mkdir", "-p", d], ignore_error=True):
             return False
         if not self.write_file(path, content, chmod="644"):
             return False
         if self.state.user_name and self.state.user_name != "root":
-            self.sudo_run(
-                ["chown", "-R", f"{self.state.user_name}:{self.state.user_name}",
-                 os.path.join(self.state.user_home, ".config", "pipewire")],
-                ignore_error=True,
-            )
-        self.log("[OK] PipeWire настроен", "success"); return True
+            self.sudo_run(["chown", "-R",
+                           "%s:%s" % (self.state.user_name, self.state.user_name),
+                           os.path.join(self.state.user_home, ".config", "pipewire")],
+                          ignore_error=True)
+        self.log("✓ PipeWire настроен", "success"); return True
 
     def apply_mesa(self, params=None):
         return self.ensure_line("/etc/environment", "MESA_SHADER_CACHE_MAX_SIZE=4G",
@@ -749,7 +777,7 @@ class SystemOps:
     def apply_swap(self, params=None):
         params = params or {}
         if not self.state.has_swap:
-            self.log("Swap не найден, пропуск", "warning"); return True
+            self.log("Swap не обнаружен, тюнинг swap пропущен", "warning"); return True
         val = params.get("swap_value", "").strip()
         if not val:
             val = "150" if self.state.swap_type == "zram" else "10"
@@ -758,21 +786,23 @@ class SystemOps:
             if int_val < 0 or int_val > 200:
                 raise ValueError
         except ValueError:
-            self.log(f"Некорректный swappiness: {val}", "error"); return False
+            self.log("Некорректное значение swappiness: %s (нужно 0-200)" % val, "error")
+            return False
         if self.dry_run:
-            self.log(f"[DRY RUN] swappiness={int_val}", "warning"); return True
+            self.log("[DRY RUN] vm.swappiness=%d" % int_val, "warning"); return True
         path = "/etc/sysctl.d/99-gaming-swap.conf"
         existing = self.read_file(path)
-        if existing and re.search(rf"^vm\.swappiness={int_val}$", existing, re.M):
-            self.log(f"swappiness уже {int_val}", "info"); return True
-        if not self.write_file(path, f"vm.swappiness={int_val}\n", chmod="644", mkdir=True):
+        pat = "^vm\\.swappiness=%d$" % int_val
+        if existing and re.search(pat, existing, re.M):
+            self.log("vm.swappiness уже установлен: %d" % int_val, "info"); return True
+        if not self.write_file(path, "vm.swappiness=%d\n" % int_val, chmod="644", mkdir=True):
             return False
         self.sudo_run(["sysctl", "-p", path], ignore_error=True)
-        self.log(f"[OK] swappiness={int_val}", "success"); return True
+        self.log("✓ vm.swappiness=%d" % int_val, "success"); return True
 
     def apply_sysctl(self, params=None):
         if self.dry_run:
-            self.log("[DRY RUN] sysctl tuning", "warning"); return True
+            self.log("[DRY RUN] vfs_cache_pressure=50, numa_balancing=0", "warning"); return True
         path = "/etc/sysctl.d/99-gaming-sysctl.conf"
         existing = self.read_file(path)
         if existing:
@@ -780,311 +810,329 @@ class SystemOps:
                     and re.search(r"^kernel\.numa_balancing=0$", existing, re.M)):
                 self.log("sysctl уже настроен", "info"); return True
         content = "vm.vfs_cache_pressure=50\nkernel.numa_balancing=0\n"
-        if not self.write_file(path, content, chmod="644", mkdir=True):
+        self.backup_file(path)
+        if not self.write_file(path, content, chmod="644", mkdir=True, backup=False):
             return False
         self.sudo_run(["sysctl", "-p", path], ignore_error=True)
-        self.log("[OK] sysctl настроен", "success"); return True
+        self.log("✓ vfs_cache_pressure=50, numa_balancing=0", "success"); return True
 
     def apply_ntsync(self, params=None):
         if self.dry_run:
-            self.log("[DRY RUN] ntsync", "warning"); return True
+            self.log("[DRY RUN] ntsync modules-load", "warning"); return True
         if self.state.ntsync:
-            self.log("ntsync уже доступен", "info"); return True
+            self.log("ntsync уже доступен в системе", "info"); return True
         path = "/etc/modules-load.d/ntsync.conf"
         if not self.write_file(path, "ntsync\n", chmod="644", mkdir=True):
             return False
         self.sudo_run(["modprobe", "ntsync"], ignore_error=True)
-        self.log("[OK] ntsync в автозагрузке", "success"); return True
+        self.log("✓ ntsync добавлен в автозагрузку", "success"); return True
 
     def apply_ntfs3(self, params=None):
         if self.dry_run:
-            self.log("[DRY RUN] ntfs3 unlock", "warning"); return True
+            self.log("[DRY RUN] ntfs3 blacklist unlock", "warning"); return True
         path = "/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"
         if not self.path_exists(path):
-            self.log("mint-blacklist-ntfs3.conf не найден", "warning"); return True
+            self.log("mint-blacklist-ntfs3.conf не найден (система не Mint?)", "warning")
+            return True
         content = self.read_file(path)
         if content is None:
-            self.log(f"Не удалось прочитать {path}", "error"); return False
+            self.log("Не удалось прочитать %s" % path, "error"); return False
         if re.search(r"^\s*#\s*blacklist\s+ntfs3\s*$", content, re.M):
             self.log("ntfs3 уже раскомментирован", "info"); return True
         if re.search(r"^\s*blacklist\s+ntfs3\s*$", content, re.M):
+            new_content = re.sub(r"^\s*blacklist\s+ntfs3\s*$", "# blacklist ntfs3",
+                                 content, flags=re.M)
             self.backup_file(path)
-            new_content = re.sub(r"^\s*blacklist\s+ntfs3\s*$", "# blacklist ntfs3", content, flags=re.M)
             if self.write_file(path, new_content, backup=False):
-                self.log("[OK] ntfs3 раскомментирован", "success"); return True
+                self.log("✓ ntfs3 раскомментирован", "success"); return True
             return False
-        self.log("blacklist ntfs3 не найден", "warning"); return True
+        self.log("blacklist ntfs3 не найден в файле", "warning"); return True
 
     def apply_aliases(self, params=None):
         bashrc = os.path.join(self.state.user_home, ".bashrc")
         if self.dry_run:
-            self.log(f"[DRY RUN] Алиасы в {bashrc}", "warning"); return True
+            self.log("[DRY RUN] Добавить команды в %s" % bashrc, "warning"); return True
         if not self.path_exists(bashrc):
-            self.log(f".bashrc не найден", "error"); return False
+            self.log(".bashrc не найден: %s" % bashrc, "error"); return False
         content = self.read_file(bashrc)
         if content is None:
             self.log("Не удалось прочитать .bashrc", "error"); return False
-
         start_marker = "# >>> system-tuneup commands >>>"
         end_marker = "# <<< system-tuneup commands <<<"
         lines = content.splitlines()
         without_block = []
         skip = False
         for line in lines:
-            if line.strip() == start_marker: skip = True; continue
-            if line.strip() == end_marker: skip = False; continue
-            if not skip: without_block.append(line)
-
-        names = ["upd","upgr","spices","update_all","inst","remove","search","info","clean","space","fix","mem","serv","update_time"]
-        alias_rx = re.compile(r"^\s*alias\s+(" + "|".join(names) + r")=")
-        func_rx = re.compile(r"^\s*(" + "|".join(names) + r")\s*\(\)\s*\{")
+            if line.strip() == start_marker:
+                skip = True; continue
+            if line.strip() == end_marker:
+                skip = False; continue
+            if not skip:
+                without_block.append(line)
+        names = ["upd", "upgr", "spices", "update_all", "inst", "remove", "search",
+                 "info", "clean", "space", "fix", "mem", "serv", "update_time"]
+        names_pattern = "|".join(names)
+        alias_rx = re.compile(r"^\s*alias\s+(" + names_pattern + r")=")
+        func_rx = re.compile(r"^\s*(" + names_pattern + r")\s*\(\)\s*\{")
         cleaned = []
-        skip_fn = False
+        skip_function = False
         for line in without_block:
-            if alias_rx.match(line): continue
-            if func_rx.match(line):
-                if "}" in line: continue
-                skip_fn = True; continue
-            if skip_fn:
-                if line.strip().startswith("}"): skip_fn = False
+            if alias_rx.match(line):
                 continue
-            if "system-tuneup" in line and line.strip().startswith("#"): continue
+            if func_rx.match(line):
+                if "}" in line:
+                    continue
+                skip_function = True; continue
+            if skip_function:
+                if line.strip().startswith("}"):
+                    skip_function = False
+                continue
+            if "system-tuneup" in line and line.strip().startswith("#"):
+                continue
             cleaned.append(line)
-
         spices = self._has_cinnamon_spices()
-        has_fp = self._has_flatpak()
-        if not has_fp:
-            self.log("[WARN] flatpak не найден", "warning")
-
-        block = [start_marker, "# system-tuneup commands", ""]
-        block += ["upd() {", '    echo "APT update..."', "    sudo apt update", "}", ""]
-        block.append("upgr() {")
-        block.append('    echo "APT upgrade..."')
-        block.append("    sudo apt full-upgrade")
-        if has_fp:
-            block.append('    echo "Flatpak update..."')
-            if spices:
-                block.append("    flatpak update && cinnamon-spice-updater --update-all")
-            else:
-                block.append("    flatpak update")
+        block = [start_marker, "# Пользовательские команды обновлений (system-tuneup)", ""]
+        block += ["upd() {", '    echo "🔍 Поиск обновлений APT..."', "    sudo apt update", "}", ""]
+        block += ["upgr() {", '    echo "📦 Обновление пакетов APT..."', "    sudo apt full-upgrade",
+                  '    echo "📦 Обновление Flatpak..."']
+        if spices:
+            block.append("    flatpak update && cinnamon-spice-updater --update-all")
+        else:
+            block.append("    flatpak update")
         block += ["}", ""]
         if spices:
-            block += ["spices() {", "    cinnamon-spice-updater --update-all", "}", ""]
-        block.append("update_all() {")
-        block.append("    sudo apt update && sudo apt full-upgrade -y")
-        if has_fp:
-            block.append("    flatpak update -y")
-            if spices:
-                block.append("    cinnamon-spice-updater --update-all")
-        block += ['    echo "Done."', "}", ""]
-        block += ['# Extra aliases', 'inst() { sudo apt install "$@"; }',
-                   'remove() { sudo apt purge --autoremove "$@"; }',
-                   'search() { apt search "$@"; }', 'info() { apt show "$@"; }']
+            block += ["spices() {", '    echo "🧂 Обновление апплетов Cinnamon..."',
+                      "    cinnamon-spice-updater --update-all", "}", ""]
+        block += ["update_all() {", "    sudo apt update && sudo apt full-upgrade -y",
+                  "    flatpak update -y"]
+        if spices:
+            block.append("    cinnamon-spice-updater --update-all")
+        block += ['    echo "✅ Все обновления завершены!"', "}", ""]
+        block += ["# Дополнительные команды (system-tuneup)",
+                  'inst() { sudo apt install "$@"; }',
+                  'remove() { sudo apt purge --autoremove "$@"; }',
+                  'search() { apt search "$@"; }',
+                  'info() { apt show "$@"; }', ""]
+        block += ["clean() {", '    echo "🧹 Очистка системы..."', "    sudo apt autoremove -y",
+                  "    sudo apt autoclean", "    sudo apt clean",
+                  '    echo "✅ Очистка завершена"', "}", ""]
+        block += ["space() {", '    df -h / | awk \'NR==2 {print "📁 /: " $4 " свободно из " $2}\'',
+                  "}", ""]
+        block += ["fix() {", '    echo "🔧 Исправление сломанных пакетов..."',
+                  "    sudo apt --fix-broken install -y", "    sudo dpkg --configure -a",
+                  '    echo "✅ Готово!"', "}", ""]
+        block += ["mem() {", '    echo "🧠 Очистка памяти..."', "    sync",
+                  "    sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'", "    free -h", "}", ""]
+        block += ["serv() {", "    systemctl list-unit-files --type=service | less", "}", ""]
+        block += ["update_time() {",
+                  "    systemctl list-timers --no-pager 2>/dev/null | "
+                  'grep -E "NEXT|upgrade|update|apt" || echo "Таймеры не найдены"', "}", ""]
         block.append(end_marker)
-
         while cleaned and cleaned[-1].strip() == "":
             cleaned.pop()
         new_content = "\n".join(cleaned + [""] + block) + "\n"
         if new_content == content:
-            self.log("Алиасы уже добавлены", "info"); return True
+            self.log("Команды уже добавлены", "info"); return True
         self.backup_file(bashrc)
         if not self.write_file(bashrc, new_content, backup=False):
             return False
         if self.state.user_name and self.state.user_name != "root":
-            self.sudo_run(["chown", f"{self.state.user_name}:{self.state.user_name}", bashrc], ignore_error=True)
-        self.log("[OK] Алиасы добавлены", "success"); return True
+            self.sudo_run(["chown", "%s:%s" % (self.state.user_name, self.state.user_name),
+                           bashrc], ignore_error=True)
+        self.log("✓ Команды добавлены в .bashrc", "success"); return True
 
     def apply_autoupdate(self, params=None):
         params = params or {}
         schedule_ui = params.get("update_schedule", "Отключено")
         schedules = {
             "Ежедневно": ("*-*-* 18:30:00", "ежедневно в 18:30"),
-            "Еженедельно (суббота)": ("Sat 18:30:00", "еженедельно по субботам"),
-            "2 раза в месяц": ("*-*-1,15 18:30:00", "1 и 15 числа"),
-            "Ежемесячно": ("*-*-1 18:30:00", "ежемесячно 1 числа"),
+            "Еженедельно (суббота)": ("Sat 18:30:00", "по субботам в 18:30"),
+            "2 раза в месяц (1 и 15)": ("*-*-1,15 18:30:00", "1 и 15 числа в 18:30"),
+            "Ежемесячно (1 число)": ("*-*-1 18:30:00", "1 числа в 18:30"),
+            "Daily": ("*-*-* 18:30:00", "daily at 18:30"),
+            "Weekly (Saturday)": ("Sat 18:30:00", "Saturdays at 18:30"),
+            "Twice a month (1 & 15)": ("*-*-1,15 18:30:00", "on the 1st and 15th"),
+            "Monthly (1st)": ("*-*-1 18:30:00", "on the 1st"),
+            "Disabled": (None, None),
+            "Отключено": (None, None),
         }
         svc = "/etc/systemd/system/biweekly-upgrade.service"
         tmr = "/etc/systemd/system/biweekly-upgrade.timer"
         exists = self.path_exists(tmr) or self.path_exists(svc)
-
-        if schedule_ui == "Отключено":
+        off = schedule_ui in ("Отключено", "Disabled")
+        if off:
             if not exists:
-                self.log("Таймер не найден", "info"); return True
+                self.log("Таймер автообновлений не найден", "info"); return True
             if self.dry_run:
-                self.log("[DRY RUN] Удалить таймер", "warning"); return True
-            self.sudo_run(["systemctl", "disable", "--now", "biweekly-upgrade.timer"], ignore_error=True)
+                self.log("[DRY RUN] Удалить таймер автообновлений", "warning"); return True
+            self.sudo_run(["systemctl", "disable", "--now", "biweekly-upgrade.timer"],
+                          ignore_error=True)
             self.sudo_run(["rm", "-f", svc, tmr], ignore_error=True)
             self.sudo_run(["systemctl", "daemon-reload"], ignore_error=True)
-            self.log("[OK] Таймер удалён", "success"); return True
-
+            self.log("Таймер автообновлений удалён", "success"); return True
         if schedule_ui not in schedules:
-            self.log(f"Неизвестное расписание: {schedule_ui}", "error"); return False
+            self.log("Неизвестное расписание: %s" % schedule_ui, "error"); return False
         oncalendar, desc = schedules[schedule_ui]
         spices = self._has_cinnamon_spices()
-        has_fp = self._has_flatpak()
-        full_cmd = "apt update && apt full-upgrade -y"
-        if has_fp:
-            full_cmd += " && flatpak update -y"
+        full_cmd = "apt update && apt full-upgrade -y && flatpak update -y"
         if spices:
             full_cmd += " && cinnamon-spice-updater --update-all"
-
-        svc_content = f'[Unit]\nDescription=System upgrade ({desc})\n\n[Service]\nType=oneshot\nExecStartPre=/bin/sleep 600\nExecStart=/usr/bin/bash -c "{full_cmd}"\nUser=root\n'
-        tmr_content = f'[Unit]\nDescription=System upgrade timer ({desc})\n\n[Timer]\nOnCalendar={oncalendar}\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n'
-
+        svc_content = ("[Unit]\nDescription=System upgrade (%s)\n\n[Service]\nType=oneshot\n"
+                       "ExecStartPre=/bin/sleep 600\nExecStart=/usr/bin/bash -c \"%s\"\n"
+                       "User=root\n" % (desc, full_cmd))
+        tmr_content = ("[Unit]\nDescription=System upgrade timer (%s)\n\n[Timer]\n"
+                       "OnCalendar=%s\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
+                       % (desc, oncalendar))
         ex_svc = self.read_file(svc)
         ex_tmr = self.read_file(tmr)
-        if exists and ex_svc == svc_content and ex_tmr == tmr_content:
-            self.log(f"Таймер уже настроен: {desc}", "info")
+        if (exists and ex_svc == svc_content and ex_tmr == tmr_content):
+            self.log("Таймер уже настроен: %s" % desc, "info")
             if self.service_enabled("biweekly-upgrade.timer") != "enabled":
                 if not self.dry_run:
                     self.sudo_run(["systemctl", "daemon-reload"], ignore_error=True)
-                    self.sudo_run(["systemctl", "enable", "--now", "biweekly-upgrade.timer"], ignore_error=True)
+                    self.sudo_run(["systemctl", "enable", "--now", "biweekly-upgrade.timer"],
+                                  ignore_error=True)
             return True
-
         if self.dry_run:
-            self.log(f"[DRY RUN] Создать таймер: {desc}", "warning"); return True
-        self.sudo_run(["systemctl", "disable", "--now", "mintupdate-automation-upgrade.timer"], ignore_error=True)
+            self.log("[DRY RUN] Создать/обновить таймер: %s" % desc, "warning"); return True
+        self.sudo_run(["systemctl", "disable", "--now",
+                       "mintupdate-automation-upgrade.timer"], ignore_error=True)
         if not self.write_file(svc, svc_content, chmod="644"):
             return False
         if not self.write_file(tmr, tmr_content, chmod="644"):
             return False
         self.sudo_run(["systemctl", "daemon-reload"], ignore_error=True)
         self.sudo_run(["systemctl", "enable", "--now", "biweekly-upgrade.timer"],
-                       ok_msg=f"[OK] Таймер: {desc}", err_msg="Ошибка таймера")
+                      ok_msg="✓ Таймер создан/обновлён: %s" % desc,
+                      err_msg="Не удалось включить таймер")
         return True
 
-
-# ─── ГЛАВНОЕ ПРИЛОЖЕНИЕ ──────────────────────────────────────────────────────
 
 class TuneupApp:
     def __init__(self, root):
         self.root = root
         self.q = queue.Queue()
         self.is_running = False
+        self.lang = "ru"
         self.current_theme = "light"
-
+        self.applied = {}
+        self.option_widgets = {}
+        self.applied_labels = {}
         self.dry_run_var = tk.BooleanVar(value="--dry-run" in sys.argv)
-
         self.sudo = SudoManager()
         self.sudo.set_parent(root)
-
         self.state = SystemState()
         self.state.detect()
-
-        self.corectrl_group = tk.StringVar(value="sudo")
+        default_group = self.state.user_name if self.state.user_name != "root" else "sudo"
+        self.corectrl_group = tk.StringVar(value=default_group)
         self.swap_value = tk.StringVar(
-            value="150" if self.state.swap_type == "zram" else "10"
-        )
+            value="150" if self.state.swap_type == "zram" else "10")
         self.update_schedule = tk.StringVar(value="Еженедельно (суббота)")
-
-        self.options = self._create_options()
-        self.option_widgets = {}
-
-        # Определяем DPI для адаптации к HD-экранам
+        self.options = {k: {"var": tk.BooleanVar(value=False)} for k in OPTIONS_META}
         self.dpi_scale = max(1.0, self.root.winfo_fpixels('1i') / 96.0)
-
         self.create_ui()
         self.apply_hardware_restrictions()
         self.update_title()
-
         self.root.after(100, self.process_queue)
-
         self.log("System Tuneup GUI запущен", "success")
-        self.log(f"Версия: {APP_VERSION}", "info")
-        self.log(f"GPU: {self.state.gpu}", "info")
-        self.log(f"DPI scale: {self.dpi_scale:.2f}", "info")
-
+        self.log("Версия: %s" % APP_VERSION, "info")
+        self.log("GPU: %s" % self.state.gpu, "info")
         if self.dry_run_var.get():
             self.log("Режим: СУХОЙ ПРОГОН", "warning")
-
-        if self.state.gpu == "Unknown":
-            self.log("[WARN] GPU не определён. AMD-опции могут не работать.", "warning")
-
         if self.sudo._sudo_cached():
             self.log("Сессия sudo активна", "success")
         else:
             self.log("Для применения нужен пароль sudo", "warning")
+        self.root.after(400, self.refresh_services)
+        self.root.after(600, self.refresh_status)
+        self.root.after(800, self.refresh_applied)
 
-        self.root.after(500, self.refresh_services)
+    # ─── helpers ───
+    def t(self, key):
+        return STR[self.lang][key]
 
-    # ─── Тема ──────────────────────────────────────────────────────────────────
+    def om(self, key):
+        return OPTIONS_META[key][self.lang]
 
     def _scaled(self, px):
-        """Масштабирует пиксели под DPI экрана."""
         return int(px * self.dpi_scale)
 
+    def _fix(self, widget, color_key):
+        widget._fixed_fg = color_key
+        return widget
+
+    # ─── theme ───
     def apply_theme(self, theme_name=None):
         if theme_name:
             self.current_theme = theme_name
         t = THEMES[self.current_theme]
-
         self.root.configure(bg=t["bg"])
-
         style = ttk.Style()
         try:
             style.theme_use("clam")
         except Exception:
             pass
-
         style.configure(".", background=t["bg"], foreground=t["fg"])
         style.configure("TFrame", background=t["bg"])
         style.configure("TLabel", background=t["bg"], foreground=t["fg"])
         style.configure("TCheckbutton", background=t["bg"], foreground=t["fg"])
         style.map("TCheckbutton", background=[("active", t["bg"])])
-
         style.configure("TNotebook", background=t["bg"], borderwidth=0)
-        style.configure("TNotebook.Tab",
-                         background=t["notebook_tab_bg"],
-                         foreground=t["fg"],
-                         padding=[self._scaled(12), self._scaled(5)])
+        style.configure("TNotebook.Tab", background=t["notebook_tab_bg"],
+                        foreground=t["fg"],
+                        padding=[self._scaled(12), self._scaled(5)])
         style.map("TNotebook.Tab",
-                   background=[("selected", t["notebook_tab_selected"])],
-                   foreground=[("selected", t["fg"])])
-
-        style.configure("Treeview",
-                         background=t["tree_bg"],
-                         foreground=t["tree_fg"],
-                         fieldbackground=t["tree_bg"],
-                         rowheight=self._scaled(26))
-        style.configure("Treeview.Heading",
-                         background=t["tree_heading_bg"],
-                         foreground=t["tree_heading_fg"])
-
-        style.configure("TCombobox", fieldbackground=t["entry_bg"], foreground=t["entry_fg"])
-
-        # КРИТИЧНО: делаем ползунок прокрутки видимым
-        style.configure("Vertical.TScrollbar",
-                         troughcolor=t["scrollbar_trough"],
-                         background=t["scrollbar_slider"],
-                         borderwidth=1,
-                         relief="solid",
-                         arrowsize=self._scaled(14))
+                  background=[("selected", t["notebook_tab_selected"])],
+                  foreground=[("selected", t["fg"])])
+        style.configure("Treeview", background=t["tree_bg"], foreground=t["tree_fg"],
+                        fieldbackground=t["tree_bg"], rowheight=self._scaled(26))
+        style.configure("Treeview.Heading", background=t["tree_heading_bg"],
+                        foreground=t["tree_heading_fg"])
+        style.configure("TCombobox", fieldbackground=t["entry_bg"],
+                        foreground=t["entry_fg"])
+        style.configure("Vertical.TScrollbar", troughcolor=t["scrollbar_trough"],
+                        background=t["scrollbar_slider"], borderwidth=1, relief="solid",
+                        width=self._scaled(14), arrowsize=self._scaled(14))
         style.map("Vertical.TScrollbar",
-                   background=[("active", t["gray"]), ("!active", t["scrollbar_slider"])])
-
-        style.configure("Horizontal.TProgressbar",
-                         troughcolor=t["scrollbar_trough"],
-                         background=t["accent_bg"])
-
-        # Обновляем tk-виджеты
+                  background=[("active", t["gray"]), ("!active", t["scrollbar_slider"])])
+        style.configure("Horizontal.TProgressbar", troughcolor=t["scrollbar_trough"],
+                        background=t["accent_bg"])
         self._update_tk_widgets(t)
+        if hasattr(self, "services_tree"):
+            self.services_tree.tag_configure("g", foreground=t["green"])
+            self.services_tree.tag_configure("y", foreground=t["yellow"])
+            self.services_tree.tag_configure("r", foreground=t["red"])
+            self.services_tree.tag_configure("gr", foreground=t["gray"])
+        if hasattr(self, "status_text_widget"):
+            mono = ("DejaVu Sans Mono", self._scaled(9))
+            mono_b = ("DejaVu Sans Mono", self._scaled(9), "bold")
+            self.status_text_widget.tag_configure("ok", foreground=t["green"])
+            self.status_text_widget.tag_configure("no", foreground=t["red"])
+            self.status_text_widget.tag_configure("warn", foreground=t["yellow"])
+            self.status_text_widget.tag_configure("info", foreground=t["terminal_fg"],
+                                                  font=mono)
+            self.status_text_widget.tag_configure("head", foreground=t["blue"],
+                                                  font=mono_b)
+        self._update_applied_labels()
+        self._update_header_buttons()
 
     def _update_tk_widgets(self, t):
-        """Рекурсивно обновляет цвета обычных tk-виджетов."""
         def update_widget(w):
             try:
                 cls = w.winfo_class()
+                ff = getattr(w, "_fixed_fg", None)
+                fg = t.get(ff, ff) if ff else None
                 if cls in ("Frame", "Labelframe"):
                     w.configure(bg=t["bg"])
                 elif cls == "Label":
-                    w.configure(bg=t["bg"], fg=t["fg"])
+                    w.configure(bg=t["bg"], fg=fg or t["fg"])
                 elif cls == "Checkbutton":
-                    w.configure(bg=t["bg"], fg=t["fg"],
+                    w.configure(bg=t["bg"], fg=fg or t["fg"],
                                 activebackground=t["bg"],
-                                activeforeground=t["fg"],
+                                activeforeground=fg or t["fg"],
                                 selectcolor=t["select_color"])
                 elif cls == "Button":
-                    if w.cget("bg") == COLORS.get("_accent", ""):
+                    if getattr(w, "_is_accent", False):
                         w.configure(bg=t["accent_bg"], fg=t["accent_fg"])
                     else:
                         w.configure(bg=t["button_bg"], fg=t["button_fg"])
@@ -1100,10 +1148,7 @@ class TuneupApp:
                 pass
             for child in w.winfo_children():
                 update_widget(child)
-
         update_widget(self.root)
-
-        # Перенастраиваем теги терминала
         if hasattr(self, "terminal"):
             self.terminal.tag_configure("normal", foreground=t["terminal_fg"])
             self.terminal.tag_configure("success", foreground=t["green"])
@@ -1115,252 +1160,313 @@ class TuneupApp:
     def toggle_theme(self):
         self.current_theme = "dark" if self.current_theme == "light" else "light"
         self.apply_theme()
-        self.theme_button.config(
-            text="Тёмная тема" if self.current_theme == "light" else "Светлая тема"
-        )
 
-    # ─── Опции ─────────────────────────────────────────────────────────────────
+    def toggle_lang(self):
+        self.lang = "en" if self.lang == "ru" else "ru"
+        self.rebuild_ui()
 
-    def _create_options(self):
-        return {
-            "rsyslog": {"label": "Отключить rsyslog", "desc": "Логирование в файлы", "category": "Логи", "var": tk.BooleanVar(value=False)},
-            "journald": {"label": "Логи в ОЗУ (journald)", "desc": "Storage=volatile, 50M", "category": "Логи", "var": tk.BooleanVar(value=False)},
-            "audit": {"label": "audit=0 (GRUB)", "desc": "Отключить аудит ядра", "category": "GRUB", "var": tk.BooleanVar(value=False)},
-            "raid": {"label": "raid=noautodetect", "desc": "Ускорить загрузку", "category": "GRUB", "var": tk.BooleanVar(value=False)},
-            "corectrl": {"label": "CoreCtrl (Polkit)", "desc": "Управление AMD GPU", "category": "AMD GPU", "var": tk.BooleanVar(value=False)},
-            "ppfeaturemask": {"label": "amdgpu.ppfeaturemask", "desc": "Управление питанием GPU", "category": "AMD GPU", "var": tk.BooleanVar(value=False)},
-            "vrr": {"label": "VRR/FreeSync", "desc": "Переменная частота обновления", "category": "AMD GPU", "var": tk.BooleanVar(value=False)},
-            "radv": {"label": "RADV_PERFTEST=sam", "desc": "Resizable BAR для AMD", "category": "AMD GPU", "var": tk.BooleanVar(value=False)},
-            "pipewire": {"label": "PipeWire (звук)", "desc": "Уменьшить треск звука", "category": "Звук", "var": tk.BooleanVar(value=False)},
-            "mesa": {"label": "MESA_SHADER_CACHE=4G", "desc": "Кэш шейдеров 4 ГБ", "category": "Графика", "var": tk.BooleanVar(value=False)},
-            "swap": {"label": "Тюнинг swap", "desc": "vm.swappiness", "category": "Память", "var": tk.BooleanVar(value=False)},
-            "sysctl": {"label": "Тюнинг sysctl", "desc": "vfs_cache_pressure, numa", "category": "Ядро", "var": tk.BooleanVar(value=False)},
-            "ntsync": {"label": "ntsync (модуль)", "desc": "Для Proton/Wine", "category": "Игры", "var": tk.BooleanVar(value=False)},
-            "ntfs3": {"label": "ntfs3 драйвер", "desc": "Быстрый NTFS", "category": "Диски", "var": tk.BooleanVar(value=False)},
-            "aliases": {"label": "Команды в .bashrc", "desc": "upd, upgr, update_all", "category": "Удобство", "var": tk.BooleanVar(value=False)},
-            "autoupdate": {"label": "Автообновления", "desc": "systemd-таймер", "category": "Обновления", "var": tk.BooleanVar(value=False)},
-        }
+    def _update_header_buttons(self):
+        if hasattr(self, "theme_button"):
+            self.theme_button.config(
+                text=self.t("theme_dark") if self.current_theme == "light"
+                else self.t("theme_light"))
+        if hasattr(self, "lang_button"):
+            self.lang_button.config(text="EN" if self.lang == "ru" else "RU")
 
-    # ─── UI ────────────────────────────────────────────────────────────────────
+    def rebuild_ui(self):
+        for w in self.root.winfo_children():
+            w.destroy()
+        self.option_widgets = {}
+        self.applied_labels = {}
+        self.create_ui()
+        self.apply_hardware_restrictions()
+        self.update_title()
+        self._update_applied_labels()
+        self.refresh_services()
+        self.refresh_status()
 
+    # ─── UI ───
     def create_ui(self):
-        self.root.title(f"System Tuneup v{APP_VERSION}")
-
-        # Адаптивные размеры под DPI
-        w = self._scaled(1000)
-        h = self._scaled(780)
-        min_w = self._scaled(800)
-        min_h = self._scaled(580)
-
-        self.root.geometry(f"{w}x{h}")
-        self.root.minsize(min_w, min_h)
-
-        # Применяем светлую тему по умолчанию
-        self.apply_theme("light")
-
-        # Header
+        self.root.title("System Tuneup v%s" % APP_VERSION)
+        self.root.geometry("%dx%d" % (self._scaled(1060), self._scaled(800)))
+        self.root.minsize(self._scaled(880), self._scaled(640))
+        self.apply_theme()
         header = tk.Frame(self.root)
         header.pack(fill="x", padx=self._scaled(10), pady=(self._scaled(10), self._scaled(5)))
-
-        tk.Label(header, text="System Tuneup", font=("Arial", self._scaled(16), "bold")).pack(side="left")
-        tk.Label(header, text=f"v{APP_VERSION}", font=("Arial", self._scaled(9))).pack(side="left", padx=(self._scaled(10), 0))
-
-        self.theme_button = tk.Button(
-            header, text="Тёмная тема", command=self.toggle_theme,
-            font=("Arial", self._scaled(9)), padx=self._scaled(8), pady=self._scaled(2),
-        )
+        self._fix(tk.Label(header, text="System Tuneup",
+                           font=("DejaVu Sans", self._scaled(16), "bold")),
+                  "green").pack(side="left")
+        self._fix(tk.Label(header, text="v%s" % APP_VERSION,
+                           font=("DejaVu Sans", self._scaled(9))),
+                  "gray").pack(side="left", padx=(self._scaled(10), 0))
+        self.theme_button = tk.Button(header, text="", command=self.toggle_theme,
+                                      font=("DejaVu Sans", self._scaled(9)),
+                                      padx=self._scaled(8), pady=self._scaled(2))
         self.theme_button.pack(side="right")
-
-        self.dry_check = tk.Checkbutton(
-            header, text="Сухой прогон", variable=self.dry_run_var,
-            command=self.update_title, font=("Arial", self._scaled(9), "bold"),
-        )
-        self.dry_check.pack(side="right", padx=(0, self._scaled(10)))
-
-        ttk.Separator(self.root, orient="horizontal").pack(fill="x", padx=self._scaled(10), pady=self._scaled(5))
-
-        # Notebook
+        self.lang_button = tk.Button(header, text="", command=self.toggle_lang,
+                                     font=("DejaVu Sans", self._scaled(9), "bold"),
+                                     padx=self._scaled(8), pady=self._scaled(2))
+        self.lang_button.pack(side="right", padx=(0, self._scaled(6)))
+        self._fix(tk.Checkbutton(header, text=self.t("lbl_dry"),
+                                 variable=self.dry_run_var, command=self.update_title,
+                                 font=("DejaVu Sans", self._scaled(9), "bold")),
+                  "yellow").pack(side="right", padx=(0, self._scaled(10)))
+        ttk.Separator(self.root, orient="horizontal").pack(fill="x",
+                                                           padx=self._scaled(10),
+                                                           pady=self._scaled(5))
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill="both", expand=True, padx=self._scaled(10), pady=self._scaled(5))
-
+        self.notebook.pack(fill="both", expand=True, padx=self._scaled(10),
+                           pady=self._scaled(5))
         self.tab_tuneup = ttk.Frame(self.notebook)
         self.tab_services = ttk.Frame(self.notebook)
         self.tab_status = ttk.Frame(self.notebook)
-
-        self.notebook.add(self.tab_tuneup, text=" Тюнинг ")
-        self.notebook.add(self.tab_services, text=" Службы ")
-        self.notebook.add(self.tab_status, text=" Статус ")
-
+        self.notebook.add(self.tab_tuneup, text=self.t("tab_tune"))
+        self.notebook.add(self.tab_services, text=self.t("tab_serv"))
+        self.notebook.add(self.tab_status, text=self.t("tab_stat"))
         self.create_tuning_tab()
         self.create_services_tab()
         self.create_status_tab()
-
-        # Buttons
-        btn_frame = tk.Frame(self.root)
-        btn_frame.pack(fill="x", padx=self._scaled(10), pady=self._scaled(5))
-
-        btn_padx = self._scaled(5)
-        btn_pady = self._scaled(6)
-        btn_font = ("Arial", self._scaled(10))
-        btn_bold = ("Arial", self._scaled(10), "bold")
-
-        self.run_button = tk.Button(
-            btn_frame, text="Применить", command=self.apply_selected,
-            font=btn_bold, padx=self._scaled(18), pady=btn_pady,
-        )
-        self.run_button.pack(side="left", padx=btn_padx)
-        # Помечаем как акцентную кнопку для темы
+        buttons = tk.Frame(self.root)
+        buttons.pack(fill="x", padx=self._scaled(10), pady=self._scaled(5))
+        self.run_button = tk.Button(buttons, text=self.t("btn_apply"),
+                                    command=self.apply_selected,
+                                    font=("DejaVu Sans", self._scaled(10), "bold"),
+                                    padx=self._scaled(18), pady=self._scaled(6))
         self.run_button._is_accent = True
-
-        for text, cmd in [("Выбрать все", self.select_all), ("Сбросить", self.reset_all),
-                          ("Экспорт", self.export_config)]:
-            tk.Button(btn_frame, text=text, command=cmd, font=btn_font,
-                      padx=self._scaled(10), pady=btn_pady).pack(side="left", padx=btn_padx)
-
-        tk.Button(btn_frame, text="Помощь", command=self.show_help, font=btn_font,
-                  padx=self._scaled(10), pady=btn_pady).pack(side="right", padx=btn_padx)
-
-        # Terminal
+        self.run_button.pack(side="left", padx=self._scaled(5))
+        for key, cmd in (("btn_selall", self.select_all), ("btn_reset", self.reset_all),
+                         ("btn_export", self.export_config)):
+            tk.Button(buttons, text=self.t(key), command=cmd,
+                      font=("DejaVu Sans", self._scaled(10)),
+                      padx=self._scaled(10), pady=self._scaled(6)).pack(
+                side="left", padx=self._scaled(5))
+        tk.Button(buttons, text=self.t("btn_help"), command=self.show_help,
+                  font=("DejaVu Sans", self._scaled(10)),
+                  padx=self._scaled(10), pady=self._scaled(6)).pack(
+            side="right", padx=self._scaled(5))
         term_frame = tk.Frame(self.root)
-        term_frame.pack(fill="both", expand=True, padx=self._scaled(10), pady=(self._scaled(5), 0))
-
-        tk.Label(term_frame, text="Терминальный вывод:", font=("Arial", self._scaled(8))).pack(fill="x")
-
+        term_frame.pack(fill="both", expand=True, padx=self._scaled(10),
+                        pady=(self._scaled(5), 0))
+        self._fix(tk.Label(term_frame, text=self.t("lbl_terminal"),
+                           font=("DejaVu Sans", self._scaled(8))),
+                  "gray").pack(fill="x")
         self.terminal = scrolledtext.ScrolledText(
-            term_frame, height=10,
-            font=("DejaVu Sans Mono", self._scaled(9)),
-            wrap="word", relief="sunken", bd=1, state="disabled",
-        )
+            term_frame, height=10, font=("DejaVu Sans Mono", self._scaled(9)),
+            wrap="word", relief="sunken", bd=1, state="disabled")
         self.terminal.pack(fill="both", expand=True, pady=(self._scaled(2), 0))
-
-        # Status bar
         status_frame = tk.Frame(self.root)
-        status_frame.pack(fill="x", padx=self._scaled(10), pady=(self._scaled(2), self._scaled(10)))
-
-        self.status_text = tk.StringVar(value="Готово")
-        tk.Label(status_frame, textvariable=self.status_text, font=("Arial", self._scaled(8))).pack(side="left")
-
+        status_frame.pack(fill="x", padx=self._scaled(10),
+                          pady=(self._scaled(2), self._scaled(10)))
+        self.status_text = tk.StringVar(value=self.t("status_ready"))
+        self._fix(tk.Label(status_frame, textvariable=self.status_text,
+                           font=("DejaVu Sans", self._scaled(8))),
+                  "gray").pack(side="left")
         self.progress_var = tk.DoubleVar(value=0)
         ttk.Progressbar(status_frame, variable=self.progress_var, maximum=100,
-                        length=self._scaled(180), mode="determinate").pack(side="right")
+                        length=self._scaled(180),
+                        mode="determinate").pack(side="right")
+        self._update_header_buttons()
 
-        # После создания всех виджетов применяем тему повторно для корректных цветов
-        self.apply_theme()
+    # ─── wheel ───
+    def _on_wheel(self, event):
+        d = 0
+        num = getattr(event, "num", None)
+        if num == 4:
+            d = -1
+        elif num == 5:
+            d = 1
+        elif getattr(event, "delta", 0):
+            d = -1 if event.delta > 0 else 1
+        if d:
+            self.tune_canvas.yview_scroll(d, "units")
 
+    def _bind_wheel(self, widget):
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            widget.bind(seq, self._on_wheel, add="+")
+        for child in widget.winfo_children():
+            self._bind_wheel(child)
+
+    # ─── tabs ───
     def create_tuning_tab(self):
         container = tk.Frame(self.tab_tuneup)
-        container.pack(fill="both", expand=True, padx=self._scaled(8), pady=self._scaled(8))
-
-        canvas = tk.Canvas(container, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-
-        self.options_inner = tk.Frame(canvas)
-        self.canvas_window = canvas.create_window((0, 0), window=self.options_inner, anchor="nw")
-
-        self.options_inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(self.canvas_window, width=e.width))
-
-        canvas.pack(side="left", fill="both", expand=True)
+        container.pack(fill="both", expand=True, padx=self._scaled(8),
+                       pady=self._scaled(8))
+        self.tune_canvas = tk.Canvas(container, highlightthickness=0,
+                                     scrollincrement=self._scaled(24))
+        scrollbar = ttk.Scrollbar(container, orient="vertical",
+                                  command=self.tune_canvas.yview)
+        self.tune_canvas.configure(yscrollcommand=scrollbar.set)
+        self.options_inner = tk.Frame(self.tune_canvas)
+        self.canvas_window = self.tune_canvas.create_window((0, 0),
+                                                            window=self.options_inner,
+                                                            anchor="nw")
+        self.options_inner.bind("<Configure>",
+                                lambda e: self.tune_canvas.configure(
+                                    scrollregion=self.tune_canvas.bbox("all")))
+        self.tune_canvas.bind("<Configure>",
+                              lambda e: self.tune_canvas.itemconfig(
+                                  self.canvas_window, width=e.width))
+        self.tune_canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-
         categories = {}
-        for key, opt in self.options.items():
-            categories.setdefault(opt["category"], []).append(key)
-
-        fs_label = ("Arial", self._scaled(9), "bold")
-        fs_cb = ("Arial", self._scaled(9))
-        fs_desc = ("Arial", self._scaled(8))
-
+        for key in self.options:
+            categories.setdefault(self.om(key)[2], []).append(key)
         for cat in sorted(categories.keys()):
-            tk.Label(self.options_inner, text=f"--- {cat} ---", font=fs_label, anchor="w").pack(fill="x", pady=(self._scaled(10), self._scaled(3)))
-
+            self._fix(tk.Label(self.options_inner, text="─── %s ───" % cat,
+                               font=("DejaVu Sans", self._scaled(10), "bold"),
+                               anchor="w"), "yellow").pack(
+                fill="x", pady=(self._scaled(10), self._scaled(3)))
             for key in categories[cat]:
-                opt = self.options[key]
-                row = tk.Frame(self.options_inner)
-                row.pack(fill="x", pady=self._scaled(1))
+                self.create_option_row(key)
+        self._bind_wheel(self.tune_canvas)
+        self._bind_wheel(self.options_inner)
 
-                top = tk.Frame(row)
-                top.pack(fill="x")
-
-                cb = tk.Checkbutton(top, text=opt["label"], variable=opt["var"], font=fs_cb, anchor="w")
-                cb.pack(side="left")
-                self.option_widgets[key] = cb
-
-                if key == "corectrl":
-                    tk.Label(top, text="Группа:", font=fs_desc).pack(side="left", padx=(self._scaled(12), self._scaled(2)))
-                    tk.Entry(top, textvariable=self.corectrl_group, width=12, font=fs_desc).pack(side="left")
-                elif key == "swap":
-                    tk.Label(top, text="Значение:", font=fs_desc).pack(side="left", padx=(self._scaled(12), self._scaled(2)))
-                    tk.Entry(top, textvariable=self.swap_value, width=5, font=fs_desc).pack(side="left")
-                elif key == "autoupdate":
-                    tk.Label(top, text="Расписание:", font=fs_desc).pack(side="left", padx=(self._scaled(12), self._scaled(2)))
-                    ttk.Combobox(top, textvariable=self.update_schedule,
-                                 values=("Отключено", "Ежедневно", "Еженедельно (суббота)", "2 раза в месяц", "Ежемесячно"),
-                                 state="readonly", width=24, font=fs_desc).pack(side="left")
-
-                tk.Label(row, text=opt["desc"], font=fs_desc, anchor="w").pack(fill="x", padx=(self._scaled(26), 0))
+    def create_option_row(self, key):
+        label, desc, _cat, _short = self.om(key)
+        row = tk.Frame(self.options_inner)
+        row.pack(fill="x", pady=self._scaled(1))
+        top = tk.Frame(row)
+        top.pack(fill="x")
+        cb = tk.Checkbutton(top, text=label, variable=self.options[key]["var"],
+                            font=("DejaVu Sans", self._scaled(10)), anchor="w")
+        cb.pack(side="left")
+        self.option_widgets[key] = cb
+        if key == "corectrl":
+            self._fix(tk.Label(top, text=self.t("lbl_group"),
+                               font=("DejaVu Sans", self._scaled(9))),
+                      "gray").pack(side="left", padx=(self._scaled(12), self._scaled(2)))
+            tk.Entry(top, textvariable=self.corectrl_group, width=14,
+                     font=("DejaVu Sans", self._scaled(9))).pack(side="left")
+        elif key == "swap":
+            self._fix(tk.Label(top, text=self.t("lbl_value"),
+                               font=("DejaVu Sans", self._scaled(9))),
+                      "gray").pack(side="left", padx=(self._scaled(12), self._scaled(2)))
+            tk.Entry(top, textvariable=self.swap_value, width=6,
+                     font=("DejaVu Sans", self._scaled(9))).pack(side="left")
+        elif key == "autoupdate":
+            self._fix(tk.Label(top, text=self.t("lbl_schedule"),
+                               font=("DejaVu Sans", self._scaled(9))),
+                      "gray").pack(side="left", padx=(self._scaled(12), self._scaled(2)))
+            ttk.Combobox(top, textvariable=self.update_schedule,
+                         values=("Отключено", "Ежедневно", "Еженедельно (суббота)",
+                                 "2 раза в месяц (1 и 15)", "Ежемесячно (1 число)"),
+                         state="readonly", width=26,
+                         font=("DejaVu Sans", self._scaled(9))).pack(side="left")
+        ap = tk.Label(top, text="…", font=("DejaVu Sans", self._scaled(9), "bold"))
+        ap.pack(side="left", padx=(self._scaled(12), 0))
+        self.applied_labels[key] = ap
+        self._fix(tk.Label(row, text=desc, font=("DejaVu Sans", self._scaled(8)),
+                           anchor="w", wraplength=self._scaled(760), justify="left"),
+                  "gray").pack(fill="x", padx=(self._scaled(26), 0),
+                               pady=(0, self._scaled(2)))
 
     def create_services_tab(self):
         container = tk.Frame(self.tab_services)
-        container.pack(fill="both", expand=True, padx=self._scaled(8), pady=self._scaled(8))
-
+        container.pack(fill="both", expand=True, padx=self._scaled(8),
+                       pady=self._scaled(8))
         btns = tk.Frame(container)
         btns.pack(fill="x", pady=(0, self._scaled(8)))
-
-        btn_font = ("Arial", self._scaled(8))
-        btn_pad = self._scaled(8)
-
-        tk.Button(btns, text="Обновить", command=self.refresh_services, font=btn_font, padx=btn_pad, pady=self._scaled(4)).pack(side="left", padx=2)
-        tk.Button(btns, text="Откл. рекомендуемые", command=self.disable_recommended, font=btn_font, padx=btn_pad, pady=self._scaled(4)).pack(side="left", padx=2)
-        tk.Button(btns, text="Вкл. выбранные", command=self.enable_selected, font=btn_font, padx=btn_pad, pady=self._scaled(4)).pack(side="left", padx=2)
-        tk.Button(btns, text="Откл. выбранные", command=self.disable_selected, font=btn_font, padx=btn_pad, pady=self._scaled(4)).pack(side="left", padx=2)
-
+        for key, cmd in (("svc_refresh", self.refresh_services),
+                         ("svc_rec", self.disable_recommended),
+                         ("svc_on_sel", self.enable_selected),
+                         ("svc_off_sel", self.disable_selected)):
+            tk.Button(btns, text=self.t(key), command=cmd,
+                      font=("DejaVu Sans", self._scaled(9)),
+                      padx=self._scaled(10), pady=self._scaled(4)).pack(
+                side="left", padx=self._scaled(2))
         tree_frame = tk.Frame(container)
         tree_frame.pack(fill="both", expand=True)
-
-        self.services_tree = ttk.Treeview(
-            tree_frame, columns=("name", "enabled", "active", "desc"),
-            show="headings", selectmode="extended",
-        )
-        self.services_tree.heading("name", text="Служба")
-        self.services_tree.heading("enabled", text="Enabled")
-        self.services_tree.heading("active", text="Active")
-        self.services_tree.heading("desc", text="Описание")
-
-        self.services_tree.column("name", width=self._scaled(240), anchor="w")
-        self.services_tree.column("enabled", width=self._scaled(100), anchor="center")
-        self.services_tree.column("active", width=self._scaled(90), anchor="center")
-        self.services_tree.column("desc", width=self._scaled(380), anchor="w")
-
-        # Теги для цветовой индикации БЕЗ эмодзи
-        self.services_tree.tag_configure("enabled_active", foreground="#2e7d32")
-        self.services_tree.tag_configure("enabled_inactive", foreground="#f57f17")
-        self.services_tree.tag_configure("disabled", foreground="#757575")
-        self.services_tree.tag_configure("masked", foreground="#c62828")
-        self.services_tree.tag_configure("not_found", foreground="#bdbdbd")
-
-        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.services_tree.yview)
+        self.services_tree = ttk.Treeview(tree_frame,
+                                          columns=("name", "enabled", "active", "desc"),
+                                          show="headings", selectmode="extended")
+        self.services_tree.heading("name", text=self.t("svc_col_name"))
+        self.services_tree.heading("enabled", text=self.t("svc_col_en"))
+        self.services_tree.heading("active", text=self.t("svc_col_act"))
+        self.services_tree.heading("desc", text=self.t("svc_col_desc"))
+        self.services_tree.column("name", width=self._scaled(220), anchor="w")
+        self.services_tree.column("enabled", width=self._scaled(170), anchor="w")
+        self.services_tree.column("active", width=self._scaled(100), anchor="center")
+        self.services_tree.column("desc", width=self._scaled(430), anchor="w")
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical",
+                                  command=self.services_tree.yview)
         self.services_tree.configure(yscrollcommand=scrollbar.set)
         self.services_tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-
-        self.services_count_label = tk.Label(container, text="Служб: 0", font=("Arial", self._scaled(8)))
-        self.services_count_label.pack(fill="x", pady=(self._scaled(6), 0))
+        self.services_count_label = tk.Label(container, text=self.t("svc_count").format(n=0),
+                                             font=("DejaVu Sans", self._scaled(8)))
+        self._fix(self.services_count_label, "gray").pack(fill="x",
+                                                          pady=(self._scaled(6), 0))
 
     def create_status_tab(self):
         container = tk.Frame(self.tab_status)
-        container.pack(fill="both", expand=True, padx=self._scaled(8), pady=self._scaled(8))
-
-        tk.Button(container, text="Обновить статус", command=self.refresh_status,
-                  font=("Arial", self._scaled(9)), padx=self._scaled(12), pady=self._scaled(5)).pack(anchor="w", pady=(0, self._scaled(8)))
-
+        container.pack(fill="both", expand=True, padx=self._scaled(8),
+                       pady=self._scaled(8))
+        tk.Button(container, text=self.t("stat_refresh"), command=self.refresh_status,
+                  font=("DejaVu Sans", self._scaled(9)),
+                  padx=self._scaled(12), pady=self._scaled(5)).pack(
+            anchor="w", pady=(0, self._scaled(8)))
         self.status_text_widget = scrolledtext.ScrolledText(
-            container, font=("DejaVu Sans Mono", self._scaled(9)), state="disabled",
-        )
+            container, font=("DejaVu Sans Mono", self._scaled(9)), state="disabled")
         self.status_text_widget.pack(fill="both", expand=True)
 
-    # ─── Queue ─────────────────────────────────────────────────────────────────
+    # ─── applied detection ───
+    def refresh_applied(self):
+        threading.Thread(target=self._applied_worker, daemon=True).start()
 
+    def _applied_worker(self):
+        try:
+            self.q.put(("applied", self.detect_applied()))
+        except Exception:
+            pass
+
+    def detect_applied(self):
+        ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, True)
+        grub = ops.read_file("/etc/default/grub") or ""
+        env = ops.read_file("/etc/environment") or ""
+        j = ops.read_file("/etc/systemd/journald.conf") or ""
+        swp = ops.read_file("/etc/sysctl.d/99-gaming-swap.conf") or ""
+        sysc = ops.read_file("/etc/sysctl.d/99-gaming-sysctl.conf") or ""
+        bashrc = ops.read_file(os.path.join(self.state.user_home, ".bashrc")) or ""
+        mint = ops.read_file("/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf") or ""
+
+        def sv(p):
+            try:
+                r = subprocess.run(["sysctl", "-n", p], capture_output=True,
+                                   text=True, timeout=3)
+                return r.stdout.strip() if r.returncode == 0 else ""
+            except Exception:
+                return ""
+        pw_path = os.path.join(self.state.user_home, ".config", "pipewire",
+                               "pipewire.conf.d", "10-sound.conf")
+        return {
+            "rsyslog": ops.service_enabled("rsyslog.service") in ("disabled", "masked"),
+            "journald": bool(re.search(r"^\s*Storage\s*=\s*volatile\s*$", j, re.M)),
+            "audit": "audit=0" in grub,
+            "raid": "raid=noautodetect" in grub,
+            "corectrl": ops.path_exists("/etc/polkit-1/rules.d/90-corectrl.rules"),
+            "ppfeaturemask": "amdgpu.ppfeaturemask" in grub,
+            "vrr": ops.path_exists("/etc/X11/xorg.conf.d/20-amdgpu.conf"),
+            "radv": "RADV_PERFTEST=sam" in env,
+            "pipewire": ops.path_exists(pw_path),
+            "mesa": "MESA_SHADER_CACHE_MAX_SIZE=4G" in env,
+            "swap": bool(swp) or "vm.swappiness" in sysc or sv("vm.swappiness") not in ("", "60"),
+            "sysctl": bool(sysc) or (sv("vm.vfs_cache_pressure") == "50"
+                                     and sv("kernel.numa_balancing") == "0"),
+            "ntsync": self.state.ntsync or ops.path_exists("/etc/modules-load.d/ntsync.conf"),
+            "ntfs3": bool(re.search(r"^\s*#\s*blacklist\s+ntfs3\s*$", mint, re.M)),
+            "aliases": "system-tuneup" in bashrc,
+            "autoupdate": ops.service_enabled("biweekly-upgrade.timer") == "enabled",
+        }
+
+    def _update_applied_labels(self):
+        t = THEMES[self.current_theme]
+        for key, lbl in self.applied_labels.items():
+            val = self.applied.get(key, False)
+            lbl.configure(text=self.t("applied_yes") if val else self.t("applied_no"),
+                          bg=t["bg"], fg=t["green"] if val else t["gray"])
+            lbl._fixed_fg = "green" if val else "gray"
+
+    # ─── queue ───
     def log(self, msg, tag="normal"):
         if not msg.endswith("\n"):
             msg += "\n"
@@ -1383,107 +1489,101 @@ class TuneupApp:
                 elif kind == "running":
                     self.is_running = item[1]
                     self.run_button.config(state="disabled" if item[1] else "normal")
+                elif kind == "applied":
+                    self.applied = item[1]
+                    self._update_applied_labels()
                 elif kind == "services_rows":
                     for child in self.services_tree.get_children():
                         self.services_tree.delete(child)
                     for row in item[1]:
-                        name, enabled, active, desc = row
-                        # Определяем тег для цветовой индикации
-                        if enabled == "masked":
-                            tag = "masked"
-                            enabled_display = "[MASKED]"
-                        elif enabled == "disabled":
-                            tag = "disabled"
-                            enabled_display = "[OFF]"
-                        elif enabled == "not-found":
-                            tag = "not_found"
-                            enabled_display = "[N/A]"
-                        elif active == "active":
-                            tag = "enabled_active"
-                            enabled_display = "[ON]"
-                        else:
-                            tag = "enabled_inactive"
-                            enabled_display = "[ON/off]"
-
-                        active_display = "[RUNNING]" if active == "active" else "[STOPPED]" if active == "inactive" else f"[{active}]"
-
-                        self.services_tree.insert("", "end", values=(name, enabled_display, active_display, desc), tags=(tag,))
-                    self.services_count_label.config(text=f"Служб: {len(item[1])}")
-                elif kind == "status_text":
-                    self.status_text_widget.configure(state="normal")
-                    self.status_text_widget.delete("1.0", tk.END)
-                    self.status_text_widget.insert(tk.END, item[1])
-                    self.status_text_widget.configure(state="disabled")
+                        self.services_tree.insert("", "end", values=row[:4],
+                                                  tags=(row[4],))
+                    self.services_count_label.config(
+                        text=self.t("svc_count").format(n=len(item[1])))
+                elif kind == "status_lines":
+                    w = self.status_text_widget
+                    w.configure(state="normal")
+                    w.delete("1.0", tk.END)
+                    for text, tag in item[1]:
+                        w.insert(tk.END, text + "\n", tag)
+                    w.configure(state="disabled")
         except queue.Empty:
             pass
         self.root.after(100, self.process_queue)
 
-    # ─── Apply ─────────────────────────────────────────────────────────────────
-
+    # ─── apply ───
     def apply_selected(self):
         if self.is_running:
-            messagebox.showinfo("Выполняется", "Дождитесь завершения.")
+            messagebox.showinfo(self.t("msg_run_title"), self.t("msg_run_text"))
             return
         selected = [k for k, o in self.options.items() if o["var"].get()]
         if not selected:
-            messagebox.showwarning("Нет опций", "Отметьте хотя бы одну опцию.")
+            messagebox.showwarning(self.t("msg_noopt_title"), self.t("msg_noopt_text"))
             return
-        params = {
-            "corectrl_group": self.corectrl_group.get(),
-            "swap_value": self.swap_value.get(),
-            "update_schedule": self.update_schedule.get(),
-        }
+        params = {"corectrl_group": self.corectrl_group.get(),
+                  "swap_value": self.swap_value.get(),
+                  "update_schedule": self.update_schedule.get()}
         dry_run = self.dry_run_var.get()
         if not dry_run and not self.sudo.ensure():
-            self.log("Не удалось получить sudo", "error")
+            self.log("Не удалось получить права sudo", "error")
             return
-
-        self.is_running = True
-        self.run_button.config(state="disabled")
         self.q.put(("running", True))
         self.q.put(("progress", 0))
-        self.q.put(("statusbar", "Выполнение..."))
-
-        threading.Thread(target=self._apply_worker, args=(selected, params, dry_run), daemon=True).start()
+        self.q.put(("statusbar", self.t("status_running")))
+        threading.Thread(target=self._apply_worker,
+                         args=(selected, params, dry_run), daemon=True).start()
 
     def _apply_worker(self, selected, params, dry_run):
+        ops = SystemOps(self.sudo, self.state, self.log, dry_run)
+        total = len(selected)
+        done = 0
+        self.log("=" * 60, "highlight")
+        self.log("ЗАПУСК ТЮНИНГА", "highlight")
+        self.log("=" * 60, "highlight")
         try:
-            ops = SystemOps(self.sudo, self.state, self.log, dry_run)
-            total = len(selected)
-            done = 0
-            self.log("=" * 50, "highlight")
-            self.log("ЗАПУСК ТЮНИНГА", "highlight")
-            self.log(f"Режим: {'СУХОЙ ПРОГОН' if dry_run else 'ОБЫЧНЫЙ'}", "info")
-            self.log(f"Опций: {total}", "info")
-            self.log("=" * 50, "highlight")
             for key in selected:
-                self.log(f"-> {self.options[key]['label']}", "info")
+                label = self.om(key)[0]
+                self.log("→ %s" % label, "info")
                 try:
-                    getattr(ops, f"apply_{key}")(params)
+                    getattr(ops, "apply_%s" % key)(params)
                 except Exception as e:
-                    self.log(f"Ошибка: {e}", "error")
+                    self.log("Ошибка в %s: %s" % (label, e), "error")
                 done += 1
                 self.q.put(("progress", int(done / total * 90)))
             if not dry_run:
                 ops.finalize_grub()
             self.q.put(("progress", 100))
-            self.q.put(("statusbar", "Готово"))
-            self.log("Завершено", "success")
+            self.q.put(("statusbar", self.t("status_done")))
+            self.log("Все выбранные операции обработаны", "success")
         except Exception as e:
-            self.log(f"Критическая ошибка: {e}", "error")
-            self.q.put(("statusbar", "Ошибка"))
+            self.log("Критическая ошибка: %s" % e, "error")
+            self.q.put(("statusbar", self.t("status_error")))
         finally:
             self.q.put(("running", False))
+            self.refresh_applied()
+            self.refresh_status()
+            self.refresh_services()
 
-    # ─── Helpers ───────────────────────────────────────────────────────────────
+    # ─── context-aware select/reset ───
+    def _on_services_tab(self):
+        try:
+            return self.notebook.select() == str(self.tab_services)
+        except Exception:
+            return False
 
     def select_all(self):
+        if self._on_services_tab():
+            self.services_tree.selection_set(self.services_tree.get_children())
+            return
         for k, o in self.options.items():
             w = self.option_widgets.get(k)
             if w and str(w.cget("state")) == "normal":
                 o["var"].set(True)
 
     def reset_all(self):
+        if self._on_services_tab():
+            self.services_tree.selection_remove(self.services_tree.selection())
+            return
         for o in self.options.values():
             o["var"].set(False)
 
@@ -1506,120 +1606,71 @@ class TuneupApp:
         self.swap_value.set("150" if self.state.swap_type == "zram" else "10")
 
     def update_title(self):
-        title = f"System Tuneup v{APP_VERSION}"
+        title = "System Tuneup v%s" % APP_VERSION
         if self.dry_run_var.get():
-            title += " [СУХОЙ ПРОГОН]"
+            title += " [DRY RUN]"
         self.root.title(title)
 
     def export_config(self):
-        selected = [f"{k}: {self.options[k]['label']}" for k, o in self.options.items() if o["var"].get()]
+        selected = [k for k, o in self.options.items() if o["var"].get()]
         if not selected:
-            messagebox.showinfo("Экспорт", "Нет выбранных опций.")
+            messagebox.showinfo(self.t("btn_export"), self.t("msg_noopt_text"))
             return
-        path = filedialog.asksaveasfilename(defaultextension=".txt", initialdir=os.path.expanduser("~"),
-                                            filetypes=[("Text files", "*.txt")], title="Сохранить")
+        path = filedialog.asksaveasfilename(
+            defaultextension=".txt", initialdir=os.path.expanduser("~"),
+            filetypes=[("Text files", "*.txt")], title=self.t("btn_export"))
         if not path:
             return
         try:
             with open(path, "w", encoding="utf-8") as f:
-                f.write(f"System Tuneup v{APP_VERSION}\n")
-                f.write(f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Dry run: {self.dry_run_var.get()}\n\n")
-                f.write("\n".join(selected) + "\n")
-            self.log(f"Сохранено: {path}", "success")
+                f.write("System Tuneup v%s\n" % APP_VERSION)
+                f.write("Date: %s\n\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+                for k in selected:
+                    f.write("%s: %s\n" % (k, self.om(k)[0]))
+            self.log("Конфигурация сохранена: %s" % path, "success")
         except Exception as e:
-            messagebox.showerror("Ошибка", str(e))
+            messagebox.showerror(self.t("status_error"), str(e))
 
     def show_help(self):
-        """Открывает справку в отдельном окне нормального размера."""
         win = tk.Toplevel(self.root)
-        win.title(f"Справка — System Tuneup v{APP_VERSION}")
-        win.geometry(f"{self._scaled(650)}x{self._scaled(500)}")
-        win.minsize(self._scaled(500), self._scaled(400))
-        win.transient(self.root)
-
+        win.title(self.t("help_title"))
+        win.geometry("%dx%d" % (self._scaled(680), self._scaled(520)))
         t = THEMES[self.current_theme]
         win.configure(bg=t["bg"])
-
-        text = scrolledtext.ScrolledText(
-            win, font=("DejaVu Sans Mono", self._scaled(9)),
-            bg=t["terminal_bg"], fg=t["terminal_fg"],
-            wrap="word", relief="flat", padx=self._scaled(10), pady=self._scaled(10),
-        )
+        text = scrolledtext.ScrolledText(win, font=("DejaVu Sans Mono", self._scaled(9)),
+                                         bg=t["terminal_bg"], fg=t["terminal_fg"],
+                                         wrap="word", relief="flat",
+                                         padx=self._scaled(10), pady=self._scaled(10))
         text.pack(fill="both", expand=True)
-
-        help_text = f"""System Tuneup GUI v{APP_VERSION}
-
-ГРАФИЧЕСКАЯ ОБОЛОЧКА ДЛЯ ТЮНИНГА LINUX MINT / UBUNTU / DEBIAN
-
-=== КАК ПОЛЬЗОВАТЬСЯ ===
-
-1. Вкладка "Тюнинг" — отметьте нужные опции
-2. Заполните параметры (группа CoreCtrl, swappiness, расписание)
-3. Нажмите "Применить"
-4. Введите пароль sudo при запросе
-
-=== СУХОЙ ПРОГОН ===
-
-Включите галочку "Сухой прогон" или запустите с --dry-run.
-Изменения не применяются, но в логе видно что было бы сделано.
-
-=== ВКЛАДКА "СЛУЖБЫ" ===
-
-[ON]      — служба включена и работает
-[ON/off]  — служба включена, но не работает
-[OFF]     — служба отключена
-[MASKED]  — служба замаскирована (полностью заблокирована)
-[N/A]     — служба не найдена в системе
-
-Кнопки:
-  "Откл. рекомендуемые" — отключает ненужные службы одним кликом
-  "Вкл./Откл. выбранные" — работа с выделенными строками
-
-=== ВКЛАДКА "СТАТУС" ===
-
-Показывает текущее состояние системы: GPU, swap, RAID,
-параметры ядра, GRUB, конфиги, таймеры.
-
-=== БЭКАПЫ ===
-
-Перед каждым изменением файла создаётся бэкап.
-Хранится до 5 последних копий.
-Расположение: ~/.local/share/system-tuneup/backups/
-
-=== ГОРЯЧИЕ КЛАВИШИ ===
-
-Нет (используйте кнопки интерфейса).
-
-=== ТРЕБОВАНИЯ ===
-
-- Python 3.8+
-- Tkinter
-- systemd
-- sudo
-"""
-        text.insert("1.0", help_text)
+        text.insert("1.0", self.t("help"))
         text.configure(state="disabled")
 
-    # ─── Services ──────────────────────────────────────────────────────────────
-
+    # ─── services ───
     def refresh_services(self):
-        dry_run = self.dry_run_var.get()
-        threading.Thread(target=self._refresh_services_worker, args=(dry_run,), daemon=True).start()
+        threading.Thread(target=self._refresh_services_worker, daemon=True).start()
 
-    def _refresh_services_worker(self, dry_run):
-        try:
-            ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, dry_run)
-            rows = []
-            for svc in SERVICES:
-                name, desc = svc["name"], svc["desc"]
-                if not ops.unit_exists(name):
-                    rows.append((name, "not-found", "not-found", desc))
-                else:
-                    rows.append((name, ops.service_enabled(name), ops.service_active(name), desc))
-            self.q.put(("services_rows", rows))
-        except Exception as e:
-            self.q.put(("log", f"Ошибка обновления служб: {e}", "error"))
+    def _refresh_services_worker(self):
+        ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None,
+                        self.dry_run_var.get())
+        rows = []
+        for name in SERVICES_ORDER:
+            desc = SERVICES_META[name][self.lang]
+            if not ops.unit_exists(name):
+                rows.append((name, self.t("svc_na"), self.t("svc_na"), desc, "gr"))
+                continue
+            enabled = ops.service_enabled(name)
+            active = ops.service_active(name)
+            if enabled == "masked":
+                en_d, tag = self.t("svc_masked"), "r"
+            elif enabled == "disabled":
+                en_d, tag = self.t("svc_off"), "gr"
+            elif active == "active":
+                en_d, tag = self.t("svc_on"), "g"
+            else:
+                en_d, tag = self.t("svc_onoff"), "y"
+            act_d = self.t("run_yes") if active == "active" else self.t("run_no")
+            rows.append((name, en_d, act_d, desc, tag))
+        self.q.put(("services_rows", rows))
 
     def _ensure_service_action(self):
         if self.dry_run_var.get():
@@ -1627,160 +1678,145 @@ class TuneupApp:
         return self.sudo.ensure()
 
     def disable_recommended(self):
+        listing = "\n".join("• %s — %s" % (n, SERVICES_META[n][self.lang])
+                            for n in SERVICES_ORDER)
+        if not messagebox.askyesno(self.t("rec_title"),
+                                   self.t("rec_text") + "\n" + listing):
+            return
         if not self._ensure_service_action():
             return
-        threading.Thread(target=self._disable_recommended_worker, args=(self.dry_run_var.get(),), daemon=True).start()
+        threading.Thread(target=self._disable_recommended_worker, daemon=True).start()
 
-    def _disable_recommended_worker(self, dry_run):
-        try:
-            ops = SystemOps(self.sudo, self.state, self.log, dry_run)
-            self.log("Отключение рекомендуемых служб...", "info")
-            for svc in SERVICES:
-                name = svc["name"]
-                if not ops.unit_exists(name):
-                    continue
-                enabled = ops.service_enabled(name)
-                if enabled in ("disabled", "masked"):
-                    continue
-                if ops.dry_run:
-                    ops.log(f"[DRY RUN] disable {name}", "warning")
-                    continue
-                ops.sudo_run(["systemctl", "disable", "--now", name], ignore_error=True)
-                if name.startswith("avahi"):
-                    ops.sudo_run(["systemctl", "mask", name], ignore_error=True)
-                ops.log(f"[OK] {name} отключена", "success")
-            self.log("Готово", "success")
-            self.refresh_services()
-        except Exception as e:
-            self.q.put(("log", f"Ошибка: {e}", "error"))
+    def _disable_recommended_worker(self):
+        ops = SystemOps(self.sudo, self.state, self.log, self.dry_run_var.get())
+        self.log("Отключение рекомендуемых служб...", "info")
+        for name in SERVICES_ORDER:
+            if not ops.unit_exists(name):
+                continue
+            if ops.service_enabled(name) in ("disabled", "masked"):
+                continue
+            if ops.dry_run:
+                ops.log("[DRY RUN] disable %s" % name, "warning")
+                continue
+            ops.sudo_run(["systemctl", "disable", "--now", name], ignore_error=True)
+            if name.startswith("avahi"):
+                ops.sudo_run(["systemctl", "mask", name], ignore_error=True)
+            ops.log("✓ %s отключена" % name, "success")
+        self.log("Обработка служб завершена", "success")
+        self.refresh_services()
 
     def enable_selected(self):
         items = self.services_tree.selection()
         if not items:
-            messagebox.showinfo("Службы", "Выберите службы.")
+            messagebox.showinfo(self.t("msg_sel_title"), self.t("msg_sel_text"))
             return
         names = [str(self.services_tree.item(i)["values"][0]) for i in items]
         if not self._ensure_service_action():
             return
-        threading.Thread(target=self._enable_worker, args=(names, self.dry_run_var.get()), daemon=True).start()
+        threading.Thread(target=self._enable_worker, args=(names,), daemon=True).start()
 
-    def _enable_worker(self, names, dry_run):
-        try:
-            ops = SystemOps(self.sudo, self.state, self.log, dry_run)
-            for name in names:
-                if ops.dry_run:
-                    ops.log(f"[DRY RUN] enable {name}", "warning")
-                    continue
-                ops.sudo_run(["systemctl", "unmask", name], ignore_error=True)
-                ops.sudo_run(["systemctl", "enable", name], ok_msg=f"[OK] {name} включена", ignore_error=True)
-            self.refresh_services()
-        except Exception as e:
-            self.q.put(("log", f"Ошибка: {e}", "error"))
+    def _enable_worker(self, names):
+        ops = SystemOps(self.sudo, self.state, self.log, self.dry_run_var.get())
+        for name in names:
+            if ops.dry_run:
+                ops.log("[DRY RUN] enable %s" % name, "warning")
+                continue
+            ops.sudo_run(["systemctl", "unmask", name], ignore_error=True)
+            ops.sudo_run(["systemctl", "enable", name],
+                         ok_msg="✓ %s включена" % name, ignore_error=True)
+        self.refresh_services()
 
     def disable_selected(self):
         items = self.services_tree.selection()
         if not items:
-            messagebox.showinfo("Службы", "Выберите службы.")
+            messagebox.showinfo(self.t("msg_sel_title"), self.t("msg_sel_text"))
             return
         names = [str(self.services_tree.item(i)["values"][0]) for i in items]
         if not self._ensure_service_action():
             return
-        threading.Thread(target=self._disable_worker, args=(names, self.dry_run_var.get()), daemon=True).start()
+        threading.Thread(target=self._disable_worker, args=(names,), daemon=True).start()
 
-    def _disable_worker(self, names, dry_run):
-        try:
-            ops = SystemOps(self.sudo, self.state, self.log, dry_run)
-            for name in names:
-                if ops.dry_run:
-                    ops.log(f"[DRY RUN] disable {name}", "warning")
-                    continue
-                ops.sudo_run(["systemctl", "disable", "--now", name], ignore_error=True)
-                if name.startswith("avahi"):
-                    ops.sudo_run(["systemctl", "mask", name], ignore_error=True)
-                ops.log(f"[OK] {name} отключена", "success")
-            self.refresh_services()
-        except Exception as e:
-            self.q.put(("log", f"Ошибка: {e}", "error"))
+    def _disable_worker(self, names):
+        ops = SystemOps(self.sudo, self.state, self.log, self.dry_run_var.get())
+        for name in names:
+            if ops.dry_run:
+                ops.log("[DRY RUN] disable %s" % name, "warning")
+                continue
+            ops.sudo_run(["systemctl", "disable", "--now", name], ignore_error=True)
+            if name.startswith("avahi"):
+                ops.sudo_run(["systemctl", "mask", name], ignore_error=True)
+            ops.log("✓ %s отключена" % name, "success")
+        self.refresh_services()
 
-    # ─── Status ────────────────────────────────────────────────────────────────
-
+    # ─── status ───
     def refresh_status(self):
         threading.Thread(target=self._refresh_status_worker, daemon=True).start()
 
     def _refresh_status_worker(self):
-        try:
-            ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, True)
-            lines = []
-            lines.append("=== HARDWARE ===")
-            lines.append(f"GPU: {self.state.gpu}")
-            lines.append(f"RAID: {'yes' if self.state.has_raid else 'no'}")
-            lines.append(f"Swap: {self.state.swap_type if self.state.has_swap else 'none'}")
-            lines.append(f"ntsync: {'yes' if self.state.ntsync else 'no'}")
-            lines.append(f"Cinnamon: {'yes' if self.state.cinnamon else 'no'}")
-            lines.append(f"flatpak: {'yes' if self.state.has_flatpak else 'no'}")
-            lines.append(f"User: {self.state.user_name}")
-            lines.append("")
-            lines.append("=== SERVICES ===")
-            for svc in SERVICES:
-                n = svc["name"]
-                lines.append(f"  {n}: enabled={ops.service_enabled(n)}, active={ops.service_active(n)}")
-            lines.append("")
-            lines.append("=== KERNEL ===")
-            for p in ("vm.swappiness", "vm.vfs_cache_pressure", "kernel.numa_balancing"):
-                try:
-                    r = subprocess.run(["sysctl", "-n", p], capture_output=True, text=True, timeout=3)
-                    lines.append(f"  {p} = {r.stdout.strip() if r.returncode == 0 else 'n/a'}")
-                except Exception:
-                    lines.append(f"  {p} = n/a")
-            lines.append("")
-            lines.append("=== GRUB ===")
-            grub = ops.read_file("/etc/default/grub") or ""
-            for p in ("audit=0", "raid=noautodetect", "amdgpu.ppfeaturemask"):
-                lines.append(f"  {p}: {'present' if p in grub else 'absent'}")
-            lines.append("")
-            lines.append("=== CONFIGS ===")
-            j = ops.read_file("/etc/systemd/journald.conf") or ""
-            is_volatile = "yes" if re.search(r"^\s*Storage\s*=\s*volatile\s*$", j, re.M) else "no"
-            lines.append(f"  journald volatile: {is_volatile}")
-            env = ops.read_file("/etc/environment") or ""
-            lines.append(f"  MESA_SHADER_CACHE=4G: {'yes' if 'MESA_SHADER_CACHE_MAX_SIZE=4G' in env else 'no'}")
-            lines.append(f"  RADV_PERFTEST=sam: {'yes' if 'RADV_PERFTEST=sam' in env else 'no'}")
-            lines.append(f"  CoreCtrl: {'yes' if ops.path_exists('/etc/polkit-1/rules.d/90-corectrl.rules') else 'no'}")
-            lines.append(f"  VRR: {'yes' if ops.path_exists('/etc/X11/xorg.conf.d/20-amdgpu.conf') else 'no'}")
-            pp = os.path.join(self.state.user_home, ".config/pipewire/pipewire.conf.d/10-sound.conf")
-            lines.append(f"  PipeWire: {'yes' if ops.path_exists(pp) else 'no'}")
-            br = ops.read_file(os.path.join(self.state.user_home, ".bashrc")) or ""
-            lines.append(f"  Aliases: {'yes' if 'system-tuneup' in br else 'no'}")
-            lines.append(f"  Auto-update timer: {ops.service_enabled('biweekly-upgrade.timer')}")
-            self.q.put(("status_text", "\n".join(lines)))
-        except Exception as e:
-            self.q.put(("log", f"Ошибка статуса: {e}", "error"))
-
-    # ─── Closing ───────────────────────────────────────────────────────────────
+        ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, True)
+        A = self.applied
+        rows = []
+        rows.append((self.t("st_hw"), "head"))
+        rows.append(("GPU: %s — %s" % (self.state.gpu, self.t("gpu_note")), "info"))
+        rows.append(("RAID: %s — %s" % ("yes" if self.state.has_raid else "no",
+                                        self.t("raid_note")), "info"))
+        rows.append(("Swap: %s — %s" % (self.state.swap_type if self.state.has_swap
+                                        else "none", self.t("swap_note")), "info"))
+        rows.append(("ntsync: %s — %s" % ("yes" if self.state.ntsync else "no",
+                                          self.t("ntsync_note")), "info"))
+        rows.append(("Cinnamon: %s — %s" % ("yes" if self.state.cinnamon else "no",
+                                            self.t("cinn_note")), "info"))
+        rows.append(("%s: %s" % (self.t("user_note"), self.state.user_name), "info"))
+        rows.append(("%s: %s" % (self.t("home_note"), self.state.user_home), "info"))
+        rows.append(("", "info"))
+        rows.append((self.t("st_tweaks"), "head"))
+        for key in self.options:
+            label, _d, _c, short = self.om(key)
+            ok = A.get(key, False)
+            mark = self.t("yes") if ok else self.t("no")
+            rows.append(("%s: %s — %s" % (label, mark, short), "ok" if ok else "no"))
+        rows.append(("", "info"))
+        rows.append((self.t("st_services"), "head"))
+        for name in SERVICES_ORDER:
+            enabled = ops.service_enabled(name)
+            active = ops.service_active(name)
+            if enabled == "masked":
+                tag = "r"
+            elif enabled == "disabled":
+                tag = "gr"
+            elif active == "active":
+                tag = "ok"
+            else:
+                tag = "warn"
+            rows.append(("  %s: %s / %s" % (name, enabled, active), tag))
+        rows.append(("", "info"))
+        rows.append((self.t("st_kernel"), "head"))
+        for p in ("vm.swappiness", "vm.vfs_cache_pressure", "kernel.numa_balancing"):
+            try:
+                r = subprocess.run(["sysctl", "-n", p], capture_output=True,
+                                   text=True, timeout=3)
+                val = r.stdout.strip() if r.returncode == 0 else "n/a"
+            except Exception:
+                val = "n/a"
+            rows.append(("  %s = %s" % (p, val), "info"))
+        rows.append(("", "info"))
+        timer = ops.service_enabled("biweekly-upgrade.timer")
+        rows.append(("%s: %s" % (self.t("st_timer"), timer),
+                     "ok" if timer == "enabled" else "gr"))
+        self.q.put(("status_lines", rows))
 
     def on_closing(self):
         if self.is_running:
-            if not messagebox.askyesno("Выполняется", "Прервать выполнение?"):
+            if not messagebox.askyesno(self.t("msg_run_title"), self.t("msg_run_text")):
                 return
         self.root.destroy()
 
 
-# ─── MAIN ────────────────────────────────────────────────────────────────────
-
 def main():
     if "--help" in sys.argv or "-h" in sys.argv:
-        print(f"System Tuneup GUI v{APP_VERSION}\n\n  python3 tuneup_gui.py [--dry-run] [--help]")
+        print("System Tuneup GUI v%s\n  python3 tuneup_gui.py [--dry-run]" % APP_VERSION)
         sys.exit(0)
-
     root = tk.Tk()
-
-    # Включаем DPI-awareness на Windows (если запущено через WSL/Xming)
-    try:
-        from ctypes import windll
-        windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
-        pass
-
     app = TuneupApp(root)
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
