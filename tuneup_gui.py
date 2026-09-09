@@ -107,6 +107,44 @@ SERVICES_META = {
 }
 SERVICES_ORDER = list(SERVICES_META.keys())
 
+# Какие файлы затрагивает каждая опция (первый существующий и открывается)
+OPTION_FILES = {
+    "rsyslog": ["/etc/systemd/system/rsyslog.service",
+                "/lib/systemd/system/rsyslog.service"],
+    "journald": ["/etc/systemd/journald.conf"],
+    "audit": ["/etc/default/grub"],
+    "raid": ["/etc/default/grub"],
+    "corectrl": ["/etc/polkit-1/rules.d/90-corectrl.rules",
+                 "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla"],
+    "ppfeaturemask": ["/etc/default/grub"],
+    "vrr": ["/etc/X11/xorg.conf.d/20-amdgpu.conf"],
+    "radv": ["/etc/environment"],
+    "mesa": ["/etc/environment"],
+    "pipewire": ["{home}/.config/pipewire/pipewire.conf.d/10-sound.conf"],
+    "swap": ["/etc/sysctl.d/99-gaming-swap.conf"],
+    "sysctl": ["/etc/sysctl.d/99-gaming-sysctl.conf"],
+    "ntsync": ["/etc/modules-load.d/ntsync.conf"],
+    "ntfs3": ["/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"],
+    "aliases": ["{home}/.bashrc"],
+    "autoupdate": ["/etc/systemd/system/biweekly-upgrade.timer",
+                   "/etc/systemd/system/biweekly-upgrade.service"],
+}
+
+
+def desktop_name():
+    """Определяет графическое окружение: Cinnamon, XFCE, MATE, KDE, GNOME..."""
+    d = (os.environ.get("XDG_CURRENT_DESKTOP", "") + " " +
+         os.environ.get("DESKTOP_SESSION", "")).lower()
+    table = [("cinnamon", "Cinnamon"), ("xfce", "XFCE"), ("mate", "MATE"),
+             ("plasma", "KDE Plasma"), ("kde", "KDE Plasma"), ("gnome", "GNOME"),
+             ("lxqt", "LXQt"), ("lxde", "LXDE"), ("openbox", "Openbox"),
+             ("budgie", "Budgie"), ("pantheon", "Pantheon"), ("i3", "i3"),
+             ("hyprland", "Hyprland"), ("ukui", "UKUI")]
+    for key, name in table:
+        if key in d:
+            return name
+    return os.environ.get("XDG_CURRENT_DESKTOP", "") or "?"
+
 STR = {
     "ru": {
         "tab_tune": " Тюнинг ", "tab_serv": " Службы ", "tab_stat": " Статус ",
@@ -142,6 +180,11 @@ STR = {
         "rec_text": "Будут отключены службы, которые почти не нужны на домашнем ПК:",
         "rec_hint": "Вернуть любую службу можно на вкладке «Службы»: выделите строки и нажмите «Включить выбранные».",
         "dlg_yes": "Да, отключить", "dlg_no": "Отмена",
+        "btn_apply_sel": "Применить выбранное", "btn_rollback": "Откатить выбранное",
+        "btn_selall_opt": "Выбрать все", "btn_selnone": "Снять выделение",
+        "btn_open_file": "файл",
+        "msg_no_file_title": "Файл ещё не существует",
+        "msg_no_file_text": "Этот файл появится после применения опции. Пути, где опция вносит изменения:",
         "msg_run_title": "Выполняется", "msg_run_text": "Скрипт уже запущен. Дождитесь завершения.",
         "msg_noopt_title": "Нет выбранных опций", "msg_noopt_text": "Отметьте хотя бы одну опцию.",
         "msg_sel_title": "Службы", "msg_sel_text": "Сначала выберите строки в таблице (Ctrl/Shift + клик).",
@@ -221,6 +264,11 @@ STR = {
         "rec_text": "These services, rarely needed on a home PC, will be disabled:",
         "rec_hint": "Any service can be restored on the Services tab: select rows and press Enable selected.",
         "dlg_yes": "Yes, disable", "dlg_no": "Cancel",
+        "btn_apply_sel": "Apply selected", "btn_rollback": "Rollback selected",
+        "btn_selall_opt": "Select all", "btn_selnone": "Deselect",
+        "btn_open_file": "file",
+        "msg_no_file_title": "File does not exist yet",
+        "msg_no_file_text": "This file appears after applying the option. Paths the option modifies:",
         "msg_run_title": "Running", "msg_run_text": "A job is already running. Wait for it to finish.",
         "msg_noopt_title": "No options selected", "msg_noopt_text": "Tick at least one option.",
         "msg_sel_title": "Services", "msg_sel_text": "Select table rows first (Ctrl/Shift + click).",
@@ -1065,6 +1113,168 @@ class SystemOps:
         return True
 
 
+    # ─── Откат изменений ────────────────────────────────────────────────
+    def _rm(self, path):
+        if self.dry_run:
+            self.log("[DRY RUN] rm %s" % path, "warning"); return True
+        if not self.path_exists(path):
+            self.log("Файл не найден, удалять нечего: %s" % path, "info")
+            return True
+        return self.sudo_run(["rm", "-f", path], ok_msg="✓ удалён %s" % path)
+
+    def _remove_line(self, path, pattern):
+        if self.dry_run:
+            self.log("[DRY RUN] %s: удалить строку %s" % (path, pattern), "warning")
+            return True
+        content = self.read_file(path)
+        if not content:
+            self.log("Файл %s не найден" % path, "info"); return True
+        rx = re.compile(pattern)
+        old = content.splitlines()
+        lines = [l for l in old if not rx.match(l.strip())]
+        if len(lines) == len(old):
+            self.log("Строка не найдена в %s" % path, "info"); return True
+        self.backup_file(path)
+        return self.write_file(path, "\n".join(lines) + "\n", backup=False)
+
+    def _remove_grub_params(self, params):
+        if self.dry_run:
+            self.log("[DRY RUN] GRUB убрать: " + " ".join(params), "warning")
+            return True
+        path = "/etc/default/grub"
+        content = self.read_file(path)
+        if not content:
+            self.log("GRUB не найден", "warning"); return False
+        new_lines = []
+        changed = False
+        for line in content.splitlines():
+            m = re.match(r"^\s*GRUB_CMDLINE_LINUX_DEFAULT=(.*)$", line)
+            if m:
+                raw = m.group(1).strip().strip('"').strip("'")
+                parts = [p for p in raw.split() if p and p not in params]
+                new_lines.append('GRUB_CMDLINE_LINUX_DEFAULT="' + " ".join(parts) + '"')
+                changed = True
+            else:
+                new_lines.append(line)
+        if not changed:
+            self.log("GRUB: параметры не найдены", "info"); return True
+        self.backup_file(path)
+        if self.write_file(path, "\n".join(new_lines) + "\n", backup=False):
+            self.grub_changed = True
+            self.log("✓ GRUB: параметры удалены", "success"); return True
+        return False
+
+    def rollback_rsyslog(self, params=None):
+        if self.dry_run:
+            self.log("[DRY RUN] unmask + enable rsyslog", "warning"); return True
+        self.sudo_run(["systemctl", "unmask", "rsyslog"], ignore_error=True)
+        self.sudo_run(["systemctl", "enable", "--now", "rsyslog"],
+                      ok_msg="✓ rsyslog снова включён", ignore_error=True)
+        return True
+
+    def rollback_journald(self, params=None):
+        path = "/etc/systemd/journald.conf"
+        bak = os.path.join(self.backup_dir, "etc_systemd_journald.conf.bak")
+        if self.path_exists(bak):
+            content = self.read_file(bak)
+            if content:
+                self.write_file(path, content, backup=False)
+                self.sudo_run(["systemctl", "restart", "systemd-journald"],
+                              ignore_error=True)
+                self.log("✓ journald: восстановлен из бэкапа", "success"); return True
+        self._remove_line(path, r"^\s*Storage\s*=")
+        self._remove_line(path, r"^\s*RuntimeMaxUse\s*=")
+        self.sudo_run(["systemctl", "restart", "systemd-journald"], ignore_error=True)
+        self.log("✓ journald: возвращён к значениям по умолчанию", "success")
+        return True
+
+    def rollback_audit(self, params=None):
+        return self._remove_grub_params(["audit=0"])
+
+    def rollback_raid(self, params=None):
+        return self._remove_grub_params(["raid=noautodetect"])
+
+    def rollback_ppfeaturemask(self, params=None):
+        return self._remove_grub_params(["amdgpu.ppfeaturemask=0xffffffff"])
+
+    def rollback_corectrl(self, params=None):
+        self._rm("/etc/polkit-1/rules.d/90-corectrl.rules")
+        self._rm("/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla")
+        self.log("✓ правило CoreCtrl удалено", "success"); return True
+
+    def rollback_vrr(self, params=None):
+        self._rm("/etc/X11/xorg.conf.d/20-amdgpu.conf")
+        self.log("✓ конфиг VRR удалён", "success"); return True
+
+    def rollback_radv(self, params=None):
+        self._remove_line("/etc/environment", r"^\s*RADV_PERFTEST=.*")
+        self.log("✓ RADV_PERFTEST удалён", "success"); return True
+
+    def rollback_mesa(self, params=None):
+        self._remove_line("/etc/environment", r"^\s*MESA_SHADER_CACHE_MAX_SIZE=.*")
+        self.log("✓ MESA_SHADER_CACHE удалён", "success"); return True
+
+    def rollback_pipewire(self, params=None):
+        self._rm(os.path.join(self.state.user_home, ".config", "pipewire",
+                              "pipewire.conf.d", "10-sound.conf"))
+        self.log("✓ конфиг PipeWire удалён", "success"); return True
+
+    def rollback_swap(self, params=None):
+        self._rm("/etc/sysctl.d/99-gaming-swap.conf")
+        self.sudo_run(["sysctl", "-w", "vm.swappiness=60"], ignore_error=True)
+        self.log("✓ swappiness возвращён к 60", "success"); return True
+
+    def rollback_sysctl(self, params=None):
+        self._rm("/etc/sysctl.d/99-gaming-sysctl.conf")
+        self.sudo_run(["sysctl", "-w", "vm.vfs_cache_pressure=100"], ignore_error=True)
+        self.sudo_run(["sysctl", "-w", "kernel.numa_balancing=1"], ignore_error=True)
+        self.log("✓ sysctl возвращён к значениям по умолчанию", "success"); return True
+
+    def rollback_ntsync(self, params=None):
+        self._rm("/etc/modules-load.d/ntsync.conf")
+        self.log("✓ ntsync убран из автозагрузки", "success"); return True
+
+    def rollback_ntfs3(self, params=None):
+        path = "/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"
+        content = self.read_file(path)
+        if not content:
+            self.log("Файл не найден: %s" % path, "info"); return True
+        if re.search(r"^\s*blacklist\s+ntfs3\s*$", content, re.M):
+            self.log("ntfs3 уже заблокирован", "info"); return True
+        new_content = re.sub(r"^\s*#\s*blacklist\s+ntfs3\s*$", "blacklist ntfs3",
+                             content, flags=re.M)
+        self.backup_file(path)
+        if self.write_file(path, new_content, backup=False):
+            self.log("✓ ntfs3 снова заблокирован", "success"); return True
+        return False
+
+    def rollback_aliases(self, params=None):
+        bashrc = os.path.join(self.state.user_home, ".bashrc")
+        content = self.read_file(bashrc)
+        if not content:
+            self.log(".bashrc не найден", "info"); return True
+        start_marker = "# >>> system-tuneup commands >>>"
+        end_marker = "# <<< system-tuneup commands <<<"
+        lines = []
+        skip = False
+        for line in content.splitlines():
+            if line.strip() == start_marker:
+                skip = True; continue
+            if line.strip() == end_marker:
+                skip = False; continue
+            if not skip:
+                lines.append(line)
+        if len(lines) == len(content.splitlines()):
+            self.log("Блок команд не найден", "info"); return True
+        self.backup_file(bashrc)
+        if self.write_file(bashrc, "\n".join(lines) + "\n", backup=False):
+            self.log("✓ команды удалены из .bashrc", "success"); return True
+        return False
+
+    def rollback_autoupdate(self, params=None):
+        return self.apply_autoupdate({"update_schedule": "Отключено"})
+
+
 class TuneupApp:
     def __init__(self, root):
         self.root = root
@@ -1312,19 +1522,11 @@ class TuneupApp:
         self.create_status_tab()
         buttons = tk.Frame(self.root)
         buttons.pack(fill="x", padx=self._scaled(10), pady=self._scaled(5))
-        self.run_button = tk.Button(buttons, text=self.t("btn_apply"),
-                                    command=self.apply_selected,
-                                    font=("DejaVu Sans", self._scaled(10), "bold"),
-                                    padx=self._scaled(18), pady=self._scaled(6))
-        self.run_button._is_accent = True
-        self.run_button.pack(side="left", padx=self._scaled(5))
-        for key, cmd in (("btn_selall", self.select_all), ("btn_reset", self.reset_all),
-                         ("btn_export", self.export_config)):
-            tk.Button(buttons, text=self.t(key), command=cmd,
-                      font=("DejaVu Sans", self._scaled(10)),
-                      padx=self._scaled(10), pady=self._scaled(6)).pack(
-                side="left", padx=self._scaled(5))
         tk.Button(buttons, text=self.t("btn_help"), command=self.show_help,
+                  font=("DejaVu Sans", self._scaled(10)),
+                  padx=self._scaled(10), pady=self._scaled(6)).pack(
+            side="right", padx=self._scaled(5))
+        tk.Button(buttons, text=self.t("btn_export"), command=self.export_config,
                   font=("DejaVu Sans", self._scaled(10)),
                   padx=self._scaled(10), pady=self._scaled(6)).pack(
             side="right", padx=self._scaled(5))
@@ -1377,6 +1579,21 @@ class TuneupApp:
         container = tk.Frame(self.tab_tuneup)
         container.pack(fill="both", expand=True, padx=self._scaled(8),
                        pady=self._scaled(8))
+        btns = tk.Frame(container)
+        btns.pack(fill="x", pady=(0, self._scaled(6)))
+        self.run_button = tk.Button(btns, text=self.t("btn_apply_sel"),
+                                    command=self.apply_selected,
+                                    font=("DejaVu Sans", self._scaled(10), "bold"),
+                                    padx=self._scaled(14), pady=self._scaled(5))
+        self.run_button._is_accent = True
+        self.run_button.pack(side="left", padx=self._scaled(2))
+        for key, cmd in (("btn_rollback", self.rollback_selected),
+                         ("btn_selall_opt", self.select_all_options),
+                         ("btn_selnone", self.reset_options)):
+            tk.Button(btns, text=self.t(key), command=cmd,
+                      font=("DejaVu Sans", self._scaled(9)),
+                      padx=self._scaled(10), pady=self._scaled(5)).pack(
+                side="left", padx=self._scaled(2))
         self.tune_canvas = tk.Canvas(container, highlightthickness=0)
         scrollbar = ttk.Scrollbar(container, orient="vertical",
                                   command=self.tune_canvas.yview)
@@ -1443,6 +1660,11 @@ class TuneupApp:
         ap = tk.Label(top, text="…", font=("DejaVu Sans", self._scaled(9), "bold"))
         ap.pack(side="left", padx=(self._scaled(12), 0))
         self.applied_labels[key] = ap
+        tk.Button(top, text=self.t("btn_open_file"),
+                  command=lambda k=key: self.open_option_file(k),
+                  font=("DejaVu Sans", self._scaled(8)),
+                  padx=self._scaled(6), pady=0).pack(
+            side="left", padx=(self._scaled(8), 0))
         self._fix(tk.Label(row, text=desc, font=("DejaVu Sans", self._scaled(8)),
                            anchor="w", wraplength=self._scaled(760), justify="left"),
                   "gray").pack(fill="x", padx=(self._scaled(26), 0),
@@ -1454,10 +1676,10 @@ class TuneupApp:
                        pady=self._scaled(8))
         btns = tk.Frame(container)
         btns.pack(fill="x", pady=(0, self._scaled(8)))
-        for key, cmd in (("svc_refresh", self.refresh_services),
-                         ("svc_rec", self.disable_recommended),
-                         ("svc_on_sel", self.enable_selected),
-                         ("svc_off_sel", self.disable_selected)):
+        for key, cmd in (("btn_selall_opt", self.select_all_services),
+                         ("btn_selnone", self.clear_services_selection),
+                         ("svc_off_sel", self.disable_selected),
+                         ("svc_on_sel", self.enable_selected)):
             tk.Button(btns, text=self.t(key), command=cmd,
                       font=("DejaVu Sans", self._scaled(9)),
                       padx=self._scaled(10), pady=self._scaled(4)).pack(
@@ -1550,6 +1772,47 @@ class TuneupApp:
                     continue
         return False
 
+    def _corectrl_found(self, ops):
+        # 1) Обычным пользователем: список папок и чтение файлов
+        for d in ("/etc/polkit-1/rules.d",
+                  "/usr/share/polkit-1/rules.d",
+                  "/etc/polkit-1/localauthority/50-local.d"):
+            try:
+                names = os.listdir(d)
+            except Exception:
+                names = []
+            for fn in names:
+                if "corectrl" in fn.lower():
+                    return True
+                try:
+                    with open(os.path.join(d, fn), "r",
+                              encoding="utf-8", errors="replace") as f:
+                        if "org.corectrl" in f.read():
+                            return True
+                except Exception:
+                    continue
+        # 2) Чтение через sudo -n (работает, если sudo уже закэширован)
+        for p in ("/etc/polkit-1/rules.d/90-corectrl.rules",
+                  "/usr/share/polkit-1/rules.d/90-corectrl.rules",
+                  "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla"):
+            try:
+                content = ops.read_file(p)
+            except Exception:
+                content = ""
+            if content and "org.corectrl" in content:
+                return True
+        # 3) Спросить сам polkit: разрешено ли действие прямо сейчас
+        try:
+            res = subprocess.run(
+                ["pkcheck", "--action-id", "org.corectrl.helper.init",
+                 "--process", str(os.getpid())],
+                capture_output=True, timeout=5)
+            if res.returncode == 0:
+                return True
+        except Exception:
+            pass
+        return False
+
     def detect_applied(self):
         ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, True)
         grub = ops.read_file("/etc/default/grub") or ""
@@ -1574,7 +1837,7 @@ class TuneupApp:
             "journald": bool(re.search(r"^\s*Storage\s*=\s*volatile\s*$", j, re.M)),
             "audit": "audit=0" in grub,
             "raid": "raid=noautodetect" in grub,
-            "corectrl": self._corectrl_found(),
+            "corectrl": self._corectrl_found(ops),
             "ppfeaturemask": "amdgpu.ppfeaturemask" in grub,
             "vrr": ops.path_exists("/etc/X11/xorg.conf.d/20-amdgpu.conf"),
             "radv": "RADV_PERFTEST=sam" in env,
@@ -1655,6 +1918,97 @@ class TuneupApp:
         self.root.after(100, self.process_queue)
 
     # ─── apply ───
+    def open_option_file(self, key):
+        cands = [p.format(home=self.state.user_home)
+                 for p in OPTION_FILES.get(key, [])]
+        target = None
+        for p in cands:
+            if os.path.exists(p):
+                target = p
+                break
+        if target is None:
+            if not cands:
+                return
+            messagebox.showinfo(self.t("msg_no_file_title"),
+                                self.t("msg_no_file_text") + "\n" + "\n".join(cands))
+            return
+        for cmd in (["xdg-open"], ["gio", "open"], ["xed"], ["gedit"],
+                    ["mousepad"], ["kate"], ["pluma"]):
+            try:
+                subprocess.Popen(cmd + [target], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+                return
+            except Exception:
+                continue
+        self.log("Не удалось открыть файл: %s" % target, "error")
+
+    def select_all_options(self):
+        for k, o in self.options.items():
+            w = self.option_widgets.get(k)
+            if w and str(w.cget("state")) == "normal":
+                o["var"].set(True)
+
+    def reset_options(self):
+        for o in self.options.values():
+            o["var"].set(False)
+
+    def select_all_services(self):
+        if self._alive("services_tree"):
+            self.services_tree.selection_set(self.services_tree.get_children())
+
+    def clear_services_selection(self):
+        if self._alive("services_tree"):
+            self.services_tree.selection_remove(self.services_tree.selection())
+
+    def rollback_selected(self):
+        if self.is_running:
+            messagebox.showinfo(self.t("msg_run_title"), self.t("msg_run_text"))
+            return
+        selected = [k for k, o in self.options.items() if o["var"].get()]
+        if not selected:
+            messagebox.showwarning(self.t("msg_noopt_title"), self.t("msg_noopt_text"))
+            return
+        dry_run = self.dry_run_var.get()
+        if not dry_run and not self.sudo.ensure():
+            self.log("Не удалось получить права sudo", "error")
+            return
+        self.q.put(("running", True))
+        self.q.put(("progress", 0))
+        self.q.put(("statusbar", self.t("status_running")))
+        threading.Thread(target=self._rollback_worker,
+                         args=(selected, dry_run), daemon=True).start()
+
+    def _rollback_worker(self, selected, dry_run):
+        ops = SystemOps(self.sudo, self.state, self.log, dry_run)
+        total = len(selected)
+        done = 0
+        self.log("=" * 60, "highlight")
+        self.log("ЗАПУСК ОТКАТА", "highlight")
+        self.log("=" * 60, "highlight")
+        try:
+            for key in selected:
+                label = self.om(key)[0]
+                self.log("→ %s" % label, "info")
+                try:
+                    getattr(ops, "rollback_%s" % key)()
+                except Exception as e:
+                    self.log("Ошибка в %s: %s" % (label, e), "error")
+                done += 1
+                self.q.put(("progress", int(done / total * 90)))
+            if not dry_run:
+                ops.finalize_grub()
+            self.q.put(("progress", 100))
+            self.q.put(("statusbar", self.t("status_done")))
+            self.log("Откат завершён", "success")
+        except Exception as e:
+            self.log("Критическая ошибка: %s" % e, "error")
+            self.q.put(("statusbar", self.t("status_error")))
+        finally:
+            self.q.put(("running", False))
+            self.refresh_applied()
+            self.refresh_status()
+            self.refresh_services()
+
     def apply_selected(self):
         if self.is_running:
             messagebox.showinfo(self.t("msg_run_title"), self.t("msg_run_text"))
@@ -1956,13 +2310,11 @@ class TuneupApp:
             rows.append(("RAM: %.1f %s — %s" % (ram, self.t("gb"), self.t("ram_note")), "info"))
         rows.append(("Kernel: %s — %s" % (os.uname().release, self.t("kernel_note")), "info"))
         rows.append(("Host: %s — %s" % (os.uname().nodename, self.t("host_note")), "info"))
-        de = os.environ.get("XDG_CURRENT_DESKTOP", "") or os.environ.get("DESKTOP_SESSION", "") or "?"
-        rows.append(("DE: %s — %s" % (de, self.t("de_note")), "info"))
+        rows.append(("DE: %s — %s" % (desktop_name(), self.t("de_note")), "info"))
         rows.append(("RAID: %s — %s" % (yn(self.state.has_raid), self.t("raid_note")), "info"))
         rows.append(("Swap: %s — %s" % (self.state.swap_type if self.state.has_swap
                                         else self.t("no_swap"), self.t("swap_note")), "info"))
         rows.append(("ntsync: %s — %s" % (yn(self.state.ntsync), self.t("ntsync_note")), "info"))
-        rows.append(("Cinnamon: %s — %s" % (yn(self.state.cinnamon), self.t("cinn_note")), "info"))
         rows.append(("%s: %s" % (self.t("user_note"), self.state.user_name), "info"))
         rows.append(("%s: %s" % (self.t("home_note"), self.state.user_home), "info"))
         rows.append(("", "info"))
