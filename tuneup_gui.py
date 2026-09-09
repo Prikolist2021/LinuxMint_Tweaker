@@ -134,6 +134,7 @@ STR = {
         "ntsync_note": "ускоритель Wine/Proton", "cinn_note": "оболочка Cinnamon",
         "user_note": "пользователь", "home_note": "домашняя папка",
         "ram_note": "оперативная память", "kernel_note": "версия ядра",
+        "screen_note": "разрешение экрана",
         "de_note": "графическая оболочка", "host_note": "имя компьютера",
         "gb": "ГБ", "no_swap": "нет",
         "yes": "ПРИМЕНЕНО", "no": "НЕ ПРИМЕНЕНО",
@@ -212,6 +213,7 @@ STR = {
         "ntsync_note": "Wine/Proton accelerator", "cinn_note": "Cinnamon shell",
         "user_note": "user", "home_note": "home folder",
         "ram_note": "RAM", "kernel_note": "kernel version",
+        "screen_note": "screen resolution",
         "de_note": "desktop environment", "host_note": "hostname",
         "gb": "GB", "no_swap": "none",
         "yes": "APPLIED", "no": "NOT APPLIED",
@@ -1085,6 +1087,8 @@ class TuneupApp:
         self.update_schedule = tk.StringVar(value="Еженедельно (суббота)")
         self.options = {k: {"var": tk.BooleanVar(value=False)} for k in OPTIONS_META}
         self.dpi_scale = max(1.0, self.root.winfo_fpixels('1i') / 96.0)
+        self.screen_w = self.root.winfo_screenwidth()
+        self.screen_h = self.root.winfo_screenheight()
         self.create_ui()
         self.apply_hardware_restrictions()
         self.update_title()
@@ -1255,8 +1259,11 @@ class TuneupApp:
     # ─── UI ───
     def create_ui(self):
         self.root.title("System Tuneup v%s" % APP_VERSION)
-        self.root.geometry("%dx%d" % (self._scaled(1060), self._scaled(800)))
-        self.root.minsize(self._scaled(880), self._scaled(640))
+        w = min(self._scaled(1060), self.screen_w - 10)
+        h = min(self._scaled(800), self.screen_h - 30)
+        self.root.geometry("%dx%d" % (w, h))
+        self.root.minsize(min(self._scaled(880), self.screen_w - 10),
+        min(self._scaled(640), self.screen_h - 10))
         self.apply_theme()
         header = tk.Frame(self.root)
         header.pack(fill="x", padx=self._scaled(10), pady=(self._scaled(10), self._scaled(5)))
@@ -1317,8 +1324,9 @@ class TuneupApp:
         self._fix(tk.Label(term_frame, text=self.t("lbl_terminal"),
                            font=("DejaVu Sans", self._scaled(8))),
                   "gray").pack(fill="x")
+                term_lines = 5 if self.screen_h < 700 else 10
         self.terminal = scrolledtext.ScrolledText(
-            term_frame, height=10, font=("DejaVu Sans Mono", self._scaled(9)),
+            term_frame, height=term_lines, font=("DejaVu Sans Mono", self._scaled(9)),
             wrap="word", relief="sunken", bd=1, state="disabled")
         self.terminal.pack(fill="both", expand=True, pady=(self._scaled(2), 0))
         status_frame = tk.Frame(self.root)
@@ -1761,7 +1769,8 @@ class TuneupApp:
     def show_help(self):
         win = tk.Toplevel(self.root)
         win.title(self.t("help_title"))
-        win.geometry("%dx%d" % (self._scaled(700), self._scaled(560)))
+        win.geometry("%dx%d" % (min(self._scaled(700), self.screen_w - 20),
+        min(self._scaled(560), self.screen_h - 40)))
         t = THEMES[self.current_theme]
         win.configure(bg=t["bg"])
         text = scrolledtext.ScrolledText(win, font=("DejaVu Sans Mono", self._scaled(9)),
@@ -1929,6 +1938,8 @@ class TuneupApp:
         rows = []
         rows.append((self.t("st_hw"), "head"))
         rows.append(("GPU: %s — %s" % (self.state.gpu, self.t("gpu_note")), "info"))
+        rows.append(("Screen: %dx%d — %s" % (self.screen_w, self.screen_h,
+        self.t("screen_note")), "info"))
         rows.append(("CPU: %s" % cpu_model(), "info"))
         ram = ram_total_gb()
         if ram is not None:
