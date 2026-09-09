@@ -1324,7 +1324,7 @@ class TuneupApp:
         self._fix(tk.Label(term_frame, text=self.t("lbl_terminal"),
                            font=("DejaVu Sans", self._scaled(8))),
                   "gray").pack(fill="x")
-                term_lines = 5 if self.screen_h < 700 else 10
+        term_lines = 5 if self.screen_h < 700 else 10
         self.terminal = scrolledtext.ScrolledText(
             term_frame, height=term_lines, font=("DejaVu Sans Mono", self._scaled(9)),
             wrap="word", relief="sunken", bd=1, state="disabled")
