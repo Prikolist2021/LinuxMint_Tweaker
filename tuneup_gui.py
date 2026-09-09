@@ -1089,6 +1089,11 @@ class TuneupApp:
         self.dpi_scale = max(1.0, self.root.winfo_fpixels('1i') / 96.0)
         self.screen_w = self.root.winfo_screenwidth()
         self.screen_h = self.root.winfo_screenheight()
+        # Глобальный масштаб для низких разрешений (нетбуки 1024x600 и т.п.):
+        # пропорционально уменьшает шрифты, отступы и окно.
+        self.ui_scale = min(1.0, self.screen_w / 1100.0, self.screen_h / 850.0)
+        if self.ui_scale < 0.75:
+            self.ui_scale = 0.75
         self.create_ui()
         self.apply_hardware_restrictions()
         self.update_title()
@@ -1114,7 +1119,10 @@ class TuneupApp:
         return OPTIONS_META[key][self.lang]
 
     def _scaled(self, px):
-        return int(px * self.dpi_scale)
+        v = int(px * self.dpi_scale * self.ui_scale)
+        if px >= 8 and v < 7:
+            v = 7  # не мельчим шрифты сильнее 7pt даже на нетбуке
+        return max(1, v)
 
     def _fix(self, widget, color_key):
         widget._fixed_fg = color_key
@@ -1261,9 +1269,11 @@ class TuneupApp:
         self.root.title("System Tuneup v%s" % APP_VERSION)
         w = min(self._scaled(1060), self.screen_w - 10)
         h = min(self._scaled(800), self.screen_h - 30)
+        w = min(self._scaled(1060), self.screen_w - 10)
+        h = min(self._scaled(800), self.screen_h - 80)
         self.root.geometry("%dx%d" % (w, h))
         self.root.minsize(min(self._scaled(880), self.screen_w - 10),
-        min(self._scaled(640), self.screen_h - 10))
+                          min(self._scaled(640), self.screen_h - 80))
         self.apply_theme()
         header = tk.Frame(self.root)
         header.pack(fill="x", padx=self._scaled(10), pady=(self._scaled(10), self._scaled(5)))
@@ -1324,7 +1334,7 @@ class TuneupApp:
         self._fix(tk.Label(term_frame, text=self.t("lbl_terminal"),
                            font=("DejaVu Sans", self._scaled(8))),
                   "gray").pack(fill="x")
-        term_lines = 5 if self.screen_h < 700 else 10
+        term_lines = max(3, int((5 if self.screen_h < 700 else 10) * self.ui_scale))
         self.terminal = scrolledtext.ScrolledText(
             term_frame, height=term_lines, font=("DejaVu Sans Mono", self._scaled(9)),
             wrap="word", relief="sunken", bd=1, state="disabled")
