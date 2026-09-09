@@ -1291,8 +1291,7 @@ class TuneupApp:
         container = tk.Frame(self.tab_tuneup)
         container.pack(fill="both", expand=True, padx=self._scaled(8),
                        pady=self._scaled(8))
-        self.tune_canvas = tk.Canvas(container, highlightthickness=0,
-                                     scrollincrement=self._scaled(24))
+        self.tune_canvas = tk.Canvas(container, highlightthickness=0)
         scrollbar = ttk.Scrollbar(container, orient="vertical",
                                   command=self.tune_canvas.yview)
         self.tune_canvas.configure(yscrollcommand=scrollbar.set)
