@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-System Tuneup GUI v0.4
+System Tuneup GUI v0.5
 Графическая оболочка тюнинга Linux Mint / Ubuntu / Debian.
 RU/EN, темы, детект применённых настроек, откат, бэкапы,
-mount-опции noatime/nodiratime, симлинки compatdata для Steam.
+mount-опции noatime/nodiratime, симлинки compatdata для Steam (только NTFS),
+встроенный просмотрщик файлов, контекстное меню копирования.
 """
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, simpledialog, filedialog
 import subprocess, os, sys, threading, queue, re, pwd, grp, time, shutil, glob
 
-APP_VERSION = "0.4"
+APP_VERSION = "0.5"
 
 THEMES = {
     "light": {"bg": "#f5f5f5", "fg": "#1e1e1e", "green": "#2e7d32", "yellow": "#b26a00",
@@ -160,25 +161,27 @@ STR = {
         "st_os_lbl": "ОС", "st_gpu_lbl": "Видеокарта", "st_screen_lbl": "Разрешение экрана",
         "st_swap_lbl": "Файл подкачки", "st_kernel_lbl": "Ядро",
         "st_de_lbl": "Графическая оболочка",
+        "st_ram_lbl": "ОЗУ", "st_disk_lbl": "Диск /", "st_disk_home": "Диск /home",
+        "gb": "ГБ", "free_word": "свободно",
         "user_note": "Пользователь", "home_note": "Домашняя папка",
         "w_yes": "да", "w_no": "нет", "no_swap": "отсутствует",
         "st_enabled": "включён", "st_disabled": "отключён",
         "st_masked": "заблокирован", "st_notfound": "не найден",
         "yes": "ПРИМЕНЕНО", "no": "НЕ ПРИМЕНЕНО",
         "schedule_current": "Текущее: %s", "schedule_none": "не настроено",
-        "mount_title": "Диски: параметры монтирования",
-        "mount_prefix": "noatime,nodiratime: ",
-        "mount_short": "параметры монтирования fstab",
-        "steam_title": "Steam: симлинки compatdata",
-        "steam_prefix": "compatdata → ",
-        "steam_short": "симлинк compatdata",
+        "mount_row_name": "Параметры монтирования",
+        "steam_row_name": "Симлинк Steam",
+        "mount_row_desc": "Добавляет в /etc/fstab опции noatime,nodiratime для раздела: меньше служебных обращений к диску при чтении (полезно для SSD и NTFS-дисков). Вступает в силу после перезагрузки.",
+        "steam_row_desc": "Создаёт символическую ссылку compatdata в библиотеке Steam на этом NTFS-разделе, чтобы игры Steam видели данные Proton/Wine из домашней папки. Если compatdata уже есть как каталог с данными — он не трогается.",
+        "viewer_title": "Просмотр файла",
+        "viewer_open_ext": "Открыть во внешнем редакторе",
         "msg_run_title": "Выполняется", "msg_run_text": "Скрипт уже запущен. Дождитесь завершения.",
         "msg_noopt_title": "Нет выбранных опций", "msg_noopt_text": "Отметьте хотя бы одну опцию.",
         "msg_sel_title": "Службы", "msg_sel_text": "Сначала выберите строки в таблице (Ctrl/Shift + клик).",
         "msg_no_file_title": "Файл ещё не существует",
         "msg_no_file_text": "Этот файл появится после применения опции. Пути, где опция вносит изменения:",
         "help_title": "Справка",
-        "help": """System Tuneup GUI v0.4
+        "help": """System Tuneup GUI v0.5
 
 Графическая оболочка для безопасного тюнинга Linux Mint / Ubuntu / Debian.
 
@@ -190,22 +193,28 @@ STR = {
 3. Нажмите «Применить выбранное» и введите пароль sudo при запросе.
 Текст в терминале, статусе и справке можно копировать: выделение + Ctrl+C
 или правый клик мышью («Копировать», «Копировать всё», «Выделить всё»).
+Меню закрывается левым кликом по любому месту или клавишей Escape.
+
+КНОПКА «ФАЙЛ»
+Открывает встроенный просмотрщик с содержимым файла, который изменяет опция
+(работает в любом окружении, читает даже защищённые файлы через sudo).
+Кнопка «Открыть во внешнем редакторе» передаёт файл системному редактору.
 
 СУХОЙ ПРОГОН
 Галочка «Сухой прогон» сверху: команды только показываются в логе,
 изменения в систему не вносятся.
 
-ДИСКИ: ПАРАМЕТРЫ МОНТИРОВАНИЯ
+ПАРАМЕТРЫ МОНТИРОВАНИЯ (раздел «Диски и файловые системы»)
 Отметьте смонтированные разделы — в /etc/fstab им будут добавлены опции
 noatime,nodiratime (меньше обращений к диску). Изменения вступают в силу
 после перезагрузки. Откат убирает эти опции из fstab.
 
-STEAM: СИМЛИНКИ COMPATDATA
-Для отмеченных библиотек Steam на других дисках создаётся символическая
-ссылка <библиотека>/compatdata на ~/.steam/steam/steamapps/compatdata
-(нужно для игр Steam, установленных на NTFS/других дисках).
-Если compatdata уже существует как каталог с данными — он не трогается,
-в логе будет предупреждение. Откат удаляет только символические ссылки.
+СИМЛИНКИ STEAM (раздел «Диски и файловые системы»)
+Предлагаются только библиотеки Steam на NTFS-разделах. Для отмеченных
+создаётся ссылка <библиотека>/compatdata на ~/.steam/steam/steamapps/compatdata
+(нужно для игр Steam на NTFS-дисках). Если compatdata уже существует как
+каталог с данными — он не трогается, в логе будет предупреждение.
+Откат удаляет только символические ссылки.
 
 ВКЛАДКА «СЛУЖБЫ»
 Показывает состояние служб, которые обычно не нужны на домашнем ПК.
@@ -223,6 +232,9 @@ STEAM: СИМЛИНКИ COMPATDATA
 - rsyslog: sudo systemctl unmask rsyslog && sudo systemctl enable --now rsyslog;
 - GRUB-параметры удаляются вместе с update-grub при откате;
 - службы: выделите на вкладке «Службы» и нажмите «Включить выбранные».
+
+АВТОР
+Дмитрий Свистунов (Dmitry Svistunov)
 """,
     },
     "en": {
@@ -255,25 +267,27 @@ STEAM: СИМЛИНКИ COMPATDATA
         "st_os_lbl": "OS", "st_gpu_lbl": "GPU", "st_screen_lbl": "Screen resolution",
         "st_swap_lbl": "Swap", "st_kernel_lbl": "Kernel",
         "st_de_lbl": "Desktop environment",
+        "st_ram_lbl": "RAM", "st_disk_lbl": "Disk /", "st_disk_home": "Disk /home",
+        "gb": "GB", "free_word": "free",
         "user_note": "User", "home_note": "Home folder",
         "w_yes": "yes", "w_no": "no", "no_swap": "none",
         "st_enabled": "enabled", "st_disabled": "disabled",
         "st_masked": "blocked", "st_notfound": "not found",
         "yes": "APPLIED", "no": "NOT APPLIED",
         "schedule_current": "Current: %s", "schedule_none": "not configured",
-        "mount_title": "Disks: mount options",
-        "mount_prefix": "noatime,nodiratime: ",
-        "mount_short": "fstab mount options",
-        "steam_title": "Steam: compatdata symlinks",
-        "steam_prefix": "compatdata → ",
-        "steam_short": "compatdata symlink",
+        "mount_row_name": "Mount options",
+        "steam_row_name": "Steam symlink",
+        "mount_row_desc": "Adds noatime,nodiratime options to the partition's /etc/fstab entry: fewer service disk accesses on reads (useful for SSD and NTFS disks). Takes effect after reboot.",
+        "steam_row_desc": "Creates a compatdata symlink in the Steam library on this NTFS partition so Steam games can see Proton/Wine data from the home folder. If compatdata already exists as a directory with data it is left untouched.",
+        "viewer_title": "File viewer",
+        "viewer_open_ext": "Open in external editor",
         "msg_run_title": "Running", "msg_run_text": "A job is already running. Wait for it to finish.",
         "msg_noopt_title": "No options selected", "msg_noopt_text": "Tick at least one option.",
         "msg_sel_title": "Services", "msg_sel_text": "Select table rows first (Ctrl/Shift + click).",
         "msg_no_file_title": "File does not exist yet",
         "msg_no_file_text": "This file appears after applying the option. Paths the option modifies:",
         "help_title": "Help",
-        "help": """System Tuneup GUI v0.4
+        "help": """System Tuneup GUI v0.5
 
 A graphical shell for safe tuning of Linux Mint / Ubuntu / Debian.
 
@@ -284,21 +298,27 @@ HOW TO USE
 3. Press "Apply selected" and enter your sudo password when asked.
 Text in the terminal, status and help can be copied: select + Ctrl+C
 or right-click (Copy, Copy all, Select all).
+The menu closes on a left click anywhere or Escape.
+
+"FILE" BUTTON
+Opens a built-in viewer with the content of the file the option modifies
+(works in any desktop environment, reads protected files via sudo).
+The "Open in external editor" button hands the file to the system editor.
 
 DRY RUN
 Tick "Dry run" at the top: commands are only printed to the log.
 
-DISKS: MOUNT OPTIONS
+MOUNT OPTIONS ("Drives & filesystems" section)
 Tick mounted partitions — noatime,nodiratime will be added to their
 /etc/fstab entries (less disk wear). Changes take effect after reboot.
 Rollback removes these options from fstab.
 
-STEAM: COMPATDATA SYMLINKS
-For ticked Steam libraries on other disks a symlink
-<library>/compatdata -> ~/.steam/steam/steamapps/compatdata is created
-(needed for Steam games on NTFS/other disks).
-If compatdata already exists as a directory with data it is left untouched
-with a warning in the log. Rollback removes symlinks only.
+STEAM SYMLINKS ("Drives & filesystems" section)
+Only Steam libraries on NTFS partitions are offered. For ticked ones a
+symlink <library>/compatdata -> ~/.steam/steam/steamapps/compatdata is
+created (needed for Steam games on NTFS disks). If compatdata already
+exists as a directory with data it is left untouched with a warning.
+Rollback removes symlinks only.
 
 SERVICES TAB
 Shows services usually unneeded on a home PC.
@@ -316,6 +336,9 @@ Before modifying any file a copy is saved to ~/system-tuneup-backups
 - rsyslog: sudo systemctl unmask rsyslog && sudo systemctl enable --now rsyslog;
 - GRUB parameters are removed together with update-grub on rollback;
 - services: select on the Services tab and press "Enable selected".
+
+AUTHOR
+Dmitry Svistunov
 """,
     },
 }
@@ -383,7 +406,8 @@ def parse_mounts():
                 if not dev.startswith("/dev/"):
                     continue
                 if fstype not in ("ext2", "ext3", "ext4", "xfs", "btrfs",
-                                  "f2fs", "ntfs", "ntfs3", "vfat", "exfat"):
+                                  "f2fs", "ntfs", "ntfs3", "vfat", "exfat",
+                                  "fuseblk"):
                     continue
                 if "rw" not in opts.split(","):
                     continue
@@ -1535,6 +1559,7 @@ class TuneupApp:
         self.applied_labels = {}
         self.mount_labels = {}
         self.steam_labels = {}
+        self._copy_menu_shown = None
         self.dry_run_var = tk.BooleanVar(value="--dry-run" in sys.argv)
         self.sudo = SudoManager()
         self.sudo.set_parent(root)
@@ -1552,8 +1577,8 @@ class TuneupApp:
             self.mount_items.append(it)
         self.steam_items = []
         for lib in find_steam_libraries(self.state.user_home):
-            self.steam_items.append(
-                {"lib": lib, "var": tk.BooleanVar(value=False)})
+            if self._lib_on_ntfs(lib):
+                self.steam_items.append({"lib": lib, "var": tk.BooleanVar(value=False)})
         self.dpi_scale = max(1.0, self.root.winfo_fpixels('1i') / 96.0)
         self.screen_w = self.root.winfo_screenwidth()
         self.screen_h = self.root.winfo_screenheight()
@@ -1576,6 +1601,137 @@ class TuneupApp:
         self.root.after(400, self.refresh_services)
         self.root.after(900, self.refresh_applied)
         self.root.after(1200, self.refresh_status)
+
+    # ─── дисковые helpers ───
+    def _fstype_of(self, dev):
+        try:
+            res = subprocess.run(["lsblk", "-no", "FSTYPE", dev],
+                                 capture_output=True, text=True, timeout=5)
+            out = res.stdout.strip().splitlines()
+            return out[0] if out else ""
+        except Exception:
+            return ""
+
+    def _lib_on_ntfs(self, lib):
+        best_mp = ""
+        dev = ""
+        fstype = ""
+        for it in parse_mounts():
+            mp = it["mp"]
+            if lib == mp or lib.startswith(mp.rstrip("/") + "/") or mp == "/":
+                if len(mp) > len(best_mp):
+                    best_mp, dev, fstype = mp, it["dev"], it["fstype"]
+        if fstype in ("ntfs", "ntfs3", "fuseblk"):
+            return True
+        if fstype in ("auto", ""):
+            fstype = self._fstype_of(dev)
+        return fstype in ("ntfs", "ntfs3", "fuseblk")
+
+    def _disk_info(self, path):
+        try:
+            st = os.statvfs(path)
+            total = st.f_blocks * st.f_frsize / 1024.0 ** 3
+            free = st.f_bavail * st.f_frsize / 1024.0 ** 3
+            return total, free
+        except Exception:
+            return None
+
+    def _home_separate(self):
+        try:
+            return os.stat("/").st_dev != os.stat(self.state.user_home).st_dev
+        except Exception:
+            return False
+
+    def _col(self, name):
+        if len(name) > 31:
+            name = name[:30] + "…"
+        return name.ljust(32)
+
+    def _exists_any(self, p):
+        if os.path.exists(p):
+            return True
+        try:
+            r = subprocess.run(["sudo", "-n", "test", "-e", p],
+                               capture_output=True, timeout=3)
+            return r.returncode == 0
+        except Exception:
+            return False
+
+    def _spawn(self, cmd):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("LD_LIBRARY_PATH", "LD_PRELOAD", "PYTHONPATH",
+                            "PYTHONHOME", "APPDIR", "APPIMAGE", "UNION_PRELOAD")}
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL,
+                         start_new_session=True, env=env)
+
+    def _show_viewer(self, path, content):
+        win = tk.Toplevel(self.root)
+        win.title("%s: %s" % (self.t("viewer_title"), path))
+        win.geometry("%dx%d" % (min(self._scaled(760), self.screen_w - 20),
+                                min(self._scaled(520), self.screen_h - 40)))
+        t = THEMES[self.current_theme]
+        win.configure(bg=t["bg"])
+        text = scrolledtext.ScrolledText(win, font=("DejaVu Sans Mono", self._scaled(9)),
+                                         bg=t["terminal_bg"], fg=t["terminal_fg"],
+                                         wrap="word", relief="flat",
+                                         padx=self._scaled(8), pady=self._scaled(8))
+        text.pack(fill="both", expand=True)
+        text.insert("1.0", content)
+        text.configure(state="disabled")
+        self._make_copyable(text)
+        bf = tk.Frame(win, bg=t["bg"])
+        bf.pack(fill="x", padx=self._scaled(8), pady=(0, self._scaled(8)))
+
+        def open_ext():
+            for cmd in (["xdg-open", path], ["gio", "open", path],
+                        ["xed", path], ["gedit", path], ["mousepad", path],
+                        ["kate", path], ["pluma", path]):
+                try:
+                    self._spawn(cmd)
+                    return
+                except Exception:
+                    continue
+        tk.Button(bf, text=self.t("viewer_open_ext"), command=open_ext,
+                  font=("DejaVu Sans", self._scaled(9)),
+                  padx=self._scaled(10), pady=self._scaled(3)).pack(side="left")
+
+    def create_disk_extras(self):
+        for it in self.mount_items:
+            row = tk.Frame(self.options_inner)
+            row.pack(fill="x", pady=self._scaled(1))
+            top = tk.Frame(row)
+            top.pack(fill="x")
+            cb = tk.Checkbutton(top, text="%s (%s)" % (it["mp"], it["dev"]),
+                                variable=it["var"],
+                                font=("DejaVu Sans", self._scaled(10)), anchor="w")
+            cb.pack(side="left")
+            ap = tk.Label(top, text="…", font=("DejaVu Sans", self._scaled(9), "bold"))
+            ap.pack(side="left", padx=(self._scaled(12), 0))
+            self.mount_labels[it["mp"]] = ap
+            self._fix(tk.Label(row, text=self.t("mount_row_desc"),
+                               font=("DejaVu Sans", self._scaled(8)),
+                               anchor="w", wraplength=self._scaled(760),
+                               justify="left"),
+                      "gray").pack(fill="x", padx=(self._scaled(26), 0),
+                                   pady=(0, self._scaled(2)))
+        for it in self.steam_items:
+            row = tk.Frame(self.options_inner)
+            row.pack(fill="x", pady=self._scaled(1))
+            top = tk.Frame(row)
+            top.pack(fill="x")
+            cb = tk.Checkbutton(top, text=it["lib"], variable=it["var"],
+                                font=("DejaVu Sans", self._scaled(10)), anchor="w")
+            cb.pack(side="left")
+            ap = tk.Label(top, text="…", font=("DejaVu Sans", self._scaled(9), "bold"))
+            ap.pack(side="left", padx=(self._scaled(12), 0))
+            self.steam_labels[it["lib"]] = ap
+            self._fix(tk.Label(row, text=self.t("steam_row_desc"),
+                               font=("DejaVu Sans", self._scaled(8)),
+                               anchor="w", wraplength=self._scaled(760),
+                               justify="left"),
+                      "gray").pack(fill="x", padx=(self._scaled(26), 0),
+                                   pady=(0, self._scaled(2)))
 
     # ─── helpers ───
     def t(self, key):
@@ -1621,7 +1777,7 @@ class TuneupApp:
         return "%s (%d-бит)" % (name, bits) if self.lang == "ru" \
             else "%s (%d-bit)" % (name, bits)
 
-    # ─── theme ───
+    # ─── theme ──
     def apply_theme(self, theme_name=None):
         if theme_name:
             self.current_theme = theme_name
@@ -1725,7 +1881,6 @@ class TuneupApp:
 
     def toggle_lang(self):
         current = self.update_schedule.get()
-        map_ru = dict(zip(self._schedule_values(), self._schedule_values()))
         ru_vals = ("Отключено", "Ежедневно", "Еженедельно (суббота)",
                    "2 раза в месяц (1 и 15)", "Ежемесячно (1 число)")
         en_vals = ("Disabled", "Daily", "Weekly (Saturday)",
@@ -1735,7 +1890,6 @@ class TuneupApp:
             self.update_schedule.set(dict(zip(en_vals, ru_vals)).get(current, current))
         else:
             self.update_schedule.set(dict(zip(ru_vals, en_vals)).get(current, current))
-        del map_ru
         self.rebuild_ui()
 
     def _update_header_buttons(self):
@@ -1770,7 +1924,7 @@ class TuneupApp:
         self.refresh_status()
         self.refresh_applied()
 
-    # ─── UI ───
+    # ─── UI ──
     def create_ui(self):
         self.root.title("System Tuneup v%s" % APP_VERSION)
         w = min(self._scaled(1060), self.screen_w - 10)
@@ -1849,7 +2003,7 @@ class TuneupApp:
                         mode="determinate").pack(side="right")
         self.apply_theme()
 
-    # ─── wheel ───
+    # ─── wheel ──
     def _on_wheel(self, event):
         d = 0
         num = getattr(event, "num", None)
@@ -1910,6 +2064,7 @@ class TuneupApp:
         order = CAT_ORDER[self.lang]
         cats = [c for c in order if c in categories]
         cats += [c for c in sorted(categories) if c not in order]
+        disk_cat = self.om("ntfs3")[2]
         for cat in cats:
             self._fix(tk.Label(self.options_inner, text="─── %s ───" % cat,
                                font=("DejaVu Sans", self._scaled(10), "bold"),
@@ -1917,42 +2072,8 @@ class TuneupApp:
                 fill="x", pady=(self._scaled(10), self._scaled(3)))
             for key in categories[cat]:
                 self.create_option_row(key)
-        if self.mount_items:
-            self._fix(tk.Label(self.options_inner,
-                               text="─── %s ───" % self.t("mount_title"),
-                               font=("DejaVu Sans", self._scaled(10), "bold"),
-                               anchor="w"), "yellow").pack(
-                fill="x", pady=(self._scaled(10), self._scaled(3)))
-            for it in self.mount_items:
-                row = tk.Frame(self.options_inner)
-                row.pack(fill="x", pady=self._scaled(1))
-                cb = tk.Checkbutton(row, text="%s%s (%s)" % (
-                    self.t("mount_prefix"), it["mp"], it["dev"]),
-                    variable=it["var"],
-                    font=("DejaVu Sans", self._scaled(10)), anchor="w")
-                cb.pack(side="left")
-                ap = tk.Label(row, text="…",
-                              font=("DejaVu Sans", self._scaled(9), "bold"))
-                ap.pack(side="left", padx=(self._scaled(12), 0))
-                self.mount_labels[it["mp"]] = ap
-        if self.steam_items:
-            self._fix(tk.Label(self.options_inner,
-                               text="─── %s ───" % self.t("steam_title"),
-                               font=("DejaVu Sans", self._scaled(10), "bold"),
-                               anchor="w"), "yellow").pack(
-                fill="x", pady=(self._scaled(10), self._scaled(3)))
-            for it in self.steam_items:
-                row = tk.Frame(self.options_inner)
-                row.pack(fill="x", pady=self._scaled(1))
-                cb = tk.Checkbutton(row, text="%s%s" % (
-                    self.t("steam_prefix"), it["lib"]),
-                    variable=it["var"],
-                    font=("DejaVu Sans", self._scaled(10)), anchor="w")
-                cb.pack(side="left")
-                ap = tk.Label(row, text="…",
-                              font=("DejaVu Sans", self._scaled(9), "bold"))
-                ap.pack(side="left", padx=(self._scaled(12), 0))
-                self.steam_labels[it["lib"]] = ap
+            if cat == disk_cat:
+                self.create_disk_extras()
         self._bind_wheel(self.tune_canvas)
         self._bind_wheel(self.options_inner)
 
@@ -2094,24 +2215,58 @@ class TuneupApp:
     def _select_all_text(self, w):
         w.tag_add("sel", "1.0", "end-1c")
 
+    def _copy_menu_hide(self, event=None):
+        menu = self._copy_menu_shown
+        if menu is not None:
+            try:
+                menu.unpost()
+            except Exception:
+                pass
+            self._copy_menu_shown = None
+        try:
+            self.root.unbind_all("<Button-1>")
+        except Exception:
+            pass
+        try:
+            self.root.unbind_all("<Escape>")
+        except Exception:
+            pass
+
+    def _copy_menu_click(self, event):
+        if self._copy_menu_shown is None:
+            return
+        if event.widget == self._copy_menu_shown:
+            return
+        self._copy_menu_hide()
+
     def _make_copyable(self, w):
         menu = tk.Menu(self.root, tearoff=0, font=("DejaVu Sans", self._scaled(9)))
+
+        def wrap(fn):
+            def wrapper():
+                self._copy_menu_hide()
+                fn()
+            return wrapper
         menu.add_command(label=self.t("menu_copy"),
-                         command=lambda: self._copy_selection(w))
+                         command=wrap(lambda: self._copy_selection(w)))
         menu.add_command(label=self.t("menu_copy_all"),
-                         command=lambda: self._copy_all(w))
+                         command=wrap(lambda: self._copy_all(w)))
         menu.add_command(label=self.t("menu_select_all"),
-                         command=lambda: self._select_all_text(w))
+                         command=wrap(lambda: self._select_all_text(w)))
 
         def on_key(event):
             self._copy_selection(w)
             return "break"
 
         def on_right(event):
+            self._copy_menu_hide()
+            self._copy_menu_shown = menu
+            self.root.bind_all("<Button-1>", self._copy_menu_click, add="+")
+            self.root.bind_all("<Escape>", self._copy_menu_hide, add="+")
             try:
-                menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                menu.grab_release()
+                menu.post(event.x_root, event.y_root)
+            except Exception:
+                self._copy_menu_hide()
             return "break"
         for seq in ("<Control-c>", "<Control-C>", "<Control-Insert>"):
             w.bind(seq, on_key, add="+")
@@ -2356,24 +2511,30 @@ class TuneupApp:
                  for p in OPTION_FILES.get(key, [])]
         target = None
         for p in cands:
-            if os.path.exists(p):
+            if self._exists_any(p):
                 target = p
                 break
+        if target is None and cands:
+            if not self.sudo._sudo_cached():
+                if not self.sudo.ensure():
+                    return
+            for p in cands:
+                if self._exists_any(p):
+                    target = p
+                    break
         if target is None:
             if not cands:
                 return
             messagebox.showinfo(self.t("msg_no_file_title"),
                                 self.t("msg_no_file_text") + "\n" + "\n".join(cands))
             return
-        for cmd in (["xdg-open"], ["gio", "open"], ["xed"], ["gedit"],
-                    ["mousepad"], ["kate"], ["pluma"]):
-            try:
-                subprocess.Popen(cmd + [target], stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, True)
+        content = ops.read_file(target)
+        if content is None:
+            if not self.sudo.ensure():
                 return
-            except Exception:
-                continue
-        self.log("Не удалось открыть файл: %s" % target, "error")
+            content = ops.read_file(target) or ""
+        self._show_viewer(target, content)
 
     def select_all_options(self):
         for k, o in self.options.items():
@@ -2446,12 +2607,12 @@ class TuneupApp:
                 done += 1
                 self.q.put(("progress", int(done / total * 90)))
             if mount_sel:
-                self.log("→ %s" % self.t("mount_title"), "info")
+                self.log("→ %s" % self.t("mount_row_name"), "info")
                 ops.apply_mount_opts(mount_sel)
                 done += 1
                 self.q.put(("progress", int(done / total * 90)))
             if steam_sel:
-                self.log("→ %s" % self.t("steam_title"), "info")
+                self.log("→ %s" % self.t("steam_row_name"), "info")
                 ops.apply_steam_links(steam_sel)
                 done += 1
                 self.q.put(("progress", int(done / total * 90)))
@@ -2511,12 +2672,12 @@ class TuneupApp:
                 done += 1
                 self.q.put(("progress", int(done / total * 90)))
             if mount_sel:
-                self.log("→ %s" % self.t("mount_title"), "info")
+                self.log("→ %s" % self.t("mount_row_name"), "info")
                 ops.rollback_mount_opts(mount_sel)
                 done += 1
                 self.q.put(("progress", int(done / total * 90)))
             if steam_sel:
-                self.log("→ %s" % self.t("steam_title"), "info")
+                self.log("→ %s" % self.t("steam_row_name"), "info")
                 ops.rollback_steam_links(steam_sel)
                 done += 1
                 self.q.put(("progress", int(done / total * 90)))
@@ -2571,7 +2732,7 @@ class TuneupApp:
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write("System Tuneup v%s\n" % APP_VERSION)
-                f.write("Date: %s\n\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+                f.write("Date: %s\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
                 for k in selected:
                     f.write("%s: %s\n" % (k, self.om(k)[0]))
             self.log("Конфигурация сохранена: %s" % path, "success")
@@ -2702,6 +2863,20 @@ class TuneupApp:
         rows.append(("%s: %s" % (self.t("st_gpu_lbl"), gpu_line), "info"))
         rows.append(("%s: %dx%d" % (self.t("st_screen_lbl"),
                                     self.screen_w, self.screen_h), "info"))
+        ram = ram_total_gb()
+        if ram is not None:
+            rows.append(("%s: %.1f %s" % (self.t("st_ram_lbl"), ram,
+                                          self.t("gb")), "info"))
+        for path, lbl_key in (("/", "st_disk_lbl"),
+                              (self.state.user_home, "st_disk_home")):
+            if lbl_key == "st_disk_home" and not self._home_separate():
+                continue
+            info = self._disk_info(path)
+            if info:
+                total, free = info
+                rows.append(("%s: %.1f %s, %s %.1f %s"
+                             % (self.t(lbl_key), total, self.t("gb"),
+                                self.t("free_word"), free, self.t("gb")), "info"))
         rows.append(("%s: %s" % (self.t("st_swap_lbl"),
                                  self.state.swap_type if self.state.has_swap
                                  else self.t("no_swap")), "info"))
@@ -2719,19 +2894,19 @@ class TuneupApp:
             label, _d, _c, short = self.om(key)
             ok = A.get(key, False)
             mark = self.t("yes") if ok else self.t("no")
-            rows.append(("%s%s%s" % (label.ljust(32), mark.ljust(16), short),
+            rows.append(("%s%s%s" % (self._col(label), mark.ljust(16), short),
                          "ok" if ok else "no"))
         for it in self.mount_items:
             ok = self.mount_applied.get(it["mp"], False)
             mark = self.t("yes") if ok else self.t("no")
-            rows.append(("%s%s%s" % (("noatime %s" % it["mp"]).ljust(32),
-                                     mark.ljust(16), self.t("mount_short")),
+            rows.append(("%s%s%s" % (self._col(self.t("mount_row_name")),
+                                     mark.ljust(16), it["mp"]),
                          "ok" if ok else "no"))
         for it in self.steam_items:
             ok = self.steam_applied.get(it["lib"], False)
             mark = self.t("yes") if ok else self.t("no")
-            rows.append(("%s%s%s" % (("compatdata %s" % it["lib"]).ljust(32),
-                                     mark.ljust(16), self.t("steam_short")),
+            rows.append(("%s%s%s" % (self._col(self.t("steam_row_name")),
+                                     mark.ljust(16), it["lib"]),
                          "ok" if ok else "no"))
         rows.append(("", "info"))
         rows.append((self.t("st_services"), "head"))
