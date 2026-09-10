@@ -135,7 +135,7 @@ STR = {
         "tab_tune": " Тюнинг ", "tab_serv": " Службы ", "tab_stat": " Статус ",
         "btn_apply_sel": "Применить выбранное", "btn_rollback": "Откатить выбранное",
         "btn_selall_opt": "Выбрать все", "btn_selnone": "Снять выделение",
-        "btn_export": "Экспорт", "btn_help": "Помощь",
+        "btn_export": "Экспорт", "btn_help": "О твикере",
         "theme_dark": "Тёмная тема", "theme_light": "Светлая тема",
         "lbl_dry": "Сухой прогон", "lbl_terminal": "Терминальный вывод:",
         "lbl_group": "Группа:", "lbl_value": "Значение:", "lbl_schedule": "Расписание:",
@@ -174,13 +174,18 @@ STR = {
         "mount_row_desc": "Добавляет в /etc/fstab опции noatime,nodiratime для раздела: меньше служебных обращений к диску при чтении (полезно для SSD и NTFS-дисков). Вступает в силу после перезагрузки.",
         "steam_row_desc": "Создаёт символическую ссылку compatdata в библиотеке Steam на этом NTFS-разделе, чтобы игры Steam видели данные Proton/Wine из домашней папки. Если compatdata уже есть как каталог с данными — он не трогается.",
         "viewer_title": "Просмотр файла",
+        "about_purpose": "Графическая оболочка для безопасного тюнинга Linux Mint / Ubuntu / Debian: твики производительности, логов, дисков и игр с откатом и бэкапами.",
+        "about_author": "Автор", "about_author_name": "Дмитрий Свистунов",
+        "about_version": "Версия",
+        "st_disk_both": "Диск / и /home (общий раздел)",
+        "swap_file": "файл", "swap_part": "раздел",
         "viewer_open_ext": "Открыть во внешнем редакторе",
         "msg_run_title": "Выполняется", "msg_run_text": "Скрипт уже запущен. Дождитесь завершения.",
         "msg_noopt_title": "Нет выбранных опций", "msg_noopt_text": "Отметьте хотя бы одну опцию.",
         "msg_sel_title": "Службы", "msg_sel_text": "Сначала выберите строки в таблице (Ctrl/Shift + клик).",
         "msg_no_file_title": "Файл ещё не существует",
         "msg_no_file_text": "Этот файл появится после применения опции. Пути, где опция вносит изменения:",
-        "help_title": "Справка",
+        "help_title": "О твикере",
         "help": """System Tuneup GUI v0.5
 
 Графическая оболочка для безопасного тюнинга Linux Mint / Ubuntu / Debian.
@@ -232,16 +237,13 @@ noatime,nodiratime (меньше обращений к диску). Измене
 - rsyslog: sudo systemctl unmask rsyslog && sudo systemctl enable --now rsyslog;
 - GRUB-параметры удаляются вместе с update-grub при откате;
 - службы: выделите на вкладке «Службы» и нажмите «Включить выбранные».
-
-АВТОР
-Дмитрий Свистунов (Dmitry Svistunov)
 """,
     },
     "en": {
         "tab_tune": " Tuning ", "tab_serv": " Services ", "tab_stat": " Status ",
         "btn_apply_sel": "Apply selected", "btn_rollback": "Rollback selected",
         "btn_selall_opt": "Select all", "btn_selnone": "Deselect",
-        "btn_export": "Export", "btn_help": "Help",
+        "btn_export": "Export", "btn_help": "About",
         "theme_dark": "Dark theme", "theme_light": "Light theme",
         "lbl_dry": "Dry run", "lbl_terminal": "Terminal output:",
         "lbl_group": "Group:", "lbl_value": "Value:", "lbl_schedule": "Schedule:",
@@ -280,13 +282,18 @@ noatime,nodiratime (меньше обращений к диску). Измене
         "mount_row_desc": "Adds noatime,nodiratime options to the partition's /etc/fstab entry: fewer service disk accesses on reads (useful for SSD and NTFS disks). Takes effect after reboot.",
         "steam_row_desc": "Creates a compatdata symlink in the Steam library on this NTFS partition so Steam games can see Proton/Wine data from the home folder. If compatdata already exists as a directory with data it is left untouched.",
         "viewer_title": "File viewer",
+        "about_purpose": "A graphical shell for safe tuning of Linux Mint / Ubuntu / Debian: performance, logs, disk and gaming tweaks with rollback and backups.",
+        "about_author": "Author", "about_author_name": "Dmitry Svistunov",
+        "about_version": "Version",
+        "st_disk_both": "Disk / and /home (shared partition)",
+        "swap_file": "file", "swap_part": "partition",
         "viewer_open_ext": "Open in external editor",
         "msg_run_title": "Running", "msg_run_text": "A job is already running. Wait for it to finish.",
         "msg_noopt_title": "No options selected", "msg_noopt_text": "Tick at least one option.",
         "msg_sel_title": "Services", "msg_sel_text": "Select table rows first (Ctrl/Shift + click).",
         "msg_no_file_title": "File does not exist yet",
         "msg_no_file_text": "This file appears after applying the option. Paths the option modifies:",
-        "help_title": "Help",
+        "help_title": "About",
         "help": """System Tuneup GUI v0.5
 
 A graphical shell for safe tuning of Linux Mint / Ubuntu / Debian.
@@ -336,9 +343,6 @@ Before modifying any file a copy is saved to ~/system-tuneup-backups
 - rsyslog: sudo systemctl unmask rsyslog && sudo systemctl enable --now rsyslog;
 - GRUB parameters are removed together with update-grub on rollback;
 - services: select on the Services tab and press "Enable selected".
-
-AUTHOR
-Dmitry Svistunov
 """,
     },
 }
@@ -1715,6 +1719,9 @@ class TuneupApp:
                                justify="left"),
                       "gray").pack(fill="x", padx=(self._scaled(26), 0),
                                    pady=(0, self._scaled(2)))
+        if self.mount_items and self.steam_items:
+            ttk.Separator(self.options_inner, orient="horizontal").pack(
+                fill="x", pady=self._scaled(8))
         for it in self.steam_items:
             row = tk.Frame(self.options_inner)
             row.pack(fill="x", pady=self._scaled(1))
@@ -1760,6 +1767,16 @@ class TuneupApp:
                     "2 раза в месяц (1 и 15)", "Ежемесячно (1 число)")
         return ("Disabled", "Daily", "Weekly (Saturday)",
                 "Twice a month (1 & 15)", "Monthly (1st)")
+
+    def _swap_size_gb(self):
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.startswith("SwapTotal:"):
+                        return int(line.split()[1]) / 1024.0 / 1024.0
+        except Exception:
+            pass
+        return None
 
     def _os_pretty(self):
         name = ""
@@ -2743,7 +2760,7 @@ class TuneupApp:
         win = tk.Toplevel(self.root)
         win.title(self.t("help_title"))
         win.geometry("%dx%d" % (min(self._scaled(700), self.screen_w - 20),
-                                min(self._scaled(560), self.screen_h - 40)))
+                                min(self._scaled(600), self.screen_h - 40)))
         t = THEMES[self.current_theme]
         win.configure(bg=t["bg"])
         text = scrolledtext.ScrolledText(win, font=("DejaVu Sans Mono", self._scaled(9)),
@@ -2751,7 +2768,19 @@ class TuneupApp:
                                          wrap="word", relief="flat",
                                          padx=self._scaled(10), pady=self._scaled(10))
         text.pack(fill="both", expand=True)
-        text.insert("1.0", self.t("help"))
+        text.tag_configure("title", foreground=t["green"],
+                           font=("DejaVu Sans Mono", self._scaled(13), "bold"))
+        text.tag_configure("author", foreground=t["yellow"],
+                           font=("DejaVu Sans Mono", self._scaled(10), "bold"))
+        text.tag_configure("sep", foreground=t["gray"])
+        text.insert("1.0", "System Tuneup GUI\n", "title")
+        text.insert(tk.END, "%s: %s\n" % (self.t("about_version"), APP_VERSION))
+        text.insert(tk.END, "%s\n" % self.t("about_purpose"))
+        text.insert(tk.END, "─" * 60 + "\n", "sep")
+        text.insert(tk.END, "%s: " % self.t("about_author"), "author")
+        text.insert(tk.END, "%s\n" % self.t("about_author_name"), "author")
+        text.insert(tk.END, "─" * 60 + "\n\n" % (), "sep")
+        text.insert(tk.END, self.t("help"))
         text.configure(state="disabled")
         self._make_copyable(text)
 
@@ -2867,19 +2896,29 @@ class TuneupApp:
         if ram is not None:
             rows.append(("%s: %.1f %s" % (self.t("st_ram_lbl"), ram,
                                           self.t("gb")), "info"))
-        for path, lbl_key in (("/", "st_disk_lbl"),
-                              (self.state.user_home, "st_disk_home")):
-            if lbl_key == "st_disk_home" and not self._home_separate():
-                continue
+        if self._home_separate():
+            disk_pairs = (("/", "st_disk_lbl"),
+                          (self.state.user_home, "st_disk_home"))
+        else:
+            disk_pairs = (("/", "st_disk_both"),)
+        for path, lbl_key in disk_pairs:
             info = self._disk_info(path)
             if info:
                 total, free = info
                 rows.append(("%s: %.1f %s, %s %.1f %s"
                              % (self.t(lbl_key), total, self.t("gb"),
                                 self.t("free_word"), free, self.t("gb")), "info"))
-        rows.append(("%s: %s" % (self.t("st_swap_lbl"),
-                                 self.state.swap_type if self.state.has_swap
-                                 else self.t("no_swap")), "info"))
+        if self.state.has_swap:
+            type_names = {"file": self.t("swap_file"),
+                          "partition": self.t("swap_part"),
+                          "zram": "zram"}
+            swap_val = type_names.get(self.state.swap_type, self.state.swap_type)
+            sz = self._swap_size_gb()
+            if sz is not None and sz > 0:
+                swap_val += ", %.1f %s" % (sz, self.t("gb"))
+        else:
+            swap_val = self.t("no_swap")
+        rows.append(("%s: %s" % (self.t("st_swap_lbl"), swap_val), "info"))
         rows.append(("%s: %s" % (self.t("st_kernel_lbl"), os.uname().release), "info"))
         rows.append(("%s: %s" % (self.t("st_de_lbl"), desktop_name()), "info"))
         rows.append(("RAID: %s" % (self.t("w_yes") if self.state.has_raid
