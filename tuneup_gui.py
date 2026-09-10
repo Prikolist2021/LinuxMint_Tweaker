@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-System Tuneup GUI v0.3
+System Tuneup GUI v0.4
 Графическая оболочка тюнинга Linux Mint / Ubuntu / Debian.
-RU/EN, темы, детект применённых настроек, откат через бэкапы.
+RU/EN, темы, детект применённых настроек, откат, бэкапы,
+mount-опции noatime/nodiratime, симлинки compatdata для Steam.
 """
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, simpledialog, filedialog
-import subprocess, os, sys, threading, queue, re, pwd, grp, time, shutil
+import subprocess, os, sys, threading, queue, re, pwd, grp, time, shutil, glob
 
-APP_VERSION = "0.3"
+APP_VERSION = "0.4"
 
 THEMES = {
     "light": {"bg": "#f5f5f5", "fg": "#1e1e1e", "green": "#2e7d32", "yellow": "#b26a00",
@@ -32,7 +33,6 @@ THEMES = {
              "scrollbar_slider": "#6a6a6a"},
 }
 
-# label, desc, category, short (нейтральная формулировка!)
 OPTIONS_META = {
     "rsyslog": {
         "ru": ("Отключить rsyslog", "Система постоянно пишет подробные журналы на диск. На домашнем ПК это лишняя нагрузка: отключение экономит ресурс SSD и слегка ускоряет работу. Краткие журналы при этом остаются в памяти (см. следующий пункт).", "Логи системы", "запись подробных журналов rsyslog на диск"),
@@ -107,7 +107,6 @@ SERVICES_META = {
 }
 SERVICES_ORDER = list(SERVICES_META.keys())
 
-# Какие файлы затрагивает каждая опция (первый существующий и открывается)
 OPTION_FILES = {
     "rsyslog": ["/etc/systemd/system/rsyslog.service",
                 "/lib/systemd/system/rsyslog.service"],
@@ -130,25 +129,11 @@ OPTION_FILES = {
                    "/etc/systemd/system/biweekly-upgrade.service"],
 }
 
-
-def desktop_name():
-    """Определяет графическое окружение: Cinnamon, XFCE, MATE, KDE, GNOME..."""
-    d = (os.environ.get("XDG_CURRENT_DESKTOP", "") + " " +
-         os.environ.get("DESKTOP_SESSION", "")).lower()
-    table = [("cinnamon", "Cinnamon"), ("xfce", "XFCE"), ("mate", "MATE"),
-             ("plasma", "KDE Plasma"), ("kde", "KDE Plasma"), ("gnome", "GNOME"),
-             ("lxqt", "LXQt"), ("lxde", "LXDE"), ("openbox", "Openbox"),
-             ("budgie", "Budgie"), ("pantheon", "Pantheon"), ("i3", "i3"),
-             ("hyprland", "Hyprland"), ("ukui", "UKUI")]
-    for key, name in table:
-        if key in d:
-            return name
-    return os.environ.get("XDG_CURRENT_DESKTOP", "") or "?"
-
 STR = {
     "ru": {
         "tab_tune": " Тюнинг ", "tab_serv": " Службы ", "tab_stat": " Статус ",
-        "btn_apply": "Применить", "btn_selall": "Выбрать все", "btn_reset": "Сбросить",
+        "btn_apply_sel": "Применить выбранное", "btn_rollback": "Откатить выбранное",
+        "btn_selall_opt": "Выбрать все", "btn_selnone": "Снять выделение",
         "btn_export": "Экспорт", "btn_help": "Помощь",
         "theme_dark": "Тёмная тема", "theme_light": "Светлая тема",
         "lbl_dry": "Сухой прогон", "lbl_terminal": "Терминальный вывод:",
@@ -156,40 +141,44 @@ STR = {
         "status_ready": "Готово", "status_running": "Выполнение...",
         "status_done": "Готово", "status_error": "Ошибка",
         "applied_yes": "✓ применено", "applied_no": "не применено",
-        "svc_refresh": "Обновить", "svc_rec": "Отключить лишние службы",
-        "svc_on_sel": "Включить выбранные", "svc_off_sel": "Отключить выбранные",
+        "btn_open_file": "файл",
+        "menu_copy": "Копировать", "menu_copy_all": "Копировать всё",
+        "menu_select_all": "Выделить всё",
         "svc_col_name": "Служба", "svc_col_en": "Состояние", "svc_col_act": "Запуск",
         "svc_col_desc": "Описание и зачем отключать",
         "svc_on": "[ON] работает", "svc_onoff": "[ON/off] включена, не запущена",
         "svc_off": "[OFF] отключена", "svc_masked": "[MASKED] заблокирована",
         "svc_na": "[N/A] нет в системе", "run_yes": "работает", "run_no": "остановлена",
-        "svc_count": "Служб: {n}", "svc_detail_hint": "Выберите строку, чтобы увидеть полное описание службы.",
+        "svc_count": "Служб: {n}",
+        "svc_detail_hint": "Выберите строку, чтобы увидеть полное описание службы.",
+        "svc_on_sel": "Включить выбранные", "svc_off_sel": "Отключить выбранные",
         "stat_refresh": "Обновить статус",
-        "st_hw": "=== ОБОРУДОВАНИЕ ===", "st_tweaks": "=== НАСТРОЙКИ (применены ли) ===",
+        "st_hw": "=== ИНФОРМАЦИЯ О СИСТЕМЕ ===",
+        "st_tweaks": "=== ТВИКИ ===",
         "st_services": "=== СЛУЖБЫ ===", "st_kernel": "=== ЯДРО (текущие значения) ===",
         "st_timer": "Таймер автообновлений",
-        "gpu_note": "видеокарта", "raid_note": "RAID-массив", "swap_note": "подкачка",
-        "ntsync_note": "ускоритель Wine/Proton", "cinn_note": "оболочка Cinnamon",
-        "user_note": "пользователь", "home_note": "домашняя папка",
-        "ram_note": "оперативная память", "kernel_note": "версия ядра",
-        "screen_note": "разрешение экрана",
-        "de_note": "графическая оболочка", "host_note": "имя компьютера",
-        "gb": "ГБ", "no_swap": "нет",
+        "st_os_lbl": "ОС", "st_gpu_lbl": "Видеокарта", "st_screen_lbl": "Разрешение экрана",
+        "st_swap_lbl": "Файл подкачки", "st_kernel_lbl": "Ядро",
+        "st_de_lbl": "Графическая оболочка",
+        "user_note": "Пользователь", "home_note": "Домашняя папка",
+        "w_yes": "да", "w_no": "нет", "no_swap": "отсутствует",
+        "st_enabled": "включён", "st_disabled": "отключён",
+        "st_masked": "заблокирован", "st_notfound": "не найден",
         "yes": "ПРИМЕНЕНО", "no": "НЕ ПРИМЕНЕНО",
-        "rec_title": "Отключение лишних служб",
-        "rec_text": "Будут отключены службы, которые почти не нужны на домашнем ПК:",
-        "rec_hint": "Вернуть любую службу можно на вкладке «Службы»: выделите строки и нажмите «Включить выбранные».",
-        "dlg_yes": "Да, отключить", "dlg_no": "Отмена",
-        "btn_apply_sel": "Применить выбранное", "btn_rollback": "Откатить выбранное",
-        "btn_selall_opt": "Выбрать все", "btn_selnone": "Снять выделение",
-        "btn_open_file": "файл",
-        "msg_no_file_title": "Файл ещё не существует",
-        "msg_no_file_text": "Этот файл появится после применения опции. Пути, где опция вносит изменения:",
+        "schedule_current": "Текущее: %s", "schedule_none": "не настроено",
+        "mount_title": "Диски: параметры монтирования",
+        "mount_prefix": "noatime,nodiratime: ",
+        "mount_short": "параметры монтирования fstab",
+        "steam_title": "Steam: симлинки compatdata",
+        "steam_prefix": "compatdata → ",
+        "steam_short": "симлинк compatdata",
         "msg_run_title": "Выполняется", "msg_run_text": "Скрипт уже запущен. Дождитесь завершения.",
         "msg_noopt_title": "Нет выбранных опций", "msg_noopt_text": "Отметьте хотя бы одну опцию.",
         "msg_sel_title": "Службы", "msg_sel_text": "Сначала выберите строки в таблице (Ctrl/Shift + клик).",
+        "msg_no_file_title": "Файл ещё не существует",
+        "msg_no_file_text": "Этот файл появится после применения опции. Пути, где опция вносит изменения:",
         "help_title": "Справка",
-        "help": """System Tuneup GUI v0.3
+        "help": """System Tuneup GUI v0.4
 
 Графическая оболочка для безопасного тюнинга Linux Mint / Ubuntu / Debian.
 
@@ -198,41 +187,48 @@ STR = {
    означает, что настройка уже активна в системе (даже если вы делали её вручную).
 2. При необходимости укажите параметры: группа CoreCtrl, значение swappiness,
    расписание автообновлений.
-3. Нажмите «Применить» и введите пароль sudo при запросе.
+3. Нажмите «Применить выбранное» и введите пароль sudo при запросе.
+Текст в терминале, статусе и справке можно копировать: выделение + Ctrl+C
+или правый клик мышью («Копировать», «Копировать всё», «Выделить всё»).
 
 СУХОЙ ПРОГОН
 Галочка «Сухой прогон» сверху: команды только показываются в логе,
 изменения в систему не вносятся.
 
+ДИСКИ: ПАРАМЕТРЫ МОНТИРОВАНИЯ
+Отметьте смонтированные разделы — в /etc/fstab им будут добавлены опции
+noatime,nodiratime (меньше обращений к диску). Изменения вступают в силу
+после перезагрузки. Откат убирает эти опции из fstab.
+
+STEAM: СИМЛИНКИ COMPATDATA
+Для отмеченных библиотек Steam на других дисках создаётся символическая
+ссылка <библиотека>/compatdata на ~/.steam/steam/steamapps/compatdata
+(нужно для игр Steam, установленных на NTFS/других дисках).
+Если compatdata уже существует как каталог с данными — он не трогается,
+в логе будет предупреждение. Откат удаляет только символические ссылки.
+
 ВКЛАДКА «СЛУЖБЫ»
 Показывает состояние служб, которые обычно не нужны на домашнем ПК.
 Клик по строке выводит полное описание службы в панели под таблицей.
-Кнопка «Отключить лишние службы» перед действием покажет их список
-с пояснениями и попросит подтверждение.
-«Выбрать все» и «Сбросить» внизу на этой вкладке выделяют/снимают выделение строк.
+Кнопки выделяют/снимают выделение строк и включают/отключают выделенное.
 
 ВКЛАДКА «СТАТУС»
-Сводка по системе. Зелёным — настройка применена, красным — нет,
-рядом краткое пояснение, что это за настройка.
+Сводка по системе. В разделе «ТВИКИ» зелёным показаны применённые
+настройки, красным — нет, рядом краткое описание.
 
 ОТКАТ ИЗМЕНЕНИЙ
 Перед изменением любого файла копия сохраняется в ~/system-tuneup-backups
 (одна последняя копия каждого файла). Для отката:
-- rsyslog: sudo systemctl unmask rsyslog && sudo systemctl enable --now rsyslog
-- journald: верните /etc/systemd/journald.conf из бэкапа и выполните
-  sudo systemctl restart systemd-journald
-- GRUB (audit=0, raid=..., ppfeaturemask): верните /etc/default/grub из бэкапа
-  и выполните sudo update-grub
-- environment / sysctl / modules-load / polkit / xorg: верните нужный файл
-  из бэкапа (для sysctl затем: sudo sysctl --system)
-- алиасы в .bashrc: удалите блок между маркерами system-tuneup commands
-- таймер автообновлений: выберите расписание «Отключено» и нажмите «Применить»
-- службы: выделите на вкладке «Службы» и нажмите «Включить выбранные»
+- отметьте опции и нажмите «Откатить выбранное»;
+- rsyslog: sudo systemctl unmask rsyslog && sudo systemctl enable --now rsyslog;
+- GRUB-параметры удаляются вместе с update-grub при откате;
+- службы: выделите на вкладке «Службы» и нажмите «Включить выбранные».
 """,
     },
     "en": {
         "tab_tune": " Tuning ", "tab_serv": " Services ", "tab_stat": " Status ",
-        "btn_apply": "Apply", "btn_selall": "Select all", "btn_reset": "Reset",
+        "btn_apply_sel": "Apply selected", "btn_rollback": "Rollback selected",
+        "btn_selall_opt": "Select all", "btn_selnone": "Deselect",
         "btn_export": "Export", "btn_help": "Help",
         "theme_dark": "Dark theme", "theme_light": "Light theme",
         "lbl_dry": "Dry run", "lbl_terminal": "Terminal output:",
@@ -240,40 +236,44 @@ STR = {
         "status_ready": "Ready", "status_running": "Running...",
         "status_done": "Done", "status_error": "Error",
         "applied_yes": "✓ applied", "applied_no": "not applied",
-        "svc_refresh": "Refresh", "svc_rec": "Disable unneeded services",
-        "svc_on_sel": "Enable selected", "svc_off_sel": "Disable selected",
+        "btn_open_file": "file",
+        "menu_copy": "Copy", "menu_copy_all": "Copy all",
+        "menu_select_all": "Select all",
         "svc_col_name": "Service", "svc_col_en": "State", "svc_col_act": "Running",
         "svc_col_desc": "Description & why disable",
         "svc_on": "[ON] running", "svc_onoff": "[ON/off] enabled, not running",
         "svc_off": "[OFF] disabled", "svc_masked": "[MASKED] blocked",
         "svc_na": "[N/A] not installed", "run_yes": "running", "run_no": "stopped",
-        "svc_count": "Services: {n}", "svc_detail_hint": "Select a row to see the full service description.",
+        "svc_count": "Services: {n}",
+        "svc_detail_hint": "Select a row to see the full service description.",
+        "svc_on_sel": "Enable selected", "svc_off_sel": "Disable selected",
         "stat_refresh": "Refresh status",
-        "st_hw": "=== HARDWARE ===", "st_tweaks": "=== TWEAKS (applied or not) ===",
+        "st_hw": "=== SYSTEM INFORMATION ===",
+        "st_tweaks": "=== TWEAKS ===",
         "st_services": "=== SERVICES ===", "st_kernel": "=== KERNEL (live values) ===",
         "st_timer": "Auto-update timer",
-        "gpu_note": "GPU", "raid_note": "RAID array", "swap_note": "swap",
-        "ntsync_note": "Wine/Proton accelerator", "cinn_note": "Cinnamon shell",
-        "user_note": "user", "home_note": "home folder",
-        "ram_note": "RAM", "kernel_note": "kernel version",
-        "screen_note": "screen resolution",
-        "de_note": "desktop environment", "host_note": "hostname",
-        "gb": "GB", "no_swap": "none",
+        "st_os_lbl": "OS", "st_gpu_lbl": "GPU", "st_screen_lbl": "Screen resolution",
+        "st_swap_lbl": "Swap", "st_kernel_lbl": "Kernel",
+        "st_de_lbl": "Desktop environment",
+        "user_note": "User", "home_note": "Home folder",
+        "w_yes": "yes", "w_no": "no", "no_swap": "none",
+        "st_enabled": "enabled", "st_disabled": "disabled",
+        "st_masked": "blocked", "st_notfound": "not found",
         "yes": "APPLIED", "no": "NOT APPLIED",
-        "rec_title": "Disabling unneeded services",
-        "rec_text": "These services, rarely needed on a home PC, will be disabled:",
-        "rec_hint": "Any service can be restored on the Services tab: select rows and press Enable selected.",
-        "dlg_yes": "Yes, disable", "dlg_no": "Cancel",
-        "btn_apply_sel": "Apply selected", "btn_rollback": "Rollback selected",
-        "btn_selall_opt": "Select all", "btn_selnone": "Deselect",
-        "btn_open_file": "file",
-        "msg_no_file_title": "File does not exist yet",
-        "msg_no_file_text": "This file appears after applying the option. Paths the option modifies:",
+        "schedule_current": "Current: %s", "schedule_none": "not configured",
+        "mount_title": "Disks: mount options",
+        "mount_prefix": "noatime,nodiratime: ",
+        "mount_short": "fstab mount options",
+        "steam_title": "Steam: compatdata symlinks",
+        "steam_prefix": "compatdata → ",
+        "steam_short": "compatdata symlink",
         "msg_run_title": "Running", "msg_run_text": "A job is already running. Wait for it to finish.",
         "msg_noopt_title": "No options selected", "msg_noopt_text": "Tick at least one option.",
         "msg_sel_title": "Services", "msg_sel_text": "Select table rows first (Ctrl/Shift + click).",
+        "msg_no_file_title": "File does not exist yet",
+        "msg_no_file_text": "This file appears after applying the option. Paths the option modifies:",
         "help_title": "Help",
-        "help": """System Tuneup GUI v0.3
+        "help": """System Tuneup GUI v0.4
 
 A graphical shell for safe tuning of Linux Mint / Ubuntu / Debian.
 
@@ -281,32 +281,41 @@ HOW TO USE
 1. Tuning tab: tick the options you want. A green "applied" mark means
    the setting is already active (even if you configured it manually).
 2. Fill in parameters if needed: CoreCtrl group, swappiness, update schedule.
-3. Press Apply and enter your sudo password when asked.
+3. Press "Apply selected" and enter your sudo password when asked.
+Text in the terminal, status and help can be copied: select + Ctrl+C
+or right-click (Copy, Copy all, Select all).
 
 DRY RUN
-Tick "Dry run" at the top: commands are only printed to the log, no changes are made.
+Tick "Dry run" at the top: commands are only printed to the log.
+
+DISKS: MOUNT OPTIONS
+Tick mounted partitions — noatime,nodiratime will be added to their
+/etc/fstab entries (less disk wear). Changes take effect after reboot.
+Rollback removes these options from fstab.
+
+STEAM: COMPATDATA SYMLINKS
+For ticked Steam libraries on other disks a symlink
+<library>/compatdata -> ~/.steam/steam/steamapps/compatdata is created
+(needed for Steam games on NTFS/other disks).
+If compatdata already exists as a directory with data it is left untouched
+with a warning in the log. Rollback removes symlinks only.
 
 SERVICES TAB
 Shows services usually unneeded on a home PC.
 Clicking a row shows the full description in the panel below the table.
-"Disable unneeded services" shows the list with explanations and asks confirmation.
-"Select all"/"Reset" at the bottom select/clear table rows on this tab.
+Buttons select/clear rows and enable/disable the selection.
 
 STATUS TAB
-System summary. Green — tweak applied, red — not applied, with a short explanation.
+System summary. In the TWEAKS section green means applied, red means not
+applied, with a short description next to each line.
 
 ROLLBACK
 Before modifying any file a copy is saved to ~/system-tuneup-backups
 (one latest copy per file). To roll back:
-- rsyslog: sudo systemctl unmask rsyslog && sudo systemctl enable --now rsyslog
-- journald: restore /etc/systemd/journald.conf from backup, then
-  sudo systemctl restart systemd-journald
-- GRUB params: restore /etc/default/grub from backup, then sudo update-grub
-- environment / sysctl / modules-load / polkit / xorg: restore the file from backup
-  (for sysctl then: sudo sysctl --system)
-- .bashrc aliases: delete the block between system-tuneup markers
-- auto-update timer: pick "Disabled" schedule and press Apply
-- services: select on the Services tab and press "Enable selected"
+- tick options and press "Rollback selected";
+- rsyslog: sudo systemctl unmask rsyslog && sudo systemctl enable --now rsyslog;
+- GRUB parameters are removed together with update-grub on rollback;
+- services: select on the Services tab and press "Enable selected".
 """,
     },
 }
@@ -340,6 +349,74 @@ def ram_total_gb():
     return None
 
 
+def desktop_name():
+    d = (os.environ.get("XDG_CURRENT_DESKTOP", "") + " " +
+         os.environ.get("DESKTOP_SESSION", "")).lower()
+    table = [("cinnamon", "Cinnamon"), ("xfce", "XFCE"), ("mate", "MATE"),
+             ("plasma", "KDE Plasma"), ("kde", "KDE Plasma"), ("gnome", "GNOME"),
+             ("lxqt", "LXQt"), ("lxde", "LXDE"), ("openbox", "Openbox"),
+             ("budgie", "Budgie"), ("pantheon", "Pantheon"), ("i3", "i3"),
+             ("hyprland", "Hyprland"), ("ukui", "UKUI")]
+    for key, name in table:
+        if key in d:
+            return name
+    return os.environ.get("XDG_CURRENT_DESKTOP", "") or "?"
+
+
+def detect_lang():
+    for var in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        val = os.environ.get(var, "")
+        if val:
+            return "ru" if val.lower().startswith("ru") else "en"
+    return "en"
+
+
+def parse_mounts():
+    items = []
+    try:
+        with open("/proc/mounts", "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                dev, mp, fstype, opts = parts[0], parts[1], parts[2], parts[3]
+                if not dev.startswith("/dev/"):
+                    continue
+                if fstype not in ("ext2", "ext3", "ext4", "xfs", "btrfs",
+                                  "f2fs", "ntfs", "ntfs3", "vfat", "exfat"):
+                    continue
+                if "rw" not in opts.split(","):
+                    continue
+                items.append({"dev": dev, "mp": mp, "fstype": fstype})
+    except Exception:
+        pass
+    return items
+
+
+def find_steam_libraries(user_home):
+    libs = []
+    vdf = os.path.join(user_home, ".steam", "steam", "steamapps",
+                       "libraryfolders.vdf")
+    if os.path.isfile(vdf):
+        try:
+            with open(vdf, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    m = re.search(r'"path"\s+"([^"]+)"', line)
+                    if m:
+                        p = m.group(1).replace("\\\\", "/")
+                        sa = os.path.join(p, "steamapps")
+                        if os.path.isdir(sa) and sa not in libs:
+                            libs.append(sa)
+        except Exception:
+            pass
+    for pat in ("/media/*/Steam/steamapps", "/mnt/*/Steam/steamapps",
+                "/run/media/*/*/Steam/steamapps"):
+        for p in glob.glob(pat):
+            if os.path.isdir(p) and p not in libs:
+                libs.append(p)
+    return libs
+
+
 class SudoManager:
     def __init__(self):
         self.parent = None
@@ -364,8 +441,7 @@ class SudoManager:
         for attempt in range(1, 4):
             password = simpledialog.askstring(
                 "sudo", "Password (attempt %d/3):" % attempt,
-                parent=self.parent, show="*",
-            )
+                parent=self.parent, show="*")
             if password is None:
                 return False
             if not password:
@@ -420,11 +496,13 @@ class SudoManager:
 class SystemState:
     def __init__(self):
         self.gpu = "Unknown"
+        self.gpu_model = ""
         self.has_raid = False
         self.has_swap = False
         self.swap_type = ""
         self.ntsync = False
         self.cinnamon = False
+        self.has_flatpak = False
         self.user_name = "root"
         self.user_home = "/root"
 
@@ -439,14 +517,19 @@ class SystemState:
             self.user_home = os.path.expanduser("~")
         try:
             res = subprocess.run(["lspci"], capture_output=True, text=True, timeout=5)
-            for line in res.stdout.lower().splitlines():
+            for raw in res.stdout.splitlines():
+                line = raw.lower()
                 if "vga" in line or "3d controller" in line or "display controller" in line:
                     if "amd" in line or "radeon" in line:
-                        self.gpu = "AMD"; break
+                        self.gpu = "AMD"
                     elif "nvidia" in line:
-                        self.gpu = "NVIDIA"; break
+                        self.gpu = "NVIDIA"
                     elif "intel" in line:
-                        self.gpu = "Intel"; break
+                        self.gpu = "Intel"
+                    else:
+                        continue
+                    self.gpu_model = self._parse_gpu_model(raw)
+                    break
         except Exception:
             pass
         try:
@@ -488,6 +571,13 @@ class SystemState:
                 self.cinnamon = res.returncode == 0
             except Exception:
                 pass
+        self.has_flatpak = bool(shutil.which("flatpak"))
+
+    def _parse_gpu_model(self, line):
+        desc = line.split(": ", 1)[1] if ": " in line else line
+        cleaned = re.sub(r"^[^\[]*\[[^\]]*\]\s*", "", desc)
+        cleaned = re.sub(r"\(rev [^)]*\)", "", cleaned).strip()
+        return cleaned or desc.strip()
 
     def _get_real_user(self):
         sudo_user = os.environ.get("SUDO_USER")
@@ -759,10 +849,17 @@ class SystemOps:
         if self.dry_run:
             self.log("[DRY RUN] update-grub", "warning")
             return
-        if shutil.which("update-grub"):
-            self.sudo_run(["update-grub"], ok_msg="GRUB обновлён", err_msg="Ошибка update-grub")
-        elif shutil.which("grub-mkconfig"):
-            self.sudo_run(["grub-mkconfig", "-o", "/boot/grub/grub.cfg"],
+        update_grub = shutil.which("update-grub")
+        if not update_grub and os.path.exists("/usr/sbin/update-grub"):
+            update_grub = "/usr/sbin/update-grub"
+        grub_mkconfig = shutil.which("grub-mkconfig")
+        if not grub_mkconfig and os.path.exists("/usr/sbin/grub-mkconfig"):
+            grub_mkconfig = "/usr/sbin/grub-mkconfig"
+        if update_grub:
+            self.sudo_run([update_grub], ok_msg="GRUB обновлён",
+                          err_msg="Ошибка update-grub")
+        elif grub_mkconfig:
+            self.sudo_run([grub_mkconfig, "-o", "/boot/grub/grub.cfg"],
                           ok_msg="GRUB обновлён", err_msg="Ошибка grub-mkconfig")
         else:
             self.log("Не найдена команда update-grub или grub-mkconfig", "warning")
@@ -813,30 +910,49 @@ class SystemOps:
             self.log("Обнаружен RAID, пропуск raid=noautodetect", "warning"); return True
         return self.add_grub_params(["raid=noautodetect"])
 
+    def _polkit_is_new(self):
+        try:
+            res = subprocess.run(["pkaction", "--version"],
+                                 capture_output=True, text=True, timeout=5)
+            m = re.search(r"(\d+)\.(\d+)", (res.stdout or "") + (res.stderr or ""))
+            if m:
+                major, minor = int(m.group(1)), int(m.group(2))
+                return major > 0 or minor >= 106
+        except Exception:
+            pass
+        return os.path.isdir("/etc/polkit-1/rules.d")
+
     def apply_corectrl(self, params=None):
         params = params or {}
         group = params.get("corectrl_group", "").strip() or self.state.user_name
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", group):
             self.log("Некорректное имя группы: %s" % group, "error"); return False
         if self.dry_run:
-            self.log("[DRY RUN] CoreCtrl polkit rule для группы %s" % group, "warning"); return True
+            self.log("[DRY RUN] CoreCtrl polkit rule для группы %s" % group, "warning")
+            return True
         try:
             grp.getgrnam(group)
         except KeyError:
             self.log("Группа не найдена: %s" % group, "error"); return False
-        content = (
-            "polkit.addRule(function(action, subject) {\n"
-            '    if ((action.id == "org.corectrl.helper.init" ||\n'
-            '         action.id == "org.corectrl.helperkiller.init") &&\n'
-            "        subject.local == true && subject.active == true &&\n"
-            '        subject.isInGroup("' + group + '")) {\n'
-            "        return polkit.Result.YES;\n"
-            "    }\n"
-            "});\n"
-        )
-        path = "/etc/polkit-1/rules.d/90-corectrl.rules"
+        if self._polkit_is_new():
+            content = (
+                "polkit.addRule(function(action, subject) {\n"
+                '    if ((action.id == "org.corectrl.helper.init" ||\n'
+                '         action.id == "org.corectrl.helperkiller.init") &&\n'
+                "        subject.local == true && subject.active == true &&\n"
+                '        subject.isInGroup("' + group + '")) {\n'
+                "        return polkit.Result.YES;\n"
+                "    }\n"
+                "});\n")
+            path = "/etc/polkit-1/rules.d/90-corectrl.rules"
+        else:
+            content = ("[User permissions]\nIdentity=unix-group:" + group + "\n"
+                       "Action=org.corectrl.*\nResultActive=yes\n")
+            path = "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla"
         if self.write_file(path, content, chmod="644", mkdir=True):
-            self.log("✓ CoreCtrl настроен для группы %s" % group, "success"); return True
+            self.log("✓ CoreCtrl настроен для группы %s (%s)"
+                     % (group, os.path.basename(path)), "success")
+            return True
         return False
 
     def apply_ppfeaturemask(self, params=None):
@@ -908,7 +1024,8 @@ class SystemOps:
 
     def apply_sysctl(self, params=None):
         if self.dry_run:
-            self.log("[DRY RUN] vfs_cache_pressure=50, numa_balancing=0", "warning"); return True
+            self.log("[DRY RUN] vfs_cache_pressure=50, numa_balancing=0", "warning")
+            return True
         path = "/etc/sysctl.d/99-gaming-sysctl.conf"
         existing = self.read_file(path)
         if existing:
@@ -997,20 +1114,23 @@ class SystemOps:
                 continue
             cleaned.append(line)
         spices = self._has_cinnamon_spices()
+        has_fp = self.state.has_flatpak
         block = [start_marker, "# Пользовательские команды обновлений (system-tuneup)", ""]
         block += ["upd() {", '    echo "Поиск обновлений APT..."', "    sudo apt update", "}", ""]
-        block += ["upgr() {", '    echo "Обновление пакетов APT..."', "    sudo apt full-upgrade",
-                  '    echo "Обновление Flatpak..."']
-        if spices:
-            block.append("    flatpak update && cinnamon-spice-updater --update-all")
-        else:
-            block.append("    flatpak update")
+        block += ["upgr() {", '    echo "Обновление пакетов APT..."', "    sudo apt full-upgrade"]
+        if has_fp:
+            block.append('    echo "Обновление Flatpak..."')
+            if spices:
+                block.append("    flatpak update && cinnamon-spice-updater --update-all")
+            else:
+                block.append("    flatpak update")
         block += ["}", ""]
         if spices:
             block += ["spices() {", '    echo "Обновление апплетов Cinnamon..."',
                       "    cinnamon-spice-updater --update-all", "}", ""]
-        block += ["update_all() {", "    sudo apt update && sudo apt full-upgrade -y",
-                  "    flatpak update -y"]
+        block += ["update_all() {", "    sudo apt update && sudo apt full-upgrade -y"]
+        if has_fp:
+            block.append("    flatpak update -y")
         if spices:
             block.append("    cinnamon-spice-updater --update-all")
         block += ['    echo "Все обновления завершены!"', "}", ""]
@@ -1079,7 +1199,9 @@ class SystemOps:
             self.log("Неизвестное расписание: %s" % schedule_ui, "error"); return False
         oncalendar, desc = schedules[schedule_ui]
         spices = self._has_cinnamon_spices()
-        full_cmd = "apt update && apt full-upgrade -y && flatpak update -y"
+        full_cmd = "apt update && apt full-upgrade -y"
+        if self.state.has_flatpak:
+            full_cmd += " && flatpak update -y"
         if spices:
             full_cmd += " && cinnamon-spice-updater --update-all"
         svc_content = ("[Unit]\nDescription=System upgrade (%s)\n\n[Service]\nType=oneshot\n"
@@ -1112,8 +1234,132 @@ class SystemOps:
                       err_msg="Не удалось включить таймер")
         return True
 
+    # ─── fstab: noatime,nodiratime ───────────────────────────────────────
+    def _uuid_of(self, dev):
+        try:
+            res = subprocess.run(["lsblk", "-no", "UUID", dev],
+                                 capture_output=True, text=True, timeout=5)
+            return res.stdout.strip() if res.returncode == 0 else ""
+        except Exception:
+            return ""
 
-    # ─── Откат изменений ────────────────────────────────────────────────
+    def _fstab_find(self, lines, mp, uuid):
+        for i, line in enumerate(lines):
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            parts = s.split()
+            if len(parts) < 4:
+                continue
+            if parts[1] == mp:
+                return i, parts
+            if uuid and parts[0].lower() == ("uuid=%s" % uuid).lower():
+                return i, parts
+        return None, None
+
+    def _mount_opts_edit(self, mp, add=True):
+        path = "/etc/fstab"
+        content = self.read_file(path)
+        if not content:
+            self.log("Не удалось прочитать /etc/fstab", "error"); return False
+        dev = None
+        for it in parse_mounts():
+            if it["mp"] == mp:
+                dev = it["dev"]; break
+        uuid = self._uuid_of(dev) if dev else ""
+        lines = content.splitlines()
+        idx, parts = self._fstab_find(lines, mp, uuid)
+        if idx is None:
+            self.log("%s не найден в /etc/fstab — пропуск" % mp, "warning")
+            return False
+        opts = parts[3].split(",")
+        target = ["noatime", "nodiratime"]
+        if add:
+            new_opts = opts + [o for o in target if o not in opts]
+        else:
+            new_opts = [o for o in opts if o not in target]
+        if new_opts == opts:
+            self.log("Уже настроено: %s" % mp, "info"); return True
+        parts[3] = ",".join(new_opts)
+        lines[idx] = "\t".join(parts)
+        self.backup_file(path)
+        if not self.write_file(path, "\n".join(lines) + "\n", backup=False):
+            return False
+        if add:
+            self.log("✓ fstab: %s → noatime,nodiratime (вступит в силу после перезагрузки)"
+                     % mp, "success")
+        else:
+            self.log("✓ fstab: %s → опции убраны (после перезагрузки)" % mp, "success")
+        return True
+
+    def apply_mount_opts(self, mps):
+        if self.dry_run:
+            for mp in mps:
+                self.log("[DRY RUN] fstab: %s +noatime,nodiratime" % mp, "warning")
+            return True
+        for mp in mps:
+            self._mount_opts_edit(mp, add=True)
+        return True
+
+    def rollback_mount_opts(self, mps):
+        if self.dry_run:
+            for mp in mps:
+                self.log("[DRY RUN] fstab: %s -noatime,nodiratime" % mp, "warning")
+            return True
+        for mp in mps:
+            self._mount_opts_edit(mp, add=False)
+        return True
+
+    # ─── Steam compatdata ────────────────────────────────────────────────
+    def apply_steam_links(self, libs):
+        src = os.path.join(self.state.user_home, ".steam", "steam",
+                           "steamapps", "compatdata")
+        try:
+            os.makedirs(src, exist_ok=True)
+        except Exception as e:
+            self.log("Не удалось создать %s: %s" % (src, e), "error")
+            return False
+        for lib in libs:
+            dst = os.path.join(lib, "compatdata")
+            if os.path.realpath(lib) == os.path.realpath(os.path.dirname(src)):
+                continue
+            if self.dry_run:
+                self.log("[DRY RUN] ln -s %s -> %s" % (src, dst), "warning")
+                continue
+            try:
+                if os.path.islink(dst):
+                    os.remove(dst)
+                elif os.path.isdir(dst):
+                    self.log("Пропуск: %s уже существует как каталог с данными" % dst,
+                             "warning")
+                    continue
+                elif os.path.exists(dst):
+                    self.log("Пропуск: %s существует и не является каталогом/ссылкой" % dst,
+                             "warning")
+                    continue
+                os.symlink(src, dst)
+                self.log("✓ симлинк создан: %s" % dst, "success")
+            except Exception as e:
+                self.log("Ошибка симлинка %s: %s" % (dst, e), "error")
+        return True
+
+    def rollback_steam_links(self, libs):
+        for lib in libs:
+            dst = os.path.join(lib, "compatdata")
+            if self.dry_run:
+                self.log("[DRY RUN] rm %s (симлинк)" % dst, "warning")
+                continue
+            try:
+                if os.path.islink(dst):
+                    os.remove(dst)
+                    self.log("✓ симлинк удалён: %s" % dst, "success")
+                else:
+                    self.log("Не симлинк, не трогаем: %s" % dst, "info")
+            except Exception as e:
+                self.log("Ошибка удаления %s: %s" % (dst, e), "error")
+        return True
+
+    # ─── Откат изменений ─────────────────────────────────────────────────
     def _rm(self, path):
         if self.dry_run:
             self.log("[DRY RUN] rm %s" % path, "warning"); return True
@@ -1124,7 +1370,7 @@ class SystemOps:
 
     def _remove_line(self, path, pattern):
         if self.dry_run:
-            self.log("[DRY RUN] %s: удалить строку %s" % (path, pattern), "warning")
+            self.log("[DRY RUN] %s: удалить строку по %s" % (path, pattern), "warning")
             return True
         content = self.read_file(path)
         if not content:
@@ -1280,11 +1526,15 @@ class TuneupApp:
         self.root = root
         self.q = queue.Queue()
         self.is_running = False
-        self.lang = "ru"
+        self.lang = detect_lang()
         self.current_theme = "light"
         self.applied = {}
+        self.mount_applied = {}
+        self.steam_applied = {}
         self.option_widgets = {}
         self.applied_labels = {}
+        self.mount_labels = {}
+        self.steam_labels = {}
         self.dry_run_var = tk.BooleanVar(value="--dry-run" in sys.argv)
         self.sudo = SudoManager()
         self.sudo.set_parent(root)
@@ -1294,13 +1544,19 @@ class TuneupApp:
         self.corectrl_group = tk.StringVar(value=default_group)
         self.swap_value = tk.StringVar(
             value="150" if self.state.swap_type == "zram" else "10")
-        self.update_schedule = tk.StringVar(value="Еженедельно (суббота)")
+        self.update_schedule = tk.StringVar(value=self._schedule_values()[2])
         self.options = {k: {"var": tk.BooleanVar(value=False)} for k in OPTIONS_META}
+        self.mount_items = []
+        for it in parse_mounts():
+            it["var"] = tk.BooleanVar(value=False)
+            self.mount_items.append(it)
+        self.steam_items = []
+        for lib in find_steam_libraries(self.state.user_home):
+            self.steam_items.append(
+                {"lib": lib, "var": tk.BooleanVar(value=False)})
         self.dpi_scale = max(1.0, self.root.winfo_fpixels('1i') / 96.0)
         self.screen_w = self.root.winfo_screenwidth()
         self.screen_h = self.root.winfo_screenheight()
-        # Глобальный масштаб для низких разрешений (нетбуки 1024x600 и т.п.):
-        # пропорционально уменьшает шрифты, отступы и окно.
         self.ui_scale = min(1.0, self.screen_w / 1100.0, self.screen_h / 850.0)
         if self.ui_scale < 0.75:
             self.ui_scale = 0.75
@@ -1310,7 +1566,7 @@ class TuneupApp:
         self.root.after(100, self.process_queue)
         self.log("System Tuneup GUI запущен", "success")
         self.log("Версия: %s" % APP_VERSION, "info")
-        self.log("GPU: %s" % self.state.gpu, "info")
+        self.log("GPU: %s %s" % (self.state.gpu, self.state.gpu_model), "info")
         if self.dry_run_var.get():
             self.log("Режим: СУХОЙ ПРОГОН", "warning")
         if self.sudo._sudo_cached():
@@ -1331,7 +1587,7 @@ class TuneupApp:
     def _scaled(self, px):
         v = int(px * self.dpi_scale * self.ui_scale)
         if px >= 8 and v < 7:
-            v = 7  # не мельчим шрифты сильнее 7pt даже на нетбуке
+            v = 7
         return max(1, v)
 
     def _fix(self, widget, color_key):
@@ -1341,6 +1597,29 @@ class TuneupApp:
     def _alive(self, name):
         w = getattr(self, name, None)
         return w is not None and w.winfo_exists()
+
+    def _schedule_values(self):
+        if self.lang == "ru":
+            return ("Отключено", "Ежедневно", "Еженедельно (суббота)",
+                    "2 раза в месяц (1 и 15)", "Ежемесячно (1 число)")
+        return ("Disabled", "Daily", "Weekly (Saturday)",
+                "Twice a month (1 & 15)", "Monthly (1st)")
+
+    def _os_pretty(self):
+        name = ""
+        try:
+            with open("/etc/os-release", "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.startswith("PRETTY_NAME="):
+                        name = line.split("=", 1)[1].strip().strip('"')
+                        break
+        except Exception:
+            pass
+        if not name:
+            name = "Linux"
+        bits = 64 if sys.maxsize > 2 ** 32 else 32
+        return "%s (%d-бит)" % (name, bits) if self.lang == "ru" \
+            else "%s (%d-bit)" % (name, bits)
 
     # ─── theme ───
     def apply_theme(self, theme_name=None):
@@ -1394,6 +1673,8 @@ class TuneupApp:
                                                   font=mono)
             self.status_text_widget.tag_configure("head", foreground=t["blue"],
                                                   font=mono_b)
+            self.status_text_widget.tag_configure("r", foreground=t["red"])
+            self.status_text_widget.tag_configure("gr", foreground=t["gray"])
         self._update_applied_labels()
         self._update_header_buttons()
 
@@ -1443,7 +1724,18 @@ class TuneupApp:
         self.apply_theme()
 
     def toggle_lang(self):
+        current = self.update_schedule.get()
+        map_ru = dict(zip(self._schedule_values(), self._schedule_values()))
+        ru_vals = ("Отключено", "Ежедневно", "Еженедельно (суббота)",
+                   "2 раза в месяц (1 и 15)", "Ежемесячно (1 число)")
+        en_vals = ("Disabled", "Daily", "Weekly (Saturday)",
+                   "Twice a month (1 & 15)", "Monthly (1st)")
         self.lang = "en" if self.lang == "ru" else "ru"
+        if self.lang == "ru":
+            self.update_schedule.set(dict(zip(en_vals, ru_vals)).get(current, current))
+        else:
+            self.update_schedule.set(dict(zip(ru_vals, en_vals)).get(current, current))
+        del map_ru
         self.rebuild_ui()
 
     def _update_header_buttons(self):
@@ -1459,7 +1751,8 @@ class TuneupApp:
             w.destroy()
         for attr in ("terminal", "services_tree", "status_text_widget", "svc_detail",
                      "tune_canvas", "options_inner", "notebook", "run_button",
-                     "theme_button", "lang_button", "services_count_label"):
+                     "theme_button", "lang_button", "services_count_label",
+                     "schedule_label"):
             if hasattr(self, attr):
                 try:
                     delattr(self, attr)
@@ -1467,18 +1760,19 @@ class TuneupApp:
                     pass
         self.option_widgets = {}
         self.applied_labels = {}
+        self.mount_labels = {}
+        self.steam_labels = {}
         self.create_ui()
         self.apply_hardware_restrictions()
         self.update_title()
         self._update_applied_labels()
         self.refresh_services()
         self.refresh_status()
+        self.refresh_applied()
 
     # ─── UI ───
     def create_ui(self):
         self.root.title("System Tuneup v%s" % APP_VERSION)
-        w = min(self._scaled(1060), self.screen_w - 10)
-        h = min(self._scaled(800), self.screen_h - 30)
         w = min(self._scaled(1060), self.screen_w - 10)
         h = min(self._scaled(800), self.screen_h - 80)
         self.root.geometry("%dx%d" % (w, h))
@@ -1541,6 +1835,7 @@ class TuneupApp:
             term_frame, height=term_lines, font=("DejaVu Sans Mono", self._scaled(9)),
             wrap="word", relief="sunken", bd=1, state="disabled")
         self.terminal.pack(fill="both", expand=True, pady=(self._scaled(2), 0))
+        self._make_copyable(self.terminal)
         status_frame = tk.Frame(self.root)
         status_frame.pack(fill="x", padx=self._scaled(10),
                           pady=(self._scaled(2), self._scaled(10)))
@@ -1552,7 +1847,6 @@ class TuneupApp:
         ttk.Progressbar(status_frame, variable=self.progress_var, maximum=100,
                         length=self._scaled(180),
                         mode="determinate").pack(side="right")
-        # Финальное применение темы: виджеты уже существуют, теги цветов встанут корректно
         self.apply_theme()
 
     # ─── wheel ───
@@ -1623,6 +1917,42 @@ class TuneupApp:
                 fill="x", pady=(self._scaled(10), self._scaled(3)))
             for key in categories[cat]:
                 self.create_option_row(key)
+        if self.mount_items:
+            self._fix(tk.Label(self.options_inner,
+                               text="─── %s ───" % self.t("mount_title"),
+                               font=("DejaVu Sans", self._scaled(10), "bold"),
+                               anchor="w"), "yellow").pack(
+                fill="x", pady=(self._scaled(10), self._scaled(3)))
+            for it in self.mount_items:
+                row = tk.Frame(self.options_inner)
+                row.pack(fill="x", pady=self._scaled(1))
+                cb = tk.Checkbutton(row, text="%s%s (%s)" % (
+                    self.t("mount_prefix"), it["mp"], it["dev"]),
+                    variable=it["var"],
+                    font=("DejaVu Sans", self._scaled(10)), anchor="w")
+                cb.pack(side="left")
+                ap = tk.Label(row, text="…",
+                              font=("DejaVu Sans", self._scaled(9), "bold"))
+                ap.pack(side="left", padx=(self._scaled(12), 0))
+                self.mount_labels[it["mp"]] = ap
+        if self.steam_items:
+            self._fix(tk.Label(self.options_inner,
+                               text="─── %s ───" % self.t("steam_title"),
+                               font=("DejaVu Sans", self._scaled(10), "bold"),
+                               anchor="w"), "yellow").pack(
+                fill="x", pady=(self._scaled(10), self._scaled(3)))
+            for it in self.steam_items:
+                row = tk.Frame(self.options_inner)
+                row.pack(fill="x", pady=self._scaled(1))
+                cb = tk.Checkbutton(row, text="%s%s" % (
+                    self.t("steam_prefix"), it["lib"]),
+                    variable=it["var"],
+                    font=("DejaVu Sans", self._scaled(10)), anchor="w")
+                cb.pack(side="left")
+                ap = tk.Label(row, text="…",
+                              font=("DejaVu Sans", self._scaled(9), "bold"))
+                ap.pack(side="left", padx=(self._scaled(12), 0))
+                self.steam_labels[it["lib"]] = ap
         self._bind_wheel(self.tune_canvas)
         self._bind_wheel(self.options_inner)
 
@@ -1653,10 +1983,13 @@ class TuneupApp:
                                font=("DejaVu Sans", self._scaled(9))),
                       "gray").pack(side="left", padx=(self._scaled(12), self._scaled(2)))
             ttk.Combobox(top, textvariable=self.update_schedule,
-                         values=("Отключено", "Ежедневно", "Еженедельно (суббота)",
-                                 "2 раза в месяц (1 и 15)", "Ежемесячно (1 число)"),
+                         values=self._schedule_values(),
                          state="readonly", width=26,
                          font=("DejaVu Sans", self._scaled(9))).pack(side="left")
+            self.schedule_label = self._fix(tk.Label(
+                top, text=self.t("schedule_current") % self._current_schedule_text(),
+                font=("DejaVu Sans", self._scaled(8))), "gray")
+            self.schedule_label.pack(side="left", padx=(self._scaled(8), 0))
         ap = tk.Label(top, text="…", font=("DejaVu Sans", self._scaled(9), "bold"))
         ap.pack(side="left", padx=(self._scaled(12), 0))
         self.applied_labels[key] = ap
@@ -1703,7 +2036,6 @@ class TuneupApp:
         self.services_tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         self.services_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
-        # Панель полного описания выбранной службы
         self._fix(tk.Label(container, text=self.t("svc_detail_hint"),
                            font=("DejaVu Sans", self._scaled(8)), anchor="w"),
                   "gray").pack(fill="x", pady=(self._scaled(6), 0))
@@ -1711,6 +2043,7 @@ class TuneupApp:
                                   font=("DejaVu Sans", self._scaled(9)),
                                   relief="flat", bd=0, state="disabled")
         self.svc_detail.pack(fill="x", pady=(self._scaled(2), 0))
+        self._make_copyable(self.svc_detail)
         self.services_count_label = tk.Label(container,
                                              text=self.t("svc_count").format(n=0),
                                              font=("DejaVu Sans", self._scaled(8)))
@@ -1743,6 +2076,57 @@ class TuneupApp:
         self.status_text_widget = scrolledtext.ScrolledText(
             container, font=("DejaVu Sans Mono", self._scaled(9)), state="disabled")
         self.status_text_widget.pack(fill="both", expand=True)
+        self._make_copyable(self.status_text_widget)
+
+    # ─── copy / menu ───
+    def _copy_selection(self, w):
+        try:
+            sel = w.get("sel.first", "sel.last")
+        except Exception:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(sel)
+
+    def _copy_all(self, w):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(w.get("1.0", "end-1c"))
+
+    def _select_all_text(self, w):
+        w.tag_add("sel", "1.0", "end-1c")
+
+    def _make_copyable(self, w):
+        menu = tk.Menu(self.root, tearoff=0, font=("DejaVu Sans", self._scaled(9)))
+        menu.add_command(label=self.t("menu_copy"),
+                         command=lambda: self._copy_selection(w))
+        menu.add_command(label=self.t("menu_copy_all"),
+                         command=lambda: self._copy_all(w))
+        menu.add_command(label=self.t("menu_select_all"),
+                         command=lambda: self._select_all_text(w))
+
+        def on_key(event):
+            self._copy_selection(w)
+            return "break"
+
+        def on_right(event):
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+            return "break"
+        for seq in ("<Control-c>", "<Control-C>", "<Control-Insert>"):
+            w.bind(seq, on_key, add="+")
+        w.bind("<Button-3>", on_right, add="+")
+
+    def _fmt_state(self, value):
+        mapping = {
+            "enabled": self.t("st_enabled"),
+            "disabled": self.t("st_disabled"),
+            "masked": self.t("st_masked"),
+            "not-found": self.t("st_notfound"),
+            "active": self.t("run_yes"),
+            "inactive": self.t("run_no"),
+        }
+        return mapping.get(value, value)
 
     # ─── applied detection ───
     def refresh_applied(self):
@@ -1751,32 +2135,37 @@ class TuneupApp:
     def _applied_worker(self):
         try:
             self.q.put(("applied", self.detect_applied()))
+            self.q.put(("mount_applied", self.detect_mount_applied()))
+            self.q.put(("steam_applied", self.detect_steam_applied()))
+            self.q.put(("schedule", self._current_schedule_text()))
         except Exception:
             pass
 
-    def _corectrl_found(self):
-        for d in ("/etc/polkit-1/rules.d", "/usr/share/polkit-1/rules.d"):
-            try:
-                names = os.listdir(d)
-            except Exception:
-                continue
-            for fn in names:
-                if "corectrl" in fn.lower():
-                    return True
-                try:
-                    with open(os.path.join(d, fn), "r",
-                              encoding="utf-8", errors="replace") as f:
-                        if "org.corectrl" in f.read():
-                            return True
-                except Exception:
-                    continue
-        return False
+    def _current_schedule_text(self):
+        path = "/etc/systemd/system/biweekly-upgrade.timer"
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception:
+            return self.t("schedule_none")
+        m = re.search(r"^\s*OnCalendar\s*=\s*(.+)$", content, re.M)
+        if not m:
+            return self.t("schedule_none")
+        cal = m.group(1).strip()
+        names = {
+            "*-*-* 18:30:00": ("Ежедневно", "Daily"),
+            "Sat 18:30:00": ("Еженедельно (суббота)", "Weekly (Saturday)"),
+            "*-*-1,15 18:30:00": ("2 раза в месяц (1 и 15)", "Twice a month (1 & 15)"),
+            "*-*-1 18:30:00": ("Ежемесячно (1 число)", "Monthly (1st)"),
+        }
+        pair = names.get(cal)
+        if pair:
+            cal = pair[0] if self.lang == "ru" else pair[1]
+        return cal
 
     def _corectrl_found(self, ops=None):
         if ops is None:
-            ops = SystemOps(self.sudo, self.state,
-                            lambda m, t="normal": None, True)
-        # 1) Обычным пользователем: список папок и чтение файлов
+            ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, True)
         for d in ("/etc/polkit-1/rules.d",
                   "/usr/share/polkit-1/rules.d",
                   "/etc/polkit-1/localauthority/50-local.d"):
@@ -1794,7 +2183,6 @@ class TuneupApp:
                             return True
                 except Exception:
                     continue
-        # 2) Чтение через sudo -n (работает, если sudo уже закэширован)
         for p in ("/etc/polkit-1/rules.d/90-corectrl.rules",
                   "/usr/share/polkit-1/rules.d/90-corectrl.rules",
                   "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla"):
@@ -1804,7 +2192,6 @@ class TuneupApp:
                 content = ""
             if content and "org.corectrl" in content:
                 return True
-        # 3) Спросить сам polkit: разрешено ли действие прямо сейчас
         try:
             res = subprocess.run(
                 ["pkcheck", "--action-id", "org.corectrl.helper.init",
@@ -1855,15 +2242,48 @@ class TuneupApp:
             "autoupdate": ops.service_enabled("biweekly-upgrade.timer") == "enabled",
         }
 
+    def detect_mount_applied(self):
+        res = {}
+        try:
+            with open("/etc/fstab", "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception:
+            content = ""
+        for it in self.mount_items:
+            mp = it["mp"]
+            ok = False
+            for line in content.splitlines():
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                parts = s.split()
+                if len(parts) >= 4 and parts[1] == mp:
+                    opts = parts[3].split(",")
+                    ok = "noatime" in opts and "nodiratime" in opts
+                    break
+            res[mp] = ok
+        return res
+
+    def detect_steam_applied(self):
+        res = {}
+        for it in self.steam_items:
+            dst = os.path.join(it["lib"], "compatdata")
+            res[it["lib"]] = os.path.islink(dst)
+        return res
+
     def _update_applied_labels(self):
         t = THEMES[self.current_theme]
-        for key, lbl in self.applied_labels.items():
-            if not lbl.winfo_exists():
-                continue
-            val = self.applied.get(key, False)
-            lbl.configure(text=self.t("applied_yes") if val else self.t("applied_no"),
-                          bg=t["bg"], fg=t["green"] if val else t["gray"])
-            lbl._fixed_fg = "green" if val else "gray"
+        groups = ((self.applied_labels, self.applied),
+                  (self.mount_labels, self.mount_applied),
+                  (self.steam_labels, self.steam_applied))
+        for labels, store in groups:
+            for key, lbl in labels.items():
+                if not lbl.winfo_exists():
+                    continue
+                val = store.get(key, False)
+                lbl.configure(text=self.t("applied_yes") if val else self.t("applied_no"),
+                              bg=t["bg"], fg=t["green"] if val else t["gray"])
+                lbl._fixed_fg = "green" if val else "gray"
 
     # ─── queue ───
     def log(self, msg, tag="normal"):
@@ -1896,6 +2316,16 @@ class TuneupApp:
                 elif kind == "applied":
                     self.applied = item[1]
                     self._update_applied_labels()
+                elif kind == "mount_applied":
+                    self.mount_applied = item[1]
+                    self._update_applied_labels()
+                elif kind == "steam_applied":
+                    self.steam_applied = item[1]
+                    self._update_applied_labels()
+                elif kind == "schedule":
+                    if self._alive("schedule_label"):
+                        self.schedule_label.config(
+                            text=self.t("schedule_current") % item[1])
                 elif kind == "services_rows":
                     if not self._alive("services_tree"):
                         continue
@@ -1920,7 +2350,7 @@ class TuneupApp:
             pass
         self.root.after(100, self.process_queue)
 
-    # ─── apply ───
+    # ─── actions ───
     def open_option_file(self, key):
         cands = [p.format(home=self.state.user_home)
                  for p in OPTION_FILES.get(key, [])]
@@ -1950,10 +2380,18 @@ class TuneupApp:
             w = self.option_widgets.get(k)
             if w and str(w.cget("state")) == "normal":
                 o["var"].set(True)
+        for it in self.mount_items:
+            it["var"].set(True)
+        for it in self.steam_items:
+            it["var"].set(True)
 
     def reset_options(self):
         for o in self.options.values():
             o["var"].set(False)
+        for it in self.mount_items:
+            it["var"].set(False)
+        for it in self.steam_items:
+            it["var"].set(False)
 
     def select_all_services(self):
         if self._alive("services_tree"):
@@ -1963,61 +2401,14 @@ class TuneupApp:
         if self._alive("services_tree"):
             self.services_tree.selection_remove(self.services_tree.selection())
 
-    def rollback_selected(self):
-        if self.is_running:
-            messagebox.showinfo(self.t("msg_run_title"), self.t("msg_run_text"))
-            return
-        selected = [k for k, o in self.options.items() if o["var"].get()]
-        if not selected:
-            messagebox.showwarning(self.t("msg_noopt_title"), self.t("msg_noopt_text"))
-            return
-        dry_run = self.dry_run_var.get()
-        if not dry_run and not self.sudo.ensure():
-            self.log("Не удалось получить права sudo", "error")
-            return
-        self.q.put(("running", True))
-        self.q.put(("progress", 0))
-        self.q.put(("statusbar", self.t("status_running")))
-        threading.Thread(target=self._rollback_worker,
-                         args=(selected, dry_run), daemon=True).start()
-
-    def _rollback_worker(self, selected, dry_run):
-        ops = SystemOps(self.sudo, self.state, self.log, dry_run)
-        total = len(selected)
-        done = 0
-        self.log("=" * 60, "highlight")
-        self.log("ЗАПУСК ОТКАТА", "highlight")
-        self.log("=" * 60, "highlight")
-        try:
-            for key in selected:
-                label = self.om(key)[0]
-                self.log("→ %s" % label, "info")
-                try:
-                    getattr(ops, "rollback_%s" % key)()
-                except Exception as e:
-                    self.log("Ошибка в %s: %s" % (label, e), "error")
-                done += 1
-                self.q.put(("progress", int(done / total * 90)))
-            if not dry_run:
-                ops.finalize_grub()
-            self.q.put(("progress", 100))
-            self.q.put(("statusbar", self.t("status_done")))
-            self.log("Откат завершён", "success")
-        except Exception as e:
-            self.log("Критическая ошибка: %s" % e, "error")
-            self.q.put(("statusbar", self.t("status_error")))
-        finally:
-            self.q.put(("running", False))
-            self.refresh_applied()
-            self.refresh_status()
-            self.refresh_services()
-
     def apply_selected(self):
         if self.is_running:
             messagebox.showinfo(self.t("msg_run_title"), self.t("msg_run_text"))
             return
         selected = [k for k, o in self.options.items() if o["var"].get()]
-        if not selected:
+        mount_sel = [it["mp"] for it in self.mount_items if it["var"].get()]
+        steam_sel = [it["lib"] for it in self.steam_items if it["var"].get()]
+        if not selected and not mount_sel and not steam_sel:
             messagebox.showwarning(self.t("msg_noopt_title"), self.t("msg_noopt_text"))
             return
         params = {"corectrl_group": self.corectrl_group.get(),
@@ -2027,15 +2418,19 @@ class TuneupApp:
         if not dry_run and not self.sudo.ensure():
             self.log("Не удалось получить права sudo", "error")
             return
+        self.is_running = True
+        if self._alive("run_button"):
+            self.run_button.config(state="disabled")
         self.q.put(("running", True))
         self.q.put(("progress", 0))
         self.q.put(("statusbar", self.t("status_running")))
         threading.Thread(target=self._apply_worker,
-                         args=(selected, params, dry_run), daemon=True).start()
+                         args=(selected, mount_sel, steam_sel, params, dry_run),
+                         daemon=True).start()
 
-    def _apply_worker(self, selected, params, dry_run):
+    def _apply_worker(self, selected, mount_sel, steam_sel, params, dry_run):
         ops = SystemOps(self.sudo, self.state, self.log, dry_run)
-        total = len(selected)
+        total = len(selected) + (1 if mount_sel else 0) + (1 if steam_sel else 0)
         done = 0
         self.log("=" * 60, "highlight")
         self.log("ЗАПУСК ТЮНИНГА", "highlight")
@@ -2048,6 +2443,16 @@ class TuneupApp:
                     getattr(ops, "apply_%s" % key)(params)
                 except Exception as e:
                     self.log("Ошибка в %s: %s" % (label, e), "error")
+                done += 1
+                self.q.put(("progress", int(done / total * 90)))
+            if mount_sel:
+                self.log("→ %s" % self.t("mount_title"), "info")
+                ops.apply_mount_opts(mount_sel)
+                done += 1
+                self.q.put(("progress", int(done / total * 90)))
+            if steam_sel:
+                self.log("→ %s" % self.t("steam_title"), "info")
+                ops.apply_steam_links(steam_sel)
                 done += 1
                 self.q.put(("progress", int(done / total * 90)))
             if not dry_run:
@@ -2064,30 +2469,70 @@ class TuneupApp:
             self.refresh_status()
             self.refresh_services()
 
-    # ─── context-aware select/reset ───
-    def _on_services_tab(self):
+    def rollback_selected(self):
+        if self.is_running:
+            messagebox.showinfo(self.t("msg_run_title"), self.t("msg_run_text"))
+            return
+        selected = [k for k, o in self.options.items() if o["var"].get()]
+        mount_sel = [it["mp"] for it in self.mount_items if it["var"].get()]
+        steam_sel = [it["lib"] for it in self.steam_items if it["var"].get()]
+        if not selected and not mount_sel and not steam_sel:
+            messagebox.showwarning(self.t("msg_noopt_title"), self.t("msg_noopt_text"))
+            return
+        dry_run = self.dry_run_var.get()
+        if not dry_run and not self.sudo.ensure():
+            self.log("Не удалось получить права sudo", "error")
+            return
+        self.is_running = True
+        if self._alive("run_button"):
+            self.run_button.config(state="disabled")
+        self.q.put(("running", True))
+        self.q.put(("progress", 0))
+        self.q.put(("statusbar", self.t("status_running")))
+        threading.Thread(target=self._rollback_worker,
+                         args=(selected, mount_sel, steam_sel, dry_run),
+                         daemon=True).start()
+
+    def _rollback_worker(self, selected, mount_sel, steam_sel, dry_run):
+        ops = SystemOps(self.sudo, self.state, self.log, dry_run)
+        total = len(selected) + (1 if mount_sel else 0) + (1 if steam_sel else 0)
+        done = 0
+        self.log("=" * 60, "highlight")
+        self.log("ЗАПУСК ОТКАТА", "highlight")
+        self.log("=" * 60, "highlight")
         try:
-            return self.notebook.select() == str(self.tab_services)
-        except Exception:
-            return False
-
-    def select_all(self):
-        if self._on_services_tab():
-            if self._alive("services_tree"):
-                self.services_tree.selection_set(self.services_tree.get_children())
-            return
-        for k, o in self.options.items():
-            w = self.option_widgets.get(k)
-            if w and str(w.cget("state")) == "normal":
-                o["var"].set(True)
-
-    def reset_all(self):
-        if self._on_services_tab():
-            if self._alive("services_tree"):
-                self.services_tree.selection_remove(self.services_tree.selection())
-            return
-        for o in self.options.values():
-            o["var"].set(False)
+            for key in selected:
+                label = self.om(key)[0]
+                self.log("→ %s" % label, "info")
+                try:
+                    getattr(ops, "rollback_%s" % key)()
+                except Exception as e:
+                    self.log("Ошибка в %s: %s" % (label, e), "error")
+                done += 1
+                self.q.put(("progress", int(done / total * 90)))
+            if mount_sel:
+                self.log("→ %s" % self.t("mount_title"), "info")
+                ops.rollback_mount_opts(mount_sel)
+                done += 1
+                self.q.put(("progress", int(done / total * 90)))
+            if steam_sel:
+                self.log("→ %s" % self.t("steam_title"), "info")
+                ops.rollback_steam_links(steam_sel)
+                done += 1
+                self.q.put(("progress", int(done / total * 90)))
+            if not dry_run:
+                ops.finalize_grub()
+            self.q.put(("progress", 100))
+            self.q.put(("statusbar", self.t("status_done")))
+            self.log("Откат завершён", "success")
+        except Exception as e:
+            self.log("Критическая ошибка: %s" % e, "error")
+            self.q.put(("statusbar", self.t("status_error")))
+        finally:
+            self.q.put(("running", False))
+            self.refresh_applied()
+            self.refresh_status()
+            self.refresh_services()
 
     def disable_option(self, key):
         w = self.option_widgets.get(key)
@@ -2137,7 +2582,7 @@ class TuneupApp:
         win = tk.Toplevel(self.root)
         win.title(self.t("help_title"))
         win.geometry("%dx%d" % (min(self._scaled(700), self.screen_w - 20),
-        min(self._scaled(560), self.screen_h - 40)))
+                                min(self._scaled(560), self.screen_h - 40)))
         t = THEMES[self.current_theme]
         win.configure(bg=t["bg"])
         text = scrolledtext.ScrolledText(win, font=("DejaVu Sans Mono", self._scaled(9)),
@@ -2147,45 +2592,7 @@ class TuneupApp:
         text.pack(fill="both", expand=True)
         text.insert("1.0", self.t("help"))
         text.configure(state="disabled")
-
-    # ─── themed confirm dialog ───
-    def _confirm_dialog(self, title, lines):
-        win = tk.Toplevel(self.root)
-        win.title(title)
-        win.geometry("%dx%d" % (self._scaled(640), self._scaled(440)))
-        win.transient(self.root)
-        win.grab_set()
-        t = THEMES[self.current_theme]
-        win.configure(bg=t["bg"])
-        txt = scrolledtext.ScrolledText(win, font=("DejaVu Sans", self._scaled(9)),
-                                        bg=t["terminal_bg"], fg=t["terminal_fg"],
-                                        wrap="word", relief="flat",
-                                        padx=self._scaled(8), pady=self._scaled(8))
-        txt.pack(fill="both", expand=True, padx=self._scaled(8), pady=self._scaled(8))
-        txt.insert("1.0", "\n".join(lines))
-        txt.configure(state="disabled")
-        var = tk.BooleanVar(value=False)
-        bf = tk.Frame(win, bg=t["bg"])
-        bf.pack(fill="x", padx=self._scaled(8), pady=(0, self._scaled(8)))
-
-        def ok():
-            var.set(True)
-            win.destroy()
-
-        def cancel():
-            win.destroy()
-        tk.Button(bf, text=self.t("dlg_yes"), command=ok,
-                  font=("DejaVu Sans", self._scaled(10), "bold"),
-                  bg=t["accent_bg"], fg=t["accent_fg"],
-                  padx=self._scaled(14), pady=self._scaled(4)).pack(
-            side="left", padx=self._scaled(4))
-        tk.Button(bf, text=self.t("dlg_no"), command=cancel,
-                  font=("DejaVu Sans", self._scaled(10)),
-                  bg=t["button_bg"], fg=t["button_fg"],
-                  padx=self._scaled(14), pady=self._scaled(4)).pack(
-            side="left", padx=self._scaled(4))
-        win.wait_window()
-        return var.get()
+        self._make_copyable(text)
 
     # ─── services ───
     def refresh_services(self):
@@ -2219,35 +2626,10 @@ class TuneupApp:
             return True
         return self.sudo.ensure()
 
-    def disable_recommended(self):
-        lines = [self.t("rec_text"), ""]
-        lines += ["• %s — %s" % (n, SERVICES_META[n][self.lang]) for n in SERVICES_ORDER]
-        lines += ["", self.t("rec_hint")]
-        if not self._confirm_dialog(self.t("rec_title"), lines):
-            return
-        if not self._ensure_service_action():
-            return
-        threading.Thread(target=self._disable_recommended_worker, daemon=True).start()
-
-    def _disable_recommended_worker(self):
-        ops = SystemOps(self.sudo, self.state, self.log, self.dry_run_var.get())
-        self.log("Отключение рекомендуемых служб...", "info")
-        for name in SERVICES_ORDER:
-            if not ops.unit_exists(name):
-                continue
-            if ops.service_enabled(name) in ("disabled", "masked"):
-                continue
-            if ops.dry_run:
-                ops.log("[DRY RUN] disable %s" % name, "warning")
-                continue
-            ops.sudo_run(["systemctl", "disable", "--now", name], ignore_error=True)
-            if name.startswith("avahi"):
-                ops.sudo_run(["systemctl", "mask", name], ignore_error=True)
-            ops.log("✓ %s отключена" % name, "success")
-        self.log("Обработка служб завершена", "success")
-        self.refresh_services()
-
     def enable_selected(self):
+        if self.is_running:
+            messagebox.showinfo(self.t("msg_run_title"), self.t("msg_run_text"))
+            return
         items = self.services_tree.selection()
         if not items:
             messagebox.showinfo(self.t("msg_sel_title"), self.t("msg_sel_text"))
@@ -2263,12 +2645,18 @@ class TuneupApp:
             if ops.dry_run:
                 ops.log("[DRY RUN] enable %s" % name, "warning")
                 continue
-            ops.sudo_run(["systemctl", "unmask", name], ignore_error=True)
-            ops.sudo_run(["systemctl", "enable", name],
-                         ok_msg="✓ %s включена" % name, ignore_error=True)
+            ok = ops.sudo_run(["systemctl", "unmask", name], ignore_error=True)
+            ok2 = ops.sudo_run(["systemctl", "enable", name], ignore_error=True)
+            if ok or ok2:
+                ops.log("✓ %s включена" % name, "success")
+            else:
+                ops.log("Не удалось включить %s" % name, "warning")
         self.refresh_services()
 
     def disable_selected(self):
+        if self.is_running:
+            messagebox.showinfo(self.t("msg_run_title"), self.t("msg_run_text"))
+            return
         items = self.services_tree.selection()
         if not items:
             messagebox.showinfo(self.t("msg_sel_title"), self.t("msg_sel_text"))
@@ -2284,10 +2672,14 @@ class TuneupApp:
             if ops.dry_run:
                 ops.log("[DRY RUN] disable %s" % name, "warning")
                 continue
-            ops.sudo_run(["systemctl", "disable", "--now", name], ignore_error=True)
+            ok = ops.sudo_run(["systemctl", "disable", "--now", name], ignore_error=True)
             if name.startswith("avahi"):
-                ops.sudo_run(["systemctl", "mask", name], ignore_error=True)
-            ops.log("✓ %s отключена" % name, "success")
+                ok_mask = ops.sudo_run(["systemctl", "mask", name], ignore_error=True)
+                ok = ok or ok_mask
+            if ok:
+                ops.log("✓ %s отключена" % name, "success")
+            else:
+                ops.log("Не удалось отключить %s" % name, "warning")
         self.refresh_services()
 
     # ─── status ───
@@ -2301,23 +2693,24 @@ class TuneupApp:
             self.q.put(("applied", A))
         except Exception:
             A = self.applied
-        yn = lambda v: self.t("yes") if v else self.t("no")
         rows = []
         rows.append((self.t("st_hw"), "head"))
-        rows.append(("GPU: %s — %s" % (self.state.gpu, self.t("gpu_note")), "info"))
-        rows.append(("Screen: %dx%d — %s" % (self.screen_w, self.screen_h,
-        self.t("screen_note")), "info"))
-        rows.append(("CPU: %s" % cpu_model(), "info"))
-        ram = ram_total_gb()
-        if ram is not None:
-            rows.append(("RAM: %.1f %s — %s" % (ram, self.t("gb"), self.t("ram_note")), "info"))
-        rows.append(("Kernel: %s — %s" % (os.uname().release, self.t("kernel_note")), "info"))
-        rows.append(("Host: %s — %s" % (os.uname().nodename, self.t("host_note")), "info"))
-        rows.append(("DE: %s — %s" % (desktop_name(), self.t("de_note")), "info"))
-        rows.append(("RAID: %s — %s" % (yn(self.state.has_raid), self.t("raid_note")), "info"))
-        rows.append(("Swap: %s — %s" % (self.state.swap_type if self.state.has_swap
-                                        else self.t("no_swap"), self.t("swap_note")), "info"))
-        rows.append(("ntsync: %s — %s" % (yn(self.state.ntsync), self.t("ntsync_note")), "info"))
+        rows.append(("%s: %s" % (self.t("st_os_lbl"), self._os_pretty()), "info"))
+        gpu_line = self.state.gpu
+        if self.state.gpu_model:
+            gpu_line += " %s" % self.state.gpu_model
+        rows.append(("%s: %s" % (self.t("st_gpu_lbl"), gpu_line), "info"))
+        rows.append(("%s: %dx%d" % (self.t("st_screen_lbl"),
+                                    self.screen_w, self.screen_h), "info"))
+        rows.append(("%s: %s" % (self.t("st_swap_lbl"),
+                                 self.state.swap_type if self.state.has_swap
+                                 else self.t("no_swap")), "info"))
+        rows.append(("%s: %s" % (self.t("st_kernel_lbl"), os.uname().release), "info"))
+        rows.append(("%s: %s" % (self.t("st_de_lbl"), desktop_name()), "info"))
+        rows.append(("RAID: %s" % (self.t("w_yes") if self.state.has_raid
+                                   else self.t("w_no")), "info"))
+        rows.append(("ntsync: %s" % (self.t("w_yes") if self.state.ntsync
+                                     else self.t("w_no")), "info"))
         rows.append(("%s: %s" % (self.t("user_note"), self.state.user_name), "info"))
         rows.append(("%s: %s" % (self.t("home_note"), self.state.user_home), "info"))
         rows.append(("", "info"))
@@ -2326,21 +2719,37 @@ class TuneupApp:
             label, _d, _c, short = self.om(key)
             ok = A.get(key, False)
             mark = self.t("yes") if ok else self.t("no")
-            rows.append(("%s: %s — %s" % (label, mark, short), "ok" if ok else "no"))
+            rows.append(("%s%s%s" % (label.ljust(32), mark.ljust(16), short),
+                         "ok" if ok else "no"))
+        for it in self.mount_items:
+            ok = self.mount_applied.get(it["mp"], False)
+            mark = self.t("yes") if ok else self.t("no")
+            rows.append(("%s%s%s" % (("noatime %s" % it["mp"]).ljust(32),
+                                     mark.ljust(16), self.t("mount_short")),
+                         "ok" if ok else "no"))
+        for it in self.steam_items:
+            ok = self.steam_applied.get(it["lib"], False)
+            mark = self.t("yes") if ok else self.t("no")
+            rows.append(("%s%s%s" % (("compatdata %s" % it["lib"]).ljust(32),
+                                     mark.ljust(16), self.t("steam_short")),
+                         "ok" if ok else "no"))
         rows.append(("", "info"))
         rows.append((self.t("st_services"), "head"))
         for name in SERVICES_ORDER:
             enabled = ops.service_enabled(name)
             active = ops.service_active(name)
             if enabled == "masked":
-                tag = "r"
+                tag, word = "r", self.t("svc_masked")
             elif enabled == "disabled":
-                tag = "gr"
+                tag, word = "gr", self.t("svc_off")
+            elif enabled == "not-found":
+                tag, word = "gr", self.t("svc_na")
             elif active == "active":
-                tag = "ok"
+                tag, word = "ok", self.t("svc_on")
             else:
-                tag = "warn"
-            rows.append(("  %s: %s / %s" % (name, enabled, active), tag))
+                tag, word = "warn", self.t("svc_onoff")
+            desc = SERVICES_META.get(name, {}).get(self.lang, "")
+            rows.append(("  %s: %s — %s" % (name, word, desc), tag))
         rows.append(("", "info"))
         rows.append((self.t("st_kernel"), "head"))
         for p in ("vm.swappiness", "vm.vfs_cache_pressure", "kernel.numa_balancing"):
@@ -2353,7 +2762,7 @@ class TuneupApp:
             rows.append(("  %s = %s" % (p, val), "info"))
         rows.append(("", "info"))
         timer = ops.service_enabled("biweekly-upgrade.timer")
-        rows.append(("%s: %s" % (self.t("st_timer"), timer),
+        rows.append(("%s: %s" % (self.t("st_timer"), self._fmt_state(timer)),
                      "ok" if timer == "enabled" else "gr"))
         self.q.put(("status_lines", rows))
 
