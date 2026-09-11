@@ -1552,6 +1552,7 @@ class TuneupApp:
         self.mount_labels = {}
         self.steam_labels = {}
         self._copy_menu_shown = None
+        self.root.report_callback_exception = self.report_callback_exception
         self.dry_run_var = tk.BooleanVar(value="--dry-run" in sys.argv)
         self.sudo = SudoManager()
         self.sudo.set_parent(root)
@@ -1564,8 +1565,17 @@ class TuneupApp:
         self.update_schedule = tk.StringVar(value=self._schedule_values()[2])
         self.options = {k: {"var": tk.BooleanVar(value=False)} for k in OPTIONS_META}
         self.mount_items = []
+        seen_dev = {}
         for it in parse_mounts():
+            if it["mp"] == "/boot/efi" or (it["fstype"] == "vfat"
+                                           and it["mp"].startswith("/boot")):
+                continue
+            if it["dev"] in seen_dev:
+                seen_dev[it["dev"]]["mps"].append(it["mp"])
+                continue
+            it["mps"] = [it["mp"]]
             it["var"] = tk.BooleanVar(value=False)
+            seen_dev[it["dev"]] = it
             self.mount_items.append(it)
         self.steam_items = []
         for lib in find_steam_libraries(self.state.user_home):
@@ -1768,6 +1778,25 @@ class TuneupApp:
                          stderr=subprocess.DEVNULL,
                          start_new_session=True, env=env)
 
+    @staticmethod
+    def _viewer_safe(s):
+        """Убирает цветные эмодзи: Tk/X11 аварийно падает на их рендере."""
+        out = []
+        for ch in s:
+            o = ord(ch)
+            if o in (0xFE0F, 0x200D):
+                continue
+            if 0x1F000 <= o <= 0x1FAFF:
+                continue
+            if 0x2300 <= o <= 0x23FF:
+                continue
+            if 0x2700 <= o <= 0x27BF and o not in (0x2713, 0x2717):
+                continue
+            if 0x2B00 <= o <= 0x2BFF:
+                continue
+            out.append(ch)
+        return "".join(out)
+
     def _show_viewer(self, path, content):
         win = tk.Toplevel(self.root)
         win.title("%s: %s" % (self.t("viewer_title"), path))
@@ -1780,7 +1809,7 @@ class TuneupApp:
                                          wrap="word", relief="flat",
                                          padx=self._scaled(8), pady=self._scaled(8))
         text.pack(fill="both", expand=True)
-        text.insert("1.0", content)
+        text.insert("1.0", self._viewer_safe(content))
         text.configure(state="disabled")
         self._make_copyable(text)
         bf = tk.Frame(win, bg=t["bg"])
@@ -2093,18 +2122,23 @@ class TuneupApp:
                                font=("DejaVu Sans", self._scaled(10), "bold"),
                                anchor="w"), "yellow").pack(
                 fill="x", pady=(self._scaled(10), self._scaled(3)))
-            for key in categories[cat]:
+            for i, key in enumerate(categories[cat]):
+                if i:
+                    ttk.Separator(self.options_inner,
+                                  orient="horizontal").pack(
+                        fill="x", pady=self._scaled(4))
                 self.create_option_row(key)
             if cat == disk_cat:
                 self.create_disk_extras()
         self._bind_wheel(self.tune_canvas)
         self._bind_wheel(self.options_inner)
-
     def create_disk_extras(self):
         if self.mount_items:
+            ttk.Separator(self.options_inner, orient="horizontal").pack(
+                fill="x", pady=self._scaled(6))
             self._fix(tk.Label(self.options_inner,
                                text=self.t("mount_group_desc"),
-                               font=("DejaVu Sans", self._scaled(8)),
+                               font=("DejaVu Sans", self._scaled(9)),
                                anchor="w", wraplength=self._scaled(760),
                                justify="left"),
                       "gray").pack(fill="x", padx=(self._scaled(10), 0),
@@ -2112,7 +2146,8 @@ class TuneupApp:
             for it in self.mount_items:
                 row = tk.Frame(self.options_inner)
                 row.pack(fill="x", pady=self._scaled(1))
-                cb = tk.Checkbutton(row, text="%s (%s)" % (it["mp"], it["dev"]),
+                cb = tk.Checkbutton(row, text="%s (%s)" % (", ".join(it["mps"]),
+                                                           it["dev"]),
                                     variable=it["var"],
                                     font=("DejaVu Sans", self._scaled(10)),
                                     anchor="w")
@@ -2127,7 +2162,7 @@ class TuneupApp:
         if self.steam_items:
             self._fix(tk.Label(self.options_inner,
                                text=self.t("steam_group_desc"),
-                               font=("DejaVu Sans", self._scaled(8)),
+                               font=("DejaVu Sans", self._scaled(9)),
                                anchor="w", wraplength=self._scaled(760),
                                justify="left"),
                       "gray").pack(fill="x", padx=(self._scaled(10), 0),
@@ -2187,7 +2222,7 @@ class TuneupApp:
                   font=("DejaVu Sans", self._scaled(8)),
                   padx=self._scaled(6), pady=0).pack(
             side="left", padx=(self._scaled(8), 0))
-        self._fix(tk.Label(row, text=desc, font=("DejaVu Sans", self._scaled(8)),
+        self._fix(tk.Label(row, text=desc, font=("DejaVu Sans", self._scaled(9)),
                            anchor="w", wraplength=self._scaled(760), justify="left"),
                   "gray").pack(fill="x", padx=(self._scaled(26), 0),
                                pady=(0, self._scaled(2)))
@@ -2473,18 +2508,20 @@ class TuneupApp:
         except Exception:
             content = ""
         for it in self.mount_items:
-            mp = it["mp"]
-            ok = False
-            for line in content.splitlines():
-                s = line.strip()
-                if not s or s.startswith("#"):
-                    continue
-                parts = s.split()
-                if len(parts) >= 4 and parts[1] == mp:
-                    opts = parts[3].split(",")
-                    ok = "noatime" in opts and "nodiratime" in opts
-                    break
-            res[mp] = ok
+            oks = []
+            for mp in it["mps"]:
+                ok = False
+                for line in content.splitlines():
+                    s = line.strip()
+                    if not s or s.startswith("#"):
+                        continue
+                    parts = s.split()
+                    if len(parts) >= 4 and parts[1] == mp:
+                        opts = parts[3].split(",")
+                        ok = "noatime" in opts and "nodiratime" in opts
+                        break
+                oks.append(ok)
+            res[it["mp"]] = all(oks)
         return res
 
     def detect_steam_applied(self):
@@ -2513,64 +2550,71 @@ class TuneupApp:
         if not msg.endswith("\n"):
             msg += "\n"
         self.q.put(("log", msg, tag))
+    def _handle_queue_item(self, item):
+        kind = item[0]
+        if kind == "log":
+            if not self._alive("terminal"):
+                return
+            self.terminal.configure(state="normal")
+            self.terminal.insert(tk.END, item[1], item[2])
+            self.terminal.see(tk.END)
+            self.terminal.configure(state="disabled")
+        elif kind == "statusbar":
+            if hasattr(self, "status_text"):
+                self.status_text.set(item[1])
+        elif kind == "progress":
+            if hasattr(self, "progress_var"):
+                self.progress_var.set(item[1])
+        elif kind == "running":
+            self.is_running = item[1]
+            if self._alive("run_button"):
+                self.run_button.config(state="disabled" if item[1] else "normal")
+        elif kind == "applied":
+            self.applied = item[1]
+            self._update_applied_labels()
+        elif kind == "mount_applied":
+            self.mount_applied = item[1]
+            self._update_applied_labels()
+        elif kind == "steam_applied":
+            self.steam_applied = item[1]
+            self._update_applied_labels()
+        elif kind == "schedule":
+            if self._alive("schedule_label"):
+                self.schedule_label.config(
+                    text=self.t("schedule_current") % item[1])
+        elif kind == "services_rows":
+            if not self._alive("services_tree"):
+                return
+            for child in self.services_tree.get_children():
+                self.services_tree.delete(child)
+            for row in item[1]:
+                self.services_tree.insert("", "end", values=row[:4],
+                                          tags=(row[4],))
+            if self._alive("services_count_label"):
+                self.services_count_label.config(
+                    text=self.t("svc_count").format(n=len(item[1])))
+        elif kind == "status_lines":
+            if not self._alive("status_text_widget"):
+                return
+            w = self.status_text_widget
+            w.configure(state="normal")
+            w.delete("1.0", tk.END)
+            for text, tag in item[1]:
+                w.insert(tk.END, text + "\n", tag)
+            w.configure(state="disabled")
 
     def process_queue(self):
         try:
             while True:
                 item = self.q.get_nowait()
-                kind = item[0]
-                if kind == "log":
-                    if not self._alive("terminal"):
-                        continue
-                    self.terminal.configure(state="normal")
-                    self.terminal.insert(tk.END, item[1], item[2])
-                    self.terminal.see(tk.END)
-                    self.terminal.configure(state="disabled")
-                elif kind == "statusbar":
-                    if hasattr(self, "status_text"):
-                        self.status_text.set(item[1])
-                elif kind == "progress":
-                    if hasattr(self, "progress_var"):
-                        self.progress_var.set(item[1])
-                elif kind == "running":
-                    self.is_running = item[1]
-                    if self._alive("run_button"):
-                        self.run_button.config(state="disabled" if item[1] else "normal")
-                elif kind == "applied":
-                    self.applied = item[1]
-                    self._update_applied_labels()
-                elif kind == "mount_applied":
-                    self.mount_applied = item[1]
-                    self._update_applied_labels()
-                elif kind == "steam_applied":
-                    self.steam_applied = item[1]
-                    self._update_applied_labels()
-                elif kind == "schedule":
-                    if self._alive("schedule_label"):
-                        self.schedule_label.config(
-                            text=self.t("schedule_current") % item[1])
-                elif kind == "services_rows":
-                    if not self._alive("services_tree"):
-                        continue
-                    for child in self.services_tree.get_children():
-                        self.services_tree.delete(child)
-                    for row in item[1]:
-                        self.services_tree.insert("", "end", values=row[:4],
-                                                  tags=(row[4],))
-                    if self._alive("services_count_label"):
-                        self.services_count_label.config(
-                            text=self.t("svc_count").format(n=len(item[1])))
-                elif kind == "status_lines":
-                    if not self._alive("status_text_widget"):
-                        continue
-                    w = self.status_text_widget
-                    w.configure(state="normal")
-                    w.delete("1.0", tk.END)
-                    for text, tag in item[1]:
-                        w.insert(tk.END, text + "\n", tag)
-                    w.configure(state="disabled")
+                try:
+                    self._handle_queue_item(item)
+                except Exception:
+                    traceback.print_exc()
         except queue.Empty:
             pass
+        except Exception:
+            traceback.print_exc()
         self.root.after(100, self.process_queue)
 
     # ─── actions ───
@@ -2638,7 +2682,8 @@ class TuneupApp:
             messagebox.showinfo(self.t("msg_run_title"), self.t("msg_run_text"))
             return
         selected = [k for k, o in self.options.items() if o["var"].get()]
-        mount_sel = [it["mp"] for it in self.mount_items if it["var"].get()]
+        mount_sel = [mp for it in self.mount_items if it["var"].get()
+                     for mp in it["mps"]]
         steam_sel = [it["lib"] for it in self.steam_items if it["var"].get()]
         if not selected and not mount_sel and not steam_sel:
             messagebox.showwarning(self.t("msg_noopt_title"), self.t("msg_noopt_text"))
@@ -2931,11 +2976,20 @@ class TuneupApp:
         threading.Thread(target=self._refresh_status_worker, daemon=True).start()
 
     def _refresh_status_worker(self):
+        try:
+            self._refresh_status_inner()
+        except Exception:
+            traceback.print_exc()
+            self.log("Ошибка построения статуса — см. вывод терминала", "error")
+
+    def _refresh_status_inner(self):
         ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, True)
+        try:
         try:
             A = self.detect_applied()
             self.q.put(("applied", A))
-        except Exception:
+        except Exception as e:
+            self.log("Ошибка детекта настроек: %s" % e, "error")
             A = self.applied
         rows = []
         rows.append((self.t("st_hw"), "head"))
@@ -3047,6 +3101,7 @@ class TuneupApp:
         rows.append(("%s: %s" % (self.t("st_timer"), self._fmt_state(timer)),
                      "ok" if timer == "enabled" else "gr"))
         self.q.put(("status_lines", rows))
+        self.log("Статус обновлён, строк: %d" % len(rows), "info")
 
     def _col(self, name):
         if len(name) > 31:
