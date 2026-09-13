@@ -3364,7 +3364,7 @@ class MainWindow:
                      for mp in m["mps"]]
         steam_sel = [l for l in self.steam_items if self.steam_state[l].get()]
         commit_sel = [mp for mp, v in self.commit_state.items() if v.get()]
-        if not selected and not mount_sel and not steam_sel:
+        if not selected and not mount_sel and not steam_sel and not commit_sel:
             messagebox.showwarning(APP_NAME, self.t("msg_noopt"), parent=self.root)
             return
         params = {"corectrl_group": self.corectrl_group.get(),
@@ -3446,7 +3446,7 @@ class MainWindow:
                      for mp in m["mps"]]
         steam_sel = [l for l in self.steam_items if self.steam_state[l].get()]
         commit_sel = [mp for mp, v in self.commit_state.items() if v.get()]
-        if not selected and not mount_sel and not steam_sel:
+        if not selected and not mount_sel and not steam_sel and not commit_sel:
             messagebox.showwarning(APP_NAME, self.t("msg_noopt"), parent=self.root)
             return
         dry = self._dry_var.get()
