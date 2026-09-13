@@ -2642,14 +2642,17 @@ class MainWindow:
             qb._keep_fg = c["blue"]
             qb.pack(side=LEFT, padx=(2, 0))
             # строка со значением commit
+            # строка со значением commit — на отдельной строке под заголовком,
+            # упаковываем её БЕЗ fill=X, чтобы Entry не растягивался и не уезжал
             top2 = Frame(self._tune_inner, bg=c["panel"])
-            top2.pack(fill=X, padx=8, pady=(0, 2))
+            top2.pack(anchor=W, padx=8, pady=(0, 4))
             Label(top2, text=self.t("commit_value_label"),
                   bg=c["panel"], fg=c["gray"],
                   font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(4, 6))
             Entry(top2, textvariable=self.commit_value, width=8,
                   bg=c["entry"], fg=c["fg"], relief=FLAT,
                   insertbackground=c["fg"]).pack(side=LEFT)
+
             # краткое описание твика
             Label(self._tune_inner,
                   text=self.om("commit")[1],
