@@ -2566,7 +2566,6 @@ class MainWindow:
                    anchor=W, justify=LEFT, wraplength=820,
                    font=("DejaVu Sans", 9))
         dl.pack(fill=X, padx=(24, 0))
-
     def _build_disk_extras(self):
         c = self.colors()
 
@@ -2574,9 +2573,8 @@ class MainWindow:
         if self.mount_items:
             top = Frame(self._tune_inner, bg=c["panel"])
             top.pack(fill=X, padx=8, pady=(10, 2))
-            Label(top, text="─── %s ───" % self.t("mount_title"),
-                  bg=c["panel"], fg=c["yellow"], anchor=W,
-                  font=("DejaVu Sans", 10, "bold")).pack(side=LEFT)
+            # Кнопки создаём ПЕРВЫМИ и пакуем справа — тогда они
+            # жёстко прижмутся к правому краю строки.
             qb = Button(top, text=self.t("btn_q"),
                         command=lambda: self._show_option_help("mount"),
                         bg=c["button"], fg=c["blue"],
@@ -2595,6 +2593,10 @@ class MainWindow:
                         font=("DejaVu Sans", 8))
             fb._keep_fg = c["blue"]
             fb.pack(side=RIGHT, padx=(4, 0))
+            # Заголовок пакуем ПОСЛЕ кнопок — он займёт оставшееся место
+            Label(top, text="─── %s ───" % self.t("mount_title"),
+                  bg=c["panel"], fg=c["yellow"], anchor=W,
+                  font=("DejaVu Sans", 10, "bold")).pack(side=LEFT)
             Label(self._tune_inner, text=self.t("mount_desc"),
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
@@ -2621,9 +2623,6 @@ class MainWindow:
         if self.commit_state:
             top = Frame(self._tune_inner, bg=c["panel"])
             top.pack(fill=X, padx=8, pady=(10, 2))
-            Label(top, text="─── %s ───" % self.t("commit_title"),
-                  bg=c["panel"], fg=c["yellow"], anchor=W,
-                  font=("DejaVu Sans", 10, "bold")).pack(side=LEFT)
             qb = Button(top, text=self.t("btn_q"),
                         command=lambda: self._show_option_help("commit"),
                         bg=c["button"], fg=c["blue"],
@@ -2642,7 +2641,10 @@ class MainWindow:
                         font=("DejaVu Sans", 8))
             fb._keep_fg = c["blue"]
             fb.pack(side=RIGHT, padx=(4, 0))
-            # поле значения значения commit
+            Label(top, text="─── %s ───" % self.t("commit_title"),
+                  bg=c["panel"], fg=c["yellow"], anchor=W,
+                  font=("DejaVu Sans", 10, "bold")).pack(side=LEFT)
+            # поле значения commit на отдельной строке
             top2 = Frame(self._tune_inner, bg=c["panel"])
             top2.pack(fill=X, padx=8, pady=(0, 2))
             Label(top2, text=self.t("commit_value_label"),
@@ -2689,9 +2691,6 @@ class MainWindow:
         if self.steam_items:
             top = Frame(self._tune_inner, bg=c["panel"])
             top.pack(fill=X, padx=8, pady=(10, 2))
-            Label(top, text="─── %s ───" % self.t("steam_title"),
-                  bg=c["panel"], fg=c["yellow"], anchor=W,
-                  font=("DejaVu Sans", 10, "bold")).pack(side=LEFT)
             qb = Button(top, text=self.t("btn_q"),
                         command=lambda: self._show_option_help("steam"),
                         bg=c["button"], fg=c["blue"],
@@ -2701,6 +2700,9 @@ class MainWindow:
                         font=("DejaVu Sans", 8, "bold"))
             qb._keep_fg = c["blue"]
             qb.pack(side=RIGHT, padx=(2, 0))
+            Label(top, text="─── %s ───" % self.t("steam_title"),
+                  bg=c["panel"], fg=c["yellow"], anchor=W,
+                  font=("DejaVu Sans", 10, "bold")).pack(side=LEFT)
             Label(self._tune_inner, text=self.t("steam_desc"),
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
