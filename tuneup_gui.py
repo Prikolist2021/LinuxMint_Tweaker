@@ -2948,9 +2948,11 @@ class MainWindow:
                                     activebackground=c["accent2"],
                                     activeforeground=c["accent_fg"])
                     else:
-                        # остальные кнопки: фон перекрашиваем, цвет текста — нет
-                        w.configure(bg=c["button"],
-                                    activebackground=c["button_hover"])
+                        # Явно задаём цвет текста, иначе в тёмной теме
+                        # он рисуется почти чёрным.
+                        w.configure(bg=c["button"], fg=c["fg"],
+                                    activebackground=c["button_hover"],
+                                    activeforeground=c["fg"])
                 elif cls == "Entry":
                     w.configure(bg=c["entry"], fg=c["fg"],
                                 insertbackground=c["fg"],
