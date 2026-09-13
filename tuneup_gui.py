@@ -2932,9 +2932,13 @@ class MainWindow:
                 elif cls == "Label":
                     w.configure(bg=c["panel"] if inside_tune else c["bg"])
                 elif cls == "Checkbutton":
+                    # Явно задаём цвет текста, иначе в тёмной теме он
+                    # рисуется почти чёрным из-за особенностей Tk.
                     w.configure(
                         bg=c["panel"] if inside_tune else c["bg"],
+                        fg=c["fg"],
                         activebackground=c["panel"] if inside_tune else c["bg"],
+                        activeforeground=c["fg"],
                         selectcolor=c["panel"] if inside_tune else c["bg"],
                     )
                 elif cls == "Button":
