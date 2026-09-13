@@ -2541,18 +2541,27 @@ class MainWindow:
                       font=("DejaVu Sans", 9, "bold"))
         badge.pack(side=LEFT, padx=(12, 0))
         self.badges[key] = badge
-        Button(top, text=self.t("btn_file"),
-               command=lambda k=key: self._open_option_file(k),
-               bg=c["button"], fg=c["blue"],
-               activebackground=c["button_hover"],
-               relief=FLAT, padx=6, pady=0,
-               font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(8, 0))
-        Button(top, text=self.t("btn_q"),
-               command=lambda k=key: self._show_option_help(k),
-               bg=c["button"], fg=c["blue"],
-               activebackground=c["button_hover"],
-               relief=FLAT, padx=6, pady=0,
-               font=("DejaVu Sans", 8, "bold")).pack(side=LEFT, padx=(2, 0))
+
+        fb = Button(top, text=self.t("btn_file"),
+                    command=lambda k=key: self._open_option_file(k),
+                    bg=c["button"], fg=c["blue"],
+                    activebackground=c["button_hover"],
+                    activeforeground=c["blue"],
+                    relief=FLAT, padx=6, pady=0,
+                    font=("DejaVu Sans", 8))
+        fb._keep_fg = c["blue"]
+        fb.pack(side=LEFT, padx=(8, 0))
+
+        qb = Button(top, text=self.t("btn_q"),
+                    command=lambda k=key: self._show_option_help(k),
+                    bg=c["button"], fg=c["blue"],
+                    activebackground=c["button_hover"],
+                    activeforeground=c["blue"],
+                    relief=FLAT, padx=6, pady=0,
+                    font=("DejaVu Sans", 8, "bold"))
+        qb._keep_fg = c["blue"]
+        qb.pack(side=LEFT, padx=(2, 0))
+
         dl = Label(row, text=desc, bg=c["panel"], fg=c["gray"],
                    anchor=W, justify=LEFT, wraplength=820,
                    font=("DejaVu Sans", 9))
@@ -2560,6 +2569,7 @@ class MainWindow:
 
     def _build_disk_extras(self):
         c = self.colors()
+
         # --- параметры монтирования (noatime) ---
         if self.mount_items:
             Label(self._tune_inner, text="─── %s ───" % self.t("mount_title"),
@@ -2567,18 +2577,24 @@ class MainWindow:
                   font=("DejaVu Sans", 10, "bold")).pack(fill=X, padx=8, pady=(10, 2))
             top = Frame(self._tune_inner, bg=c["panel"])
             top.pack(fill=X, padx=8)
-            Button(top, text=self.t("btn_file"),
-                   command=lambda: self._open_path("/etc/fstab"),
-                   bg=c["button"], fg=c["blue"],
-                   activebackground=c["button_hover"],
-                   relief=FLAT, padx=6, pady=0,
-                   font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(4, 0))
-            Button(top, text=self.t("btn_q"),
-                   command=lambda: self._show_option_help("mount"),
-                   bg=c["button"], fg=c["blue"],
-                   activebackground=c["button_hover"],
-                   relief=FLAT, padx=6, pady=0,
-                   font=("DejaVu Sans", 8, "bold")).pack(side=LEFT, padx=(2, 0))
+            fb = Button(top, text=self.t("btn_file"),
+                        command=lambda: self._open_path("/etc/fstab"),
+                        bg=c["button"], fg=c["blue"],
+                        activebackground=c["button_hover"],
+                        activeforeground=c["blue"],
+                        relief=FLAT, padx=6, pady=0,
+                        font=("DejaVu Sans", 8))
+            fb._keep_fg = c["blue"]
+            fb.pack(side=LEFT, padx=(4, 0))
+            qb = Button(top, text=self.t("btn_q"),
+                        command=lambda: self._show_option_help("mount"),
+                        bg=c["button"], fg=c["blue"],
+                        activebackground=c["button_hover"],
+                        activeforeground=c["blue"],
+                        relief=FLAT, padx=6, pady=0,
+                        font=("DejaVu Sans", 8, "bold"))
+            qb._keep_fg = c["blue"]
+            qb.pack(side=LEFT, padx=(2, 0))
             Label(self._tune_inner, text=self.t("mount_desc"),
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
@@ -2600,6 +2616,7 @@ class MainWindow:
                               font=("DejaVu Sans", 9, "bold"))
                 badge.pack(side=LEFT, padx=(12, 0))
                 self.mount_badges[key] = badge
+
         # --- commit= только для ext2/3/4 ---
         if self.commit_state:
             Label(self._tune_inner, text="─── %s ───" % self.t("commit_title"),
@@ -2612,18 +2629,24 @@ class MainWindow:
                   font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(4, 2))
             Entry(top, textvariable=self.commit_value, width=6,
                   bg=c["entry"], fg=c["fg"], relief=FLAT).pack(side=LEFT)
-            Button(top, text=self.t("btn_file"),
-                   command=lambda: self._open_path("/etc/fstab"),
-                   bg=c["button"], fg=c["blue"],
-                   activebackground=c["button_hover"],
-                   relief=FLAT, padx=6, pady=0,
-                   font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(8, 0))
-            Button(top, text=self.t("btn_q"),
-                   command=lambda: self._show_option_help("commit"),
-                   bg=c["button"], fg=c["blue"],
-                   activebackground=c["button_hover"],
-                   relief=FLAT, padx=6, pady=0,
-                   font=("DejaVu Sans", 8, "bold")).pack(side=LEFT, padx=(2, 0))
+            fb = Button(top, text=self.t("btn_file"),
+                        command=lambda: self._open_path("/etc/fstab"),
+                        bg=c["button"], fg=c["blue"],
+                        activebackground=c["button_hover"],
+                        activeforeground=c["blue"],
+                        relief=FLAT, padx=6, pady=0,
+                        font=("DejaVu Sans", 8))
+            fb._keep_fg = c["blue"]
+            fb.pack(side=LEFT, padx=(8, 0))
+            qb = Button(top, text=self.t("btn_q"),
+                        command=lambda: self._show_option_help("commit"),
+                        bg=c["button"], fg=c["blue"],
+                        activebackground=c["button_hover"],
+                        activeforeground=c["blue"],
+                        relief=FLAT, padx=6, pady=0,
+                        font=("DejaVu Sans", 8, "bold"))
+            qb._keep_fg = c["blue"]
+            qb.pack(side=LEFT, padx=(2, 0))
             Label(self._tune_inner, text=self.t("commit_desc"),
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
@@ -2656,6 +2679,7 @@ class MainWindow:
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
                 fill=X, padx=(24, 8), pady=(0, 4))
+
         # --- Steam ---
         if self.steam_items:
             Label(self._tune_inner, text="─── %s ───" % self.t("steam_title"),
@@ -2663,12 +2687,15 @@ class MainWindow:
                   font=("DejaVu Sans", 10, "bold")).pack(fill=X, padx=8, pady=(10, 2))
             top = Frame(self._tune_inner, bg=c["panel"])
             top.pack(fill=X, padx=8)
-            Button(top, text=self.t("btn_q"),
-                   command=lambda: self._show_option_help("steam"),
-                   bg=c["button"], fg=c["blue"],
-                   activebackground=c["button_hover"],
-                   relief=FLAT, padx=6, pady=0,
-                   font=("DejaVu Sans", 8, "bold")).pack(side=LEFT, padx=(4, 0))
+            qb = Button(top, text=self.t("btn_q"),
+                        command=lambda: self._show_option_help("steam"),
+                        bg=c["button"], fg=c["blue"],
+                        activebackground=c["button_hover"],
+                        activeforeground=c["blue"],
+                        relief=FLAT, padx=6, pady=0,
+                        font=("DejaVu Sans", 8, "bold"))
+            qb._keep_fg = c["blue"]
+            qb.pack(side=LEFT, padx=(4, 0))
             Label(self._tune_inner, text=self.t("steam_desc"),
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
@@ -2687,7 +2714,6 @@ class MainWindow:
                               font=("DejaVu Sans", 9, "bold"))
                 badge.pack(side=LEFT, padx=(12, 0))
                 self.steam_badges[lib] = badge
-
     def _build_serv_tab(self):
         c = self.colors()
         wrap = Frame(self._tab_serv, bg=c["bg"])
@@ -2923,17 +2949,17 @@ class MainWindow:
                 cls = w.winfo_class()
                 inside_tune = self._inside(w, self._tune_inner)
 
-                # Фон и текст у обычных Tk-виджетов.
-                # ВАЖНО: цвет текста (fg) у Label, Checkbutton и Button
-                # мы НЕ трогаем — иначе пропадают жёлтые заголовки,
-                # серые описания и цветные бейджи.
                 if cls == "Frame" and w is not self.root:
                     w.configure(bg=c["panel"] if inside_tune else c["bg"])
+
                 elif cls == "Label":
+                    # Цвет текста не трогаем — иначе пропадают жёлтые заголовки
+                    # категорий, серые описания и цветные бейджи.
                     w.configure(bg=c["panel"] if inside_tune else c["bg"])
+
                 elif cls == "Checkbutton":
-                    # Явно задаём цвет текста, иначе в тёмной теме он
-                    # рисуется почти чёрным из-за особенностей Tk.
+                    # Явно задаём цвет текста — в тёмной теме Tk иначе
+                    # рисует его почти чёрным.
                     w.configure(
                         bg=c["panel"] if inside_tune else c["bg"],
                         fg=c["fg"],
@@ -2941,28 +2967,37 @@ class MainWindow:
                         activeforeground=c["fg"],
                         selectcolor=c["panel"] if inside_tune else c["bg"],
                     )
+
                 elif cls == "Button":
-                    # акцентная кнопка "Применить" — особая
                     if w is getattr(self, "_apply_btn", None):
+                        # Акцентная кнопка "Применить"
                         w.configure(bg=c["accent"], fg=c["accent_fg"],
                                     activebackground=c["accent2"],
                                     activeforeground=c["accent_fg"])
                     else:
-                        # Явно задаём цвет текста, иначе в тёмной теме
-                        # он рисуется почти чёрным.
-                        w.configure(bg=c["button"], fg=c["fg"],
-                                    activebackground=c["button_hover"],
-                                    activeforeground=c["fg"])
+                        # Если у кнопки свой цвет текста (синие "файл"/"?"),
+                        # сохраняем его, иначе ставим цвет темы.
+                        keep = getattr(w, "_keep_fg", None)
+                        w.configure(
+                            bg=c["button"],
+                            fg=keep if keep else c["fg"],
+                            activebackground=c["button_hover"],
+                            activeforeground=keep if keep else c["fg"],
+                        )
+
                 elif cls == "Entry":
                     w.configure(bg=c["entry"], fg=c["fg"],
                                 insertbackground=c["fg"],
                                 disabledbackground=c["button_dis"],
                                 disabledforeground=c["fg_dis"])
+
                 elif cls == "Text":
                     w.configure(bg=c["terminal"], fg=c["terminal_fg"],
                                 insertbackground=c["fg"])
+
                 elif cls == "Canvas":
                     w.configure(bg=c["bg"])
+
             except Exception:
                 pass
             for child in w.winfo_children():
@@ -2970,7 +3005,6 @@ class MainWindow:
 
         repaint_panel(self.root)
 
-        # Цвета в терминале
         if self._terminal is not None:
             for tag, col in (("normal", c["terminal_fg"]),
                              ("success", c["green"]),
@@ -2980,7 +3014,6 @@ class MainWindow:
                              ("highlight", c["orange"])):
                 self._terminal.tag_configure(tag, foreground=col)
 
-        # Цвета в окне "Статус"
         if self._status_view is not None:
             self._status_view.tag_configure("head", foreground=c["blue"],
                                             font=("DejaVu Sans Mono", 9, "bold"))
@@ -2990,14 +3023,12 @@ class MainWindow:
             self._status_view.tag_configure("warn", foreground=c["yellow"])
             self._status_view.tag_configure("muted", foreground=c["gray"])
 
-        # Цвета в таблице служб
         if self._services_tree is not None:
             self._services_tree.tag_configure("ok", foreground=c["green"])
             self._services_tree.tag_configure("warn", foreground=c["yellow"])
             self._services_tree.tag_configure("err", foreground=c["red"])
             self._services_tree.tag_configure("muted", foreground=c["gray"])
 
-        # Стили ttk (вкладки, комбобоксы, скроллбары)
         self._apply_theme()
 
     def _inside(self, w, parent):
