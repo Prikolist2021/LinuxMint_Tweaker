@@ -2572,20 +2572,11 @@ class MainWindow:
 
         # --- параметры монтирования (noatime) ---
         if self.mount_items:
-            Label(self._tune_inner, text="─── %s ───" % self.t("mount_title"),
-                  bg=c["panel"], fg=c["yellow"], anchor=W,
-                  font=("DejaVu Sans", 10, "bold")).pack(fill=X, padx=8, pady=(10, 2))
             top = Frame(self._tune_inner, bg=c["panel"])
-            top.pack(fill=X, padx=8)
-            fb = Button(top, text=self.t("btn_file"),
-                        command=lambda: self._open_path("/etc/fstab"),
-                        bg=c["button"], fg=c["blue"],
-                        activebackground=c["button_hover"],
-                        activeforeground=c["blue"],
-                        relief=FLAT, padx=6, pady=0,
-                        font=("DejaVu Sans", 8))
-            fb._keep_fg = c["blue"]
-            fb.pack(side=LEFT, padx=(4, 0))
+            top.pack(fill=X, padx=8, pady=(10, 2))
+            Label(top, text="─── %s ───" % self.t("mount_title"),
+                  bg=c["panel"], fg=c["yellow"], anchor=W,
+                  font=("DejaVu Sans", 10, "bold")).pack(side=LEFT)
             qb = Button(top, text=self.t("btn_q"),
                         command=lambda: self._show_option_help("mount"),
                         bg=c["button"], fg=c["blue"],
@@ -2594,7 +2585,16 @@ class MainWindow:
                         relief=FLAT, padx=6, pady=0,
                         font=("DejaVu Sans", 8, "bold"))
             qb._keep_fg = c["blue"]
-            qb.pack(side=LEFT, padx=(2, 0))
+            qb.pack(side=RIGHT, padx=(2, 0))
+            fb = Button(top, text=self.t("btn_file"),
+                        command=lambda: self._open_path("/etc/fstab"),
+                        bg=c["button"], fg=c["blue"],
+                        activebackground=c["button_hover"],
+                        activeforeground=c["blue"],
+                        relief=FLAT, padx=6, pady=0,
+                        font=("DejaVu Sans", 8))
+            fb._keep_fg = c["blue"]
+            fb.pack(side=RIGHT, padx=(4, 0))
             Label(self._tune_inner, text=self.t("mount_desc"),
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
@@ -2619,25 +2619,11 @@ class MainWindow:
 
         # --- commit= только для ext2/3/4 ---
         if self.commit_state:
-            Label(self._tune_inner, text="─── %s ───" % self.t("commit_title"),
-                  bg=c["panel"], fg=c["yellow"], anchor=W,
-                  font=("DejaVu Sans", 10, "bold")).pack(fill=X, padx=8, pady=(10, 2))
             top = Frame(self._tune_inner, bg=c["panel"])
-            top.pack(fill=X, padx=8)
-            Label(top, text=self.t("commit_value_label"),
-                  bg=c["panel"], fg=c["gray"],
-                  font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(4, 2))
-            Entry(top, textvariable=self.commit_value, width=6,
-                  bg=c["entry"], fg=c["fg"], relief=FLAT).pack(side=LEFT)
-            fb = Button(top, text=self.t("btn_file"),
-                        command=lambda: self._open_path("/etc/fstab"),
-                        bg=c["button"], fg=c["blue"],
-                        activebackground=c["button_hover"],
-                        activeforeground=c["blue"],
-                        relief=FLAT, padx=6, pady=0,
-                        font=("DejaVu Sans", 8))
-            fb._keep_fg = c["blue"]
-            fb.pack(side=LEFT, padx=(8, 0))
+            top.pack(fill=X, padx=8, pady=(10, 2))
+            Label(top, text="─── %s ───" % self.t("commit_title"),
+                  bg=c["panel"], fg=c["yellow"], anchor=W,
+                  font=("DejaVu Sans", 10, "bold")).pack(side=LEFT)
             qb = Button(top, text=self.t("btn_q"),
                         command=lambda: self._show_option_help("commit"),
                         bg=c["button"], fg=c["blue"],
@@ -2646,7 +2632,24 @@ class MainWindow:
                         relief=FLAT, padx=6, pady=0,
                         font=("DejaVu Sans", 8, "bold"))
             qb._keep_fg = c["blue"]
-            qb.pack(side=LEFT, padx=(2, 0))
+            qb.pack(side=RIGHT, padx=(2, 0))
+            fb = Button(top, text=self.t("btn_file"),
+                        command=lambda: self._open_path("/etc/fstab"),
+                        bg=c["button"], fg=c["blue"],
+                        activebackground=c["button_hover"],
+                        activeforeground=c["blue"],
+                        relief=FLAT, padx=6, pady=0,
+                        font=("DejaVu Sans", 8))
+            fb._keep_fg = c["blue"]
+            fb.pack(side=RIGHT, padx=(4, 0))
+            # поле значения значения commit
+            top2 = Frame(self._tune_inner, bg=c["panel"])
+            top2.pack(fill=X, padx=8, pady=(0, 2))
+            Label(top2, text=self.t("commit_value_label"),
+                  bg=c["panel"], fg=c["gray"],
+                  font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(4, 2))
+            Entry(top2, textvariable=self.commit_value, width=6,
+                  bg=c["entry"], fg=c["fg"], relief=FLAT).pack(side=LEFT)
             Label(self._tune_inner, text=self.t("commit_desc"),
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
@@ -2672,9 +2675,11 @@ class MainWindow:
                     badge.pack(side=LEFT, padx=(12, 0))
                     self.commit_badges[mp] = badge
         else:
-            Label(self._tune_inner, text="─── %s ───" % self.t("commit_title"),
+            top = Frame(self._tune_inner, bg=c["panel"])
+            top.pack(fill=X, padx=8, pady=(10, 2))
+            Label(top, text="─── %s ───" % self.t("commit_title"),
                   bg=c["panel"], fg=c["yellow"], anchor=W,
-                  font=("DejaVu Sans", 10, "bold")).pack(fill=X, padx=8, pady=(10, 2))
+                  font=("DejaVu Sans", 10, "bold")).pack(side=LEFT)
             Label(self._tune_inner, text=self.t("commit_none"),
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
@@ -2682,11 +2687,11 @@ class MainWindow:
 
         # --- Steam ---
         if self.steam_items:
-            Label(self._tune_inner, text="─── %s ───" % self.t("steam_title"),
-                  bg=c["panel"], fg=c["yellow"], anchor=W,
-                  font=("DejaVu Sans", 10, "bold")).pack(fill=X, padx=8, pady=(10, 2))
             top = Frame(self._tune_inner, bg=c["panel"])
-            top.pack(fill=X, padx=8)
+            top.pack(fill=X, padx=8, pady=(10, 2))
+            Label(top, text="─── %s ───" % self.t("steam_title"),
+                  bg=c["panel"], fg=c["yellow"], anchor=W,
+                  font=("DejaVu Sans", 10, "bold")).pack(side=LEFT)
             qb = Button(top, text=self.t("btn_q"),
                         command=lambda: self._show_option_help("steam"),
                         bg=c["button"], fg=c["blue"],
@@ -2695,7 +2700,7 @@ class MainWindow:
                         relief=FLAT, padx=6, pady=0,
                         font=("DejaVu Sans", 8, "bold"))
             qb._keep_fg = c["blue"]
-            qb.pack(side=LEFT, padx=(4, 0))
+            qb.pack(side=RIGHT, padx=(2, 0))
             Label(self._tune_inner, text=self.t("steam_desc"),
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
