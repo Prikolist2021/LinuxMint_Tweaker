@@ -2922,35 +2922,31 @@ class MainWindow:
             try:
                 cls = w.winfo_class()
                 inside_tune = self._inside(w, self._tune_inner)
+
+                # Фон и текст у обычных Tk-виджетов.
+                # ВАЖНО: цвет текста (fg) у Label, Checkbutton и Button
+                # мы НЕ трогаем — иначе пропадают жёлтые заголовки,
+                # серые описания и цветные бейджи.
                 if cls == "Frame" and w is not self.root:
                     w.configure(bg=c["panel"] if inside_tune else c["bg"])
                 elif cls == "Label":
-                    # не сбрасываем цвет, если он задан как цвет-статус
-                    if getattr(w, "_keep_fg", False):
-                        w.configure(bg=c["panel"] if inside_tune else c["bg"])
-                    else:
-                        w.configure(bg=c["panel"] if inside_tune else c["bg"],
-                                    fg=c["fg"])
+                    w.configure(bg=c["panel"] if inside_tune else c["bg"])
                 elif cls == "Checkbutton":
-                    if inside_tune:
-                        w.configure(bg=c["panel"], fg=c["fg"],
-                                    activebackground=c["panel"],
-                                    activeforeground=c["fg"],
-                                    selectcolor=c["panel"])
-                    else:
-                        w.configure(bg=c["bg"], fg=c["fg"],
-                                    activebackground=c["bg"],
-                                    activeforeground=c["fg"],
-                                    selectcolor=c["bg"])
+                    w.configure(
+                        bg=c["panel"] if inside_tune else c["bg"],
+                        activebackground=c["panel"] if inside_tune else c["bg"],
+                        selectcolor=c["panel"] if inside_tune else c["bg"],
+                    )
                 elif cls == "Button":
+                    # акцентная кнопка "Применить" — особая
                     if w is getattr(self, "_apply_btn", None):
                         w.configure(bg=c["accent"], fg=c["accent_fg"],
                                     activebackground=c["accent2"],
                                     activeforeground=c["accent_fg"])
                     else:
-                        w.configure(bg=c["button"], fg=c["fg"],
-                                    activebackground=c["button_hover"],
-                                    activeforeground=c["fg"])
+                        # остальные кнопки: фон перекрашиваем, цвет текста — нет
+                        w.configure(bg=c["button"],
+                                    activebackground=c["button_hover"])
                 elif cls == "Entry":
                     w.configure(bg=c["entry"], fg=c["fg"],
                                 insertbackground=c["fg"],
@@ -2965,12 +2961,20 @@ class MainWindow:
                 pass
             for child in w.winfo_children():
                 repaint_panel(child)
+
         repaint_panel(self.root)
+
+        # Цвета в терминале
         if self._terminal is not None:
-            for tag, col in (("normal", c["terminal_fg"]), ("success", c["green"]),
-                             ("error", c["red"]), ("warning", c["yellow"]),
-                             ("info", c["blue"]), ("highlight", c["orange"])):
+            for tag, col in (("normal", c["terminal_fg"]),
+                             ("success", c["green"]),
+                             ("error", c["red"]),
+                             ("warning", c["yellow"]),
+                             ("info", c["blue"]),
+                             ("highlight", c["orange"])):
                 self._terminal.tag_configure(tag, foreground=col)
+
+        # Цвета в окне "Статус"
         if self._status_view is not None:
             self._status_view.tag_configure("head", foreground=c["blue"],
                                             font=("DejaVu Sans Mono", 9, "bold"))
@@ -2979,12 +2983,15 @@ class MainWindow:
             self._status_view.tag_configure("no", foreground=c["red"])
             self._status_view.tag_configure("warn", foreground=c["yellow"])
             self._status_view.tag_configure("muted", foreground=c["gray"])
+
+        # Цвета в таблице служб
         if self._services_tree is not None:
             self._services_tree.tag_configure("ok", foreground=c["green"])
             self._services_tree.tag_configure("warn", foreground=c["yellow"])
             self._services_tree.tag_configure("err", foreground=c["red"])
             self._services_tree.tag_configure("muted", foreground=c["gray"])
-        # ttk-виджеты
+
+        # Стили ttk (вкладки, комбобоксы, скроллбары)
         self._apply_theme()
 
     def _inside(self, w, parent):
