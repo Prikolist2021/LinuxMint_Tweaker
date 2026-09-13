@@ -2649,7 +2649,7 @@ class MainWindow:
                   font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(4, 2))
             Entry(top2, textvariable=self.commit_value, width=6,
                   bg=c["entry"], fg=c["fg"], relief=FLAT).pack(side=LEFT)
-            Label(self._tune_inner, text=self.t("commit_desc"),
+            Label(self._tune_inner, text=self.om("commit")[1],
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
                 fill=X, padx=(24, 8), pady=(0, 4))
