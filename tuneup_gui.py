@@ -2517,7 +2517,8 @@ class MainWindow:
             combo = ttk.Combobox(top, textvariable=self.thp_value,
                                  values=["always", "madvise", "never"],
                                  state="readonly", width=10,
-                                 font=("DejaVu Sans", 9))
+                                 font=("DejaVu Sans", 9),
+                                 style="TCombobox")
             combo.pack(side=LEFT)
             self._thp_lbl = Label(top, text="",
                                   bg=c["panel"], fg=c["gray"],
@@ -2529,7 +2530,8 @@ class MainWindow:
             combo = ttk.Combobox(top, textvariable=self.schedule_value,
                                  values=self._schedule_values(),
                                  state="readonly", width=24,
-                                 font=("DejaVu Sans", 9))
+                                 font=("DejaVu Sans", 9),
+                                 style="TCombobox")
             combo.pack(side=LEFT)
             self._sched_lbl = Label(top, text="",
                                     bg=c["panel"], fg=c["gray"],
@@ -2853,19 +2855,66 @@ class MainWindow:
             style.map("TNotebook.Tab",
                       background=[("selected", c["panel"])],
                       foreground=[("selected", c["accent"])])
-            style.configure("Treeview", background=c["panel"], foreground=c["fg"],
-                            fieldbackground=c["panel"], rowheight=26)
-            style.configure("Treeview.Heading", background=c["tab"],
+            style.configure("Treeview",
+                            background=c["panel"],
+                            foreground=c["fg"],
+                            fieldbackground=c["panel"],
+                            rowheight=26)
+            style.map("Treeview",
+                      background=[("selected", c["sel"])],
+                      foreground=[("selected", c["fg"])])
+            style.configure("Treeview.Heading",
+                            background=c["tab"],
                             foreground=c["fg"])
-            style.configure("TCombobox", fieldbackground=c["entry"],
-                            background=c["button"], foreground=c["fg"])
+            style.map("Treeview.Heading",
+                      background=[("active", c["tab_hover"])],
+                      foreground=[("active", c["fg"])])
+            # Combobox: явно задаём и поле, и стрелку, и выпадающий список
+            style.configure("TCombobox",
+                            fieldbackground=c["entry"],
+                            background=c["button"],
+                            foreground=c["fg"],
+                            arrowcolor=c["fg"],
+                            bordercolor=c["border"],
+                            lightcolor=c["border"],
+                            darkcolor=c["border"],
+                            selectbackground=c["entry"],
+                            selectforeground=c["fg"])
+            style.map("TCombobox",
+                      fieldbackground=[("readonly", c["entry"]),
+                                       ("disabled", c["button_dis"])],
+                      foreground=[("readonly", c["fg"]),
+                                  ("disabled", c["fg_dis"])],
+                      background=[("readonly", c["button"]),
+                                  ("active", c["button_hover"])],
+                      arrowcolor=[("readonly", c["fg"]),
+                                  ("disabled", c["fg_dis"])])
             style.configure("TProgressbar", troughcolor=c["gray_bg"],
                             background=c["accent"])
-            style.configure("Vertical.TScrollbar", background=c["scroll"],
-                            troughcolor=c["bg"], borderwidth=0, arrowsize=12)
+            style.configure("Vertical.TScrollbar",
+                            background=c["scroll"],
+                            troughcolor=c["bg"],
+                            bordercolor=c["bg"],
+                            arrowcolor=c["fg"],
+                            borderwidth=0, arrowsize=12)
+            style.map("Vertical.TScrollbar",
+                      background=[("active", c["button_hover"])])
+            style.configure("Horizontal.TScrollbar",
+                            background=c["scroll"],
+                            troughcolor=c["bg"],
+                            bordercolor=c["bg"],
+                            arrowcolor=c["fg"],
+                            borderwidth=0, arrowsize=12)
         except Exception:
             pass
-
+        # Tk-виджеты внутри выпадающего списка Combobox:
+        try:
+            self.root.option_add("*TCombobox*Listbox.background", c["panel"])
+            self.root.option_add("*TCombobox*Listbox.foreground", c["fg"])
+            self.root.option_add("*TCombobox*Listbox.selectBackground", c["sel"])
+            self.root.option_add("*TCombobox*Listbox.selectForeground", c["fg"])
+        except Exception:
+            pass
     def _repaint_all(self):
         c = self.colors()
 
@@ -2876,23 +2925,37 @@ class MainWindow:
                 if cls == "Frame" and w is not self.root:
                     w.configure(bg=c["panel"] if inside_tune else c["bg"])
                 elif cls == "Label":
-                    w.configure(bg=c["panel"] if inside_tune else c["bg"])
+                    # не сбрасываем цвет, если он задан как цвет-статус
+                    if getattr(w, "_keep_fg", False):
+                        w.configure(bg=c["panel"] if inside_tune else c["bg"])
+                    else:
+                        w.configure(bg=c["panel"] if inside_tune else c["bg"],
+                                    fg=c["fg"])
                 elif cls == "Checkbutton":
                     if inside_tune:
-                        w.configure(bg=c["panel"], activebackground=c["panel"],
+                        w.configure(bg=c["panel"], fg=c["fg"],
+                                    activebackground=c["panel"],
+                                    activeforeground=c["fg"],
                                     selectcolor=c["panel"])
                     else:
-                        w.configure(bg=c["bg"], activebackground=c["bg"],
+                        w.configure(bg=c["bg"], fg=c["fg"],
+                                    activebackground=c["bg"],
+                                    activeforeground=c["fg"],
                                     selectcolor=c["bg"])
                 elif cls == "Button":
                     if w is getattr(self, "_apply_btn", None):
                         w.configure(bg=c["accent"], fg=c["accent_fg"],
-                                    activebackground=c["accent2"])
+                                    activebackground=c["accent2"],
+                                    activeforeground=c["accent_fg"])
                     else:
                         w.configure(bg=c["button"], fg=c["fg"],
-                                    activebackground=c["button_hover"])
+                                    activebackground=c["button_hover"],
+                                    activeforeground=c["fg"])
                 elif cls == "Entry":
-                    w.configure(bg=c["entry"], fg=c["fg"], insertbackground=c["fg"])
+                    w.configure(bg=c["entry"], fg=c["fg"],
+                                insertbackground=c["fg"],
+                                disabledbackground=c["button_dis"],
+                                disabledforeground=c["fg_dis"])
                 elif cls == "Text":
                     w.configure(bg=c["terminal"], fg=c["terminal_fg"],
                                 insertbackground=c["fg"])
@@ -2921,6 +2984,7 @@ class MainWindow:
             self._services_tree.tag_configure("warn", foreground=c["yellow"])
             self._services_tree.tag_configure("err", foreground=c["red"])
             self._services_tree.tag_configure("muted", foreground=c["gray"])
+        # ttk-виджеты
         self._apply_theme()
 
     def _inside(self, w, parent):
