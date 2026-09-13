@@ -2641,11 +2641,11 @@ class MainWindow:
                         font=("DejaVu Sans", 8, "bold"))
             qb._keep_fg = c["blue"]
             qb.pack(side=LEFT, padx=(2, 0))
-            # строка со значением commit
-            # строка со значением commit — на отдельной строке под заголовком,
-            # упаковываем её БЕЗ fill=X, чтобы Entry не растягивался и не уезжал
+
+            # строка со значением commit — ОБЯЗАТЕЛЬНО до описания,
+            # чтобы поле не уезжало под длинный текст
             top2 = Frame(self._tune_inner, bg=c["panel"])
-            top2.pack(anchor=W, padx=8, pady=(0, 4))
+            top2.pack(anchor=W, padx=8, pady=(4, 4))
             Label(top2, text=self.t("commit_value_label"),
                   bg=c["panel"], fg=c["gray"],
                   font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(4, 6))
@@ -2659,6 +2659,7 @@ class MainWindow:
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
                 fill=X, padx=(24, 8), pady=(0, 4))
+
             # чекбоксы разделов с ext2/3/4
             for m in self.mount_items:
                 if not fs_supports_commit(m.get("fstype", "")):
@@ -2690,8 +2691,6 @@ class MainWindow:
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
                 fill=X, padx=(24, 8), pady=(0, 4))
-
-
         # --- Steam ---
         if self.steam_items:
             top = Frame(self._tune_inner, bg=c["panel"])
