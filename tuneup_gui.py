@@ -2646,9 +2646,10 @@ class MainWindow:
             top2.pack(fill=X, padx=8, pady=(0, 2))
             Label(top2, text=self.t("commit_value_label"),
                   bg=c["panel"], fg=c["gray"],
-                  font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(4, 2))
-            Entry(top2, textvariable=self.commit_value, width=6,
-                  bg=c["entry"], fg=c["fg"], relief=FLAT).pack(side=LEFT)
+                  font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(4, 6))
+            Entry(top2, textvariable=self.commit_value, width=8,
+                  bg=c["entry"], fg=c["fg"], relief=FLAT,
+                  insertbackground=c["fg"]).pack(side=LEFT)
             # краткое описание твика
             Label(self._tune_inner,
                   text=self.om("commit")[1],
