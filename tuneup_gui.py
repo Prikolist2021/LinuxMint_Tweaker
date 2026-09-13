@@ -2481,6 +2481,10 @@ class MainWindow:
                         font=("DejaVu Sans", 10, "bold"))
             hdr.pack(fill=X, padx=8, pady=(10, 4))
             for k in cats[cat]:
+                # commit= рисуется отдельно в _build_disk_extras —
+                # со своим полем «Значение (сек)» и списком ext-разделов
+                if k == "commit":
+                    continue
                 self._build_option_row(k)
             if cat == disk_cat:
                 self._build_disk_extras()
