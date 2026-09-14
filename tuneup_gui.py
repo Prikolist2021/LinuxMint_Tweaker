@@ -4,7 +4,7 @@
 Linux Tweaker v0.11
 Графическая оболочка тюнинга Linux Mint / Ubuntu / Debian на Tkinter.
 RU/EN, светлая/тёмная тема, детект применённых настроек,
-откат, бэкапы, mount-опции, симлинки compatdata для Steam, отладочный лог.
+откат, бэкапы, mount-опции, симлинки compatdata для Steam.
 """
 import sys, os, re, subprocess, time, shutil, glob, pwd, grp, threading, traceback
 import queue
@@ -22,6 +22,51 @@ GITHUB_URL = "https://github.com/Prikolist2021/Linux-Tweaker"
 
 # Файловые системы, которые понимают параметр commit= (для ext4-оптимизации)
 COMMIT_OK_FS = {"ext2", "ext3", "ext4"}
+
+# Файл-замок для запрета второй копии приложения
+LOCK_FILE = os.path.join(os.path.expanduser("~"), ".linux-tweaker.lock")
+
+
+def compute_ui_scale(root):
+    """Коэффициент масштаба интерфейса по размеру экрана."""
+    sw = root.winfo_screenwidth()
+    sh = root.winfo_screenheight()
+    sx = sw / 1100.0
+    sy = sh / 800.0
+    scale = min(sx, sy, 1.0)
+    return max(0.75, scale)
+
+
+def acquire_lock():
+    """True, если это единственная копия приложения. False — уже запущена."""
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE, "r") as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, 0)
+            return False
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+        except Exception:
+            pass
+    try:
+        with open(LOCK_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
+    return True
+
+
+def release_lock():
+    try:
+        if os.path.exists(LOCK_FILE):
+            with open(LOCK_FILE, "r") as f:
+                pid = int(f.read().strip())
+            if pid == os.getpid():
+                os.remove(LOCK_FILE)
+    except Exception:
+        pass
+
 
 THEMES = {
     "light": {"bg": "#f5f5f5", "panel": "#ffffff", "fg": "#1e1e1e", "gray": "#616161",
@@ -45,9 +90,6 @@ THEMES = {
 }
 
 OPTIONS_META = {
-    "rsyslog": {
-        "ru": ("Отключить rsyslog", "Отключает запись подробных журналов на диск. Экономит место и уменьшает износ SSD. Работает сразу.", "Логи системы", "запись журналов на диск"),
-        "en": ("Disable rsyslog", "Stops writing detailed logs to disk. Saves space and SSD wear. Works immediately.", "System logs", "detailed rsyslog logging to disk")},
     "journald": {
         "ru": ("Логи в ОЗУ (journald)", "Переносит журнал системы в оперативную память и ограничивает его 50 МБ. Бережёт SSD. Работает сразу.", "Логи системы", "хранение журналов systemd в ОЗУ (50 МБ)"),
         "en": ("Logs in RAM (journald)", "Moves the system log to RAM and caps it at 50 MB. Saves SSD. Works immediately.", "System logs", "systemd journals stored in RAM (50 MB)")},
@@ -55,11 +97,14 @@ OPTIONS_META = {
         "ru": ("audit=0 (GRUB)", "Отключает фоновую запись каждого действия системы. Убирает лишнюю нагрузку. Нужна перезагрузка.", "Ядро и загрузка", "фоновая запись действий"),
         "en": ("audit=0 (GRUB)", "Stops background logging of every system action. Removes extra load. Needs reboot.", "Kernel & boot", "background action logging")},
     "raid": {
-        "ru": ("raid=noautodetect (GRUB)", "Пропускает поиск RAID при загрузке, если его нет. Ускоряет включение. Нужна перезагрузка.", "Ядро и загрузка", "поиск RAID"),
-        "en": ("raid=noautodetect (GRUB)", "Skips RAID probe at boot when you have none. Speeds up startup. Needs reboot.", "Kernel & boot", "RAID probe")},
+        "ru": ("raid=noautodetect (GRUB)", "Пропускает поиск RAID при загрузке, если его нет. Экономит несколько секунд. ВНИМАНИЕ: не включайте, если у вас есть RAID — система не найдёт массивы. Нужна перезагрузка.", "Ядро и загрузка", "поиск RAID"),
+        "en": ("raid=noautodetect (GRUB)", "Skips RAID probe at boot when you have none. Saves a few seconds. WARNING: do not enable with RAID. Needs reboot.", "Kernel & boot", "RAID probe")},
     "nmi_watchdog": {
         "ru": ("nmi_watchdog=0 (GRUB)", "Отключает служебные прерывания отладки. Убирает микро-фризы в играх. Нужна перезагрузка.", "Ядро и загрузка", "прерывания отладки"),
         "en": ("nmi_watchdog=0 (GRUB)", "Disables debug interrupts. Removes micro-stutters in games. Needs reboot.", "Kernel & boot", "debug interrupts")},
+    "itco_wdt": {
+        "ru": ("iTCO_wdt blacklist", "Дополнительный способ заглушить NMI watchdog, если параметр ядра не сработал. Модуль iTCO_wdt включает watchdog заново после загрузки. Работает только на Intel. Нужна перезагрузка.", "Ядро и загрузка", "Intel watchdog"),
+        "en": ("iTCO_wdt blacklist", "Extra step to silence NMI watchdog when the kernel parameter did not help. Intel only. Needs reboot.", "Kernel & boot", "Intel watchdog")},
     "corectrl": {
         "ru": ("CoreCtrl (Polkit)", "Разрешает управлять вентиляторами и частотами AMD без пароля. Работает сразу.", "Видеокарта и графика", "управление AMD без пароля"),
         "en": ("CoreCtrl (Polkit)", "Allows controlling AMD fans and clocks without a password. Works immediately.", "GPU & graphics", "AMD control without password")},
@@ -144,16 +189,16 @@ SERVICES_META = {
     "touchegg.service": {"ru": "Распознаёт жесты тачпада и сенсора. Не нужен на настольном ПК без сенсора.", "en": "Recognizes touchpad and touchscreen gestures. Not needed on a desktop without a touchscreen."},
     "zfs-zed.service": {"ru": "Следит за дисковыми массивами ZFS и предупреждает о проблемах. Не нужен без ZFS.", "en": "Watches ZFS disk arrays and warns on problems. Not needed without ZFS."},
     "kerneloops.service": {"ru": "Отправляет разработчикам отчёты о сбоях ядра. На домашнем ПК это лишняя нагрузка и трафик.", "en": "Sends kernel crash reports to developers. On a home PC this is extra load and traffic."},
+    "rsyslog.service": {"ru": "Пишет подробные журналы системы на диск. Отключение экономит место и уменьшает износ SSD; важные сообщения остаются в журнале systemd.", "en": "Writes detailed system logs to disk. Disabling saves space and reduces SSD wear; important messages remain in the systemd journal."},
 }
 SERVICES_ORDER = list(SERVICES_META.keys())
 
 OPTION_FILES = {
-    "rsyslog": ["/etc/systemd/system/rsyslog.service",
-                "/lib/systemd/system/rsyslog.service"],
     "journald": ["/etc/systemd/journald.conf"],
     "audit": ["/etc/default/grub"],
     "raid": ["/etc/default/grub"],
     "nmi_watchdog": ["/etc/default/grub"],
+    "itco_wdt": ["/etc/modprobe.d/nmi-watchdog.conf"],
     "corectrl": ["/etc/polkit-1/rules.d/90-corectrl.rules",
                  "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla"],
     "ppfeaturemask": ["/etc/default/grub"],
@@ -231,6 +276,23 @@ def zram_generator_present():
         "/lib/systemd/system-generators/zram-generator"))
 
 
+def _is_removable_device(dev):
+    """True, если устройство — сменный носитель (USB-флешка, картридер)."""
+    try:
+        base = os.path.basename(dev)
+        m = re.match(r"^(sd[a-z]+|hd[a-z]+|vd[a-z]+|nvme\d+n\d+|mmcblk\d+)", base)
+        if not m:
+            return False
+        disk = m.group(1)
+        rm_path = "/sys/block/%s/removable" % disk
+        if os.path.exists(rm_path):
+            with open(rm_path, "r") as f:
+                return f.read().strip() == "1"
+    except Exception:
+        pass
+    return False
+
+
 def parse_mounts():
     items = []
     try:
@@ -247,6 +309,8 @@ def parse_mounts():
                                   "fuseblk"):
                     continue
                 if "rw" not in opts.split(","):
+                    continue
+                if _is_removable_device(dev):
                     continue
                 items.append({"dev": dev, "mp": mp, "fstype": fstype})
     except Exception:
@@ -382,6 +446,8 @@ class SystemState:
         self.has_flatpak = False
         self.user_name = "root"
         self.user_home = "/root"
+        self.is_intel = False
+        self.has_itco_module = False
 
     def detect(self):
         try:
@@ -445,6 +511,20 @@ class SystemState:
         s = os.environ.get("DESKTOP_SESSION", "").lower()
         self.cinnamon = "cinnamon" in d or s == "cinnamon"
         self.has_flatpak = bool(shutil.which("flatpak"))
+        # Intel-чипсет и наличие модуля iTCO_wdt (для blacklist-твика)
+        self.is_intel = False
+        try:
+            with open("/proc/cpuinfo", "r", encoding="utf-8", errors="replace") as f:
+                if "GenuineIntel" in f.read():
+                    self.is_intel = True
+        except Exception:
+            pass
+        self.has_itco_module = False
+        try:
+            r = subprocess.run(["modinfo", "iTCO_wdt"], capture_output=True, timeout=5)
+            self.has_itco_module = (r.returncode == 0)
+        except Exception:
+            pass
 
     def _real_user(self):
         for var in ("SUDO_USER", "PKEXEC_USER"):
@@ -479,8 +559,6 @@ class SystemOps:
         self.dry_run = dry_run
         self.grub_changed = False
         self.mount_items = []
-        # разделы, к которым разрешено применять commit=
-        # (заполняется из UI; по умолчанию — только ext2/3/4)
         self.commit_targets = []
         self.backup_dir = os.path.join(state.user_home, "system-tuneup-backups")
 
@@ -781,18 +859,8 @@ class SystemOps:
         else:
             self.log("update-grub / grub-mkconfig not found", "warning")
         self.grub_changed = False
-    # ─── apply ──────────────────────────────────────────────────────────
-    def apply_rsyslog(self, params=None):
-        if self.dry_run:
-            self.log("[DRY RUN] disable + mask rsyslog", "warning"); return True
-        if self.service_enabled("rsyslog.service") in ("disabled", "masked", "not-found"):
-            self.log("rsyslog already disabled", "info"); return True
-        ok1 = self.sudo_run(["systemctl", "disable", "--now", "rsyslog"], ignore_error=True)
-        ok2 = self.sudo_run(["systemctl", "mask", "rsyslog"], ignore_error=True)
-        if ok1 or ok2:
-            self.log("✓ rsyslog disabled", "success"); return True
-        self.log("Cannot disable rsyslog", "error"); return False
 
+    # ─── apply ──────────────────────────────────────────────────────────
     def apply_journald(self, params=None):
         if self.dry_run:
             self.log("[DRY RUN] journald volatile 50M", "warning"); return True
@@ -839,6 +907,21 @@ class SystemOps:
 
     def apply_nmi_watchdog(self, params=None):
         return self.add_grub_params(["nmi_watchdog=0"])
+
+    def apply_itco_wdt(self, params=None):
+        if not getattr(self.state, "is_intel", False):
+            self.log("Not an Intel system, skipping", "warning"); return False
+        if not getattr(self.state, "has_itco_module", False):
+            self.log("iTCO_wdt module not available, skipping", "warning"); return False
+        path = "/etc/modprobe.d/nmi-watchdog.conf"
+        content = ("blacklist iTCO_wdt\n"
+                   "blacklist iTCO_vendor_support\n"
+                   "install iTCO_wdt /bin/false\n"
+                   "install iTCO_vendor_support /bin/false\n")
+        if not self.write_file(path, content, chmod="644", mkdir=True):
+            return False
+        self.log("✓ iTCO_wdt blacklisted (needs reboot)", "success")
+        return True
 
     def _polkit_is_new(self):
         try:
@@ -1468,6 +1551,7 @@ class SystemOps:
                       ok_msg="✓ timer created: %s" % desc,
                       err_msg="Cannot enable timer")
         return True
+
     # ─── rollback ───────────────────────────────────────────────────────
     def _rm(self, path):
         if self.dry_run:
@@ -1490,14 +1574,6 @@ class SystemOps:
             self.log("Line not found in %s" % path, "info"); return True
         self.backup_file(path)
         return self.write_file(path, "\n".join(new) + "\n", backup=False)
-
-    def rollback_rsyslog(self, params=None):
-        if self.dry_run:
-            self.log("[DRY RUN] unmask + enable rsyslog", "warning"); return True
-        self.sudo_run(["systemctl", "unmask", "rsyslog"], ignore_error=True)
-        self.sudo_run(["systemctl", "enable", "--now", "rsyslog"],
-                      ok_msg="✓ rsyslog re-enabled", ignore_error=True)
-        return True
 
     def rollback_journald(self, params=None):
         path = "/etc/systemd/journald.conf"
@@ -1523,6 +1599,11 @@ class SystemOps:
 
     def rollback_nmi_watchdog(self, params=None):
         return self._remove_grub_params(["nmi_watchdog=0"])
+
+    def rollback_itco_wdt(self, params=None):
+        self._rm("/etc/modprobe.d/nmi-watchdog.conf")
+        self.sudo_run(["modprobe", "-r", "iTCO_wdt"], ignore_error=True)
+        self.log("✓ iTCO_wdt blacklist removed", "success"); return True
 
     def rollback_corectrl(self, params=None):
         self._rm("/etc/polkit-1/rules.d/90-corectrl.rules")
@@ -1635,10 +1716,6 @@ class SystemOps:
 
 # ─── Длинные справки по твикам ───────────────────────────────────────────
 OPTIONS_HELP = {
-    "rsyslog": {
-        "ru": "rsyslog — это программа, которая постоянно записывает подробные журналы системы в текстовые файлы на диске. Каждую секунду она дописывает туда события: запуск служб, ошибки, вход пользователей. На домашнем ПК эти файлы почти никто не читает, но диск получает постоянные операции записи.\n\nЕсли отключить rsyslog, диск перестанет получать эти лишние записи. Это особенно полезно на SSD, где каждая запись тратит ресурс ячейки. Освободится место в /var/log, и система будет работать чуть-чуть быстрее.\n\nНе отключайте, если вы привыкли разбираться с проблемами по старым файлам журналов. Правда, важные сообщения всё равно останутся — они идут в журнал systemd, который смотрится командой journalctl. То есть вы ничего критичного не теряете.\n\nОпция работает сразу после применения, перезагрузка не нужна. Откат — просто включение службы обратно.",
-        "en": "rsyslog is a program that constantly writes detailed system logs into text files on the disk. Every second it appends events: service starts, errors, user logins. On a home PC nobody reads these files, but the disk keeps getting write operations.\n\nIf you disable rsyslog, the disk stops receiving those extra writes. This is especially useful on an SSD, where every write wears out a memory cell. Space in /var/log frees up, and the system runs a bit faster.\n\nDo not disable it if you are used to troubleshooting by reading old log files. However, important messages still go to the systemd journal, which you can view with journalctl — so you are not losing anything critical.\n\nThe option applies immediately, no reboot needed. Rolling back simply re-enables the service.",
-    },
     "journald": {
         "ru": "Журнал systemd — это запись всех событий системы: запуск служб, ошибки, подключения устройств. Обычно он хранится на диске и со временем разрастается до сотен мегабайт.\n\nЭта опция переносит журнал в оперативную память и ограничивает его 50 мегабайтами. Диск перестаёт получать постоянные записи, а значит, меньше изнашивается. Особенно полезно на SSD и на домашнем ПК, где журнал почти никто не читает.\n\nНе включайте, если вы привыкли разбирать старые проблемы по логам: после перезагрузки журнал в памяти исчезнет. Если вам нужны долгосрочные записи — оставьте как есть.\n\nОпция применяется сразу, перезагрузка не нужна. Служба journald перезапустится, и журнал продолжит собираться в памяти. Откат удаляет ваши изменения и возвращает журнал на диск.",
         "en": "The systemd journal records all system events: service starts, errors, device plugs. It usually lives on disk and grows to hundreds of megabytes over time.\n\nThis option moves the journal into RAM and caps it at 50 MB. The disk stops getting constant writes, which means less wear. It is especially useful on an SSD and on a home PC, where nobody reads the journal anyway.\n\nDo not enable it if you are used to troubleshooting by reading old logs: after a reboot the journal in RAM disappears. If you need long-term records, leave it as is.\n\nThe option applies immediately, no reboot needed. The journald service restarts itself, and the journal keeps collecting in memory. Rolling back removes your changes and puts the journal back on disk.",
@@ -1648,12 +1725,16 @@ OPTIONS_HELP = {
         "en": "audit is a kernel service that logs every system action: which process opened a file, which user started a program. Such detailed logging is needed in offices and on servers for security, so incidents can be investigated later.\n\nAt home it is unnecessary. Every system call turns into a log entry, which adds CPU and disk load. Disabling it removes this overhead and slightly speeds up the system.\n\nDo not disable it if you actually need security logs for audits — for example, in an organisation with compliance requirements.\n\nThe audit=0 parameter is added to the GRUB bootloader, so the change only takes effect after a reboot. Rolling back removes the parameter from GRUB automatically, but also requires a reboot.",
     },
     "raid": {
-        "ru": "RAID — это способ объединить несколько физических дисков в один логический. Например, два диска могут работать как один большой для скорости или для надёжности (если один выйдет из строя, данные сохранятся на другом). Если у вас в системе есть такое объединение — у вас RAID.\n\nЕсли RAID нет, при каждой загрузке ядро всё равно несколько секунд ищет массивы и не находит. Эти секунды можно сэкономить: параметр raid=noautodetect отключает поиск и ускоряет включение.\n\nВНИМАНИЕ: не включайте эту опцию, если вы используете RAID. Система перестанет находить ваши массивы при загрузке, и вы можете потерять доступ к данным. Если сомневаетесь — не включайте.\n\nПараметр добавляется в GRUB, поэтому изменения вступают в силу после перезагрузки. Откат убирает параметр из GRUB, тоже с перезагрузкой.",
-        "en": "RAID is a way to combine several physical disks into one logical one. For example, two disks can act as one big disk for speed, or for reliability (if one fails, the data stays on the other). If your system has such a combination — you have RAID.\n\nIf there is no RAID, the kernel still spends a few seconds at every boot probing for arrays and finding nothing. You can save those seconds: raid=noautodetect disables the probe and speeds up startup.\n\nWARNING: do not enable this option if you use RAID. The system will stop finding your arrays at boot, and you may lose access to your data. If in doubt — do not enable it.\n\nThe parameter is added to GRUB, so changes take effect after a reboot. Rolling back removes the parameter from GRUB, also with a reboot.",
+        "ru": "RAID — это способ объединить несколько физических дисков в один логический: для скорости или для надёжности (если один выйдет из строя, данные останутся на другом). Если у вас такое объединение есть, у вас RAID.\n\nЕсли RAID нет, при каждой загрузке ядро всё равно несколько секунд ищет массивы и не находит. Эти секунды можно сэкономить: параметр raid=noautodetect отключает поиск и ускоряет включение.\n\nВНИМАНИЕ: не включайте эту опцию, если вы используете RAID. Система перестанет находить массивы при загрузке, и вы можете потерять доступ к данным.\n\nПараметр добавляется в GRUB, изменения вступают в силу после перезагрузки. Откат убирает параметр из GRUB, тоже с перезагрузкой.",
+        "en": "RAID is a way to combine several physical disks into one logical one: for speed, or for reliability (if one fails, data stays on the other). If your system has such a combination, you have RAID.\n\nIf there is no RAID, the kernel still spends a few seconds at every boot probing for arrays and finds nothing. You can save those seconds: raid=noautodetect disables the probe and speeds up startup.\n\nWARNING: do not enable this option if you use RAID. The system will stop finding your arrays at boot, and you may lose access to your data.\n\nThe parameter is added to GRUB, changes take effect after a reboot. Rolling back removes the parameter from GRUB, also with a reboot.",
     },
     "nmi_watchdog": {
-        "ru": "NMI-watchdog — это служебный механизм ядра для отладки зависаний. Он периодически посылает процессору специальные сигналы (немаскируемые прерывания), чтобы проверить, что система ещё жива. Если система не отвечает — ядро записывает это в журнал.\n\nНа домашнем ПК такая отладка не нужна. А периодические прерывания, пусть и редкие, дают микро-фризы в играх и чувствительных к задержкам задачах. Отключение убирает эти паузы.\n\nНе отключайте, если вы специально занимаетесь отладкой зависаний ядра и вам нужны эти данные.\n\nПараметр nmi_watchdog=0 добавляется в GRUB, поэтому изменения вступают в силу после перезагрузки. Откат убирает параметр и тоже требует перезагрузки.",
-        "en": "The NMI watchdog is a kernel debugging facility for detecting hangs. It periodically sends special signals to the CPU (non-maskable interrupts) to check that the system is still alive. If the system does not respond, the kernel writes it to the log.\n\nOn a home PC such debugging is unnecessary. And the periodic interrupts, even rare ones, cause micro-stutters in games and latency-sensitive tasks. Disabling them removes those pauses.\n\nDo not disable it if you specifically debug kernel hangs and need that data.\n\nThe nmi_watchdog=0 parameter is added to GRUB, so changes take effect after a reboot. Rolling back removes the parameter and also requires a reboot.",
+        "ru": "NMI-watchdog — это служебный механизм ядра для отладки зависаний. Он периодически посылает процессору специальные сигналы (немаскируемые прерывания), чтобы проверить, что система ещё жива. Если система не отвечает — ядро записывает это в журнал.\n\nНа домашнем ПК такая отладка не нужна. А периодические прерывания, пусть и редкие, дают микро-фризы в играх и чувствительных к задержкам задачах. Отключение убирает эти паузы.\n\nНе отключайте, если вы специально занимаетесь отладкой зависаний ядра и вам нужны эти данные.\n\nПараметр nmi_watchdog=0 добавляется в GRUB, поэтому изменения вступают в силу после перезагрузки. Откат убирает параметр и тоже требует перезагрузки.\n\nВАЖНО: на некоторых системах (особенно с Intel-чипсетом) модуль iTCO_wdt включает watchdog заново после загрузки. Проверить можно командой: cat /proc/sys/kernel/nmi_watchdog. Если там 1 — используйте дополнительный твик «iTCO_wdt blacklist».",
+        "en": "The NMI watchdog is a kernel debugging facility for detecting hangs. It periodically sends special signals to the CPU (non-maskable interrupts) to check that the system is still alive. If the system does not respond, the kernel writes it to the log.\n\nOn a home PC such debugging is unnecessary. And the periodic interrupts, even rare ones, cause micro-stutters in games and latency-sensitive tasks. Disabling them removes those pauses.\n\nDo not disable it if you specifically debug kernel hangs and need that data.\n\nThe nmi_watchdog=0 parameter is added to GRUB, so changes take effect after a reboot. Rolling back removes the parameter and also requires a reboot.\n\nIMPORTANT: on some systems (especially with an Intel chipset) the iTCO_wdt module re-enables the watchdog after boot. Check with: cat /proc/sys/kernel/nmi_watchdog. If it shows 1, use the extra tweak «iTCO_wdt blacklist».",
+    },
+    "itco_wdt": {
+        "ru": "Этот твик — дополнение к «nmi_watchdog=0 (GRUB)». На многих системах с Intel-чипсетом после загрузки ядра модуль iTCO_wdt снова включает NMI watchdog, даже если вы передали параметр nmi_watchdog=0. В итоге /proc/sys/kernel/nmi_watchdog снова становится 1, и микро-фризы возвращаются.\n\nРешение — заблокировать модуль iTCO_wdt, чтобы он вообще не загружался. В файле /etc/modprobe.d/nmi-watchdog.conf прописываются строки blacklist и install ... /bin/false. Первое запрещает автозагрузку, второе блокирует явную загрузку через modprobe.\n\nЭтот твик доступен только на системах с Intel-чипсетом, где модуль iTCO_wdt вообще поддерживается ядром. На AMD и в виртуалках он неактивен.\n\nПроверить состояние после перезагрузки: cat /proc/sys/kernel/nmi_watchdog — должно быть 0. Откат удаляет файл и позволяет модулю загружаться снова.",
+        "en": "This tweak complements «nmi_watchdog=0 (GRUB)». On many systems with an Intel chipset, the iTCO_wdt module re-enables the NMI watchdog after the kernel is loaded — even if you passed nmi_watchdog=0. As a result /proc/sys/kernel/nmi_watchdog becomes 1 again, and micro-stutters come back.\n\nThe fix is to block the iTCO_wdt module entirely. In /etc/modprobe.d/nmi-watchdog.conf lines blacklist and install ... /bin/false are written. The first forbids autoload, the second blocks explicit modprobe.\n\nThis tweak is only available on Intel chipset systems where the kernel actually supports iTCO_wdt. On AMD and in VMs it stays disabled.\n\nCheck the state after reboot: cat /proc/sys/kernel/nmi_watchdog — should be 0. Rolling back removes the file and lets the module load again.",
     },
     "corectrl": {
         "ru": "CoreCtrl — это программа для тонкой настройки видеокарт AMD. Она позволяет менять частоты, управлять вентиляторами, задавать лимиты питания и следить за температурой. Без неё видеокарта работает по стандартным профилям, а с ней можно выжать больше производительности или сделать систему тише.\n\nПо умолчанию все действия CoreCtrl требуют пароль администратора. Это неудобно: чтобы менять частоты, приходится каждый раз вводить пароль. Данная опция создаёт правило Polkit, которое разрешает вашей группе пользователей управлять видеокартой без пароля.\n\nНе включайте, если у вас не AMD или вы не пользуетесь CoreCtrl. В поле «Группа» укажите группу пользователей, которой разрешено управление. По умолчанию подставляется ваша группа.\n\nОпция работает сразу, перезагрузка не нужна. Откат удаляет правило Polkit.",
@@ -1794,7 +1875,12 @@ SERVICES_HELP = {
         "ru": "kerneloops — это служба, которая собирает отчёты о сбоях ядра (kernel oops) и отправляет их разработчикам. Технически она помогает находить и исправлять баги в ядре Linux. Информация уходит на сервер проекта.\n\nНа домашнем ПК эта служба приносит мало пользы. Она лишь добавляет фоновую нагрузку и исходящий трафик. Если ядро у вас падает часто — это скорее повод разобраться с драйверами, чем отправлять отчёты.\n\nОтключение безопасно. Оставьте включённой, если хотите помогать разработчикам ядра.",
         "en": "kerneloops is a service that collects reports about kernel crashes (kernel oops) and sends them to developers. Technically it helps find and fix bugs in the Linux kernel. The information goes to the project's server.\n\nOn a home PC the service brings little benefit. It only adds background load and outgoing traffic. If your kernel crashes often, that is a reason to look into drivers, not to send reports.\n\nDisabling is safe. Keep it enabled if you want to help kernel developers.",
     },
+    "rsyslog.service": {
+        "ru": "rsyslog — это служба, которая постоянно пишет подробные журналы системы в текстовые файлы на диске. Каждую секунду она дописывает туда события: запуск служб, ошибки, вход пользователей. На домашнем ПК эти файлы почти никто не читает, но диск получает постоянные операции записи.\n\nОтключение освобождает место в /var/log и уменьшает износ SSD. Важные сообщения при этом никуда не пропадают — они идут в журнал systemd, который смотрится командой journalctl.\n\nНе отключайте, если вы привыкли разбираться с проблемами по старым файлам журналов.\n\nОтключение безопасно и работает сразу. Включение обратно возвращает прежнее поведение.",
+        "en": "rsyslog is a service that constantly writes detailed system logs into text files on the disk. Every second it appends events: service starts, errors, user logins. On a home PC nobody reads these files, but the disk keeps getting write operations.\n\nDisabling it frees space in /var/log and reduces SSD wear. Important messages are not lost — they go to the systemd journal, which you can view with journalctl.\n\nDo not disable it if you are used to troubleshooting by reading old log files.\n\nDisabling is safe and works immediately. Re-enabling restores the previous behaviour.",
+    },
 }
+
 STR = {
     "ru": {
         "tab_tune": "Тюнинг", "tab_serv": "Службы", "tab_stat": "Статус",
@@ -1803,7 +1889,6 @@ STR = {
         "btn_about": "О твикере", "btn_close": "Закрыть",
         "theme_dark": "Тёмная тема", "theme_light": "Светлая тема",
         "lbl_dry": "Сухой прогон", "lbl_terminal": "Терминальный вывод:",
-        "lbl_debug": "Отладка",
         "lbl_group": "Группа:", "lbl_value": "Значение:", "lbl_schedule": "Расписание:",
         "ready": "Готово", "running": "Выполнение...", "done": "Готово",
         "applied_yes": "✓ применено", "applied_no": "не применено",
@@ -1817,6 +1902,7 @@ STR = {
         "svc_masked": "заблокирована", "svc_na": "нет в системе",
         "run_yes": "работает", "run_no": "остановлена",
         "svc_on_sel": "Включить выбранные", "svc_off_sel": "Отключить выбранные",
+        "svc_col_sel": "✓",
         "stat_refresh": "Обновить статус",
         "st_hw": "ИНФОРМАЦИЯ О СИСТЕМЕ", "st_parts": "РАЗДЕЛЫ СИСТЕМЫ",
         "st_tweaks": "ТВИКИ", "st_services": "СЛУЖБЫ", "st_kernel": "ПАРАМЕТРЫ ЯДРА",
@@ -1844,8 +1930,6 @@ STR = {
         "commit_desc": "Параметр commit= понимают ТОЛЬКО ext2/ext3/ext4. Для NTFS, FAT32, exFAT, btrfs, xfs он приведёт к ошибке монтирования. Ниже — только подходящие разделы: отметьте те, к которым добавить commit.",
         "commit_none": "Подходящих разделов (ext2/ext3/ext4) не найдено. Твик commit= недоступен.",
         "commit_value_label": "Значение (сек):",
-        "commit_fs_ok": "ext4 — поддерживает commit=",
-        "commit_fs_bad": "%s — commit= НЕ поддерживается, раздел отключён",
         "kern_sw": "насколько охотно система выгружает память в swap (меньше значение — реже)",
         "kern_vfs": "кэш файлов в памяти",
         "kern_numa": "миграция памяти между ядрами",
@@ -1862,12 +1946,15 @@ STR = {
         "about_purpose": "Графическая оболочка тюнинга для Linux Mint / Ubuntu / Debian и других systemd-дистрибутивов: твики производительности, логов, дисков, сети и игр с откатом и бэкапами.",
         "about_author": "Автор", "about_author_name": "Дмитрий Свистунов",
         "about_ver": "Версия",
+        "about_disclaimer": "ОТКАЗ ОТ ОТВЕТСТВЕННОСТИ\n\nТвикер изменяет системные файлы (GRUB, fstab, sysctl, systemd-юниты, конфиги приложений). Все изменения вы делаете на свой страх и риск. Перед применением твиков убедитесь, что у вас есть резервная копия важных данных и загрузочная флешка на случай проблем с загрузкой. Автор не несёт ответственности за потерю данных, отказ загрузки или нестабильную работу системы. Бэкапы изменённых файлов сохраняются в ~/system-tuneup-backups/.",
+        "disabled_reason": "недоступно: %s",
         "msg_run": "Скрипт уже запущен. Дождитесь завершения.",
         "msg_noopt": "Отметьте хотя бы одну опцию.",
         "msg_sel": "Сначала выберите строки в таблице.",
         "msg_nofile": "Файл ещё не существует. Пути, где опция вносит изменения:",
         "msg_close": "Прервать выполнение и закрыть?",
-        "help_title": "О твикере",
+        "msg_running_title": "Уже запущено",
+        "msg_running_text": "Linux Tweaker уже запущен.",
     },
     "en": {
         "tab_tune": "Tuning", "tab_serv": "Services", "tab_stat": "Status",
@@ -1876,7 +1963,6 @@ STR = {
         "btn_about": "About", "btn_close": "Close",
         "theme_dark": "Dark theme", "theme_light": "Light theme",
         "lbl_dry": "Dry run", "lbl_terminal": "Terminal output:",
-        "lbl_debug": "Debug",
         "lbl_group": "Group:", "lbl_value": "Value:", "lbl_schedule": "Schedule:",
         "ready": "Ready", "running": "Running...", "done": "Done",
         "applied_yes": "✓ applied", "applied_no": "not applied",
@@ -1890,6 +1976,7 @@ STR = {
         "svc_masked": "blocked", "svc_na": "not installed",
         "run_yes": "running", "run_no": "stopped",
         "svc_on_sel": "Enable selected", "svc_off_sel": "Disable selected",
+        "svc_col_sel": "✓",
         "stat_refresh": "Refresh status",
         "st_hw": "SYSTEM INFORMATION", "st_parts": "SYSTEM PARTITIONS",
         "st_tweaks": "TWEAKS", "st_services": "SERVICES", "st_kernel": "KERNEL PARAMETERS",
@@ -1917,8 +2004,6 @@ STR = {
         "commit_desc": "Only ext2/ext3/ext4 understand commit=. For NTFS, FAT32, exFAT, btrfs, xfs it will fail to mount. Below are only suitable partitions: tick the ones to add commit to.",
         "commit_none": "No suitable partitions (ext2/ext3/ext4) found. commit= tweak is unavailable.",
         "commit_value_label": "Value (sec):",
-        "commit_fs_ok": "ext4 — commit= supported",
-        "commit_fs_bad": "%s — commit= NOT supported, partition disabled",
         "kern_sw": "how eagerly the system moves memory to swap (lower = less often)",
         "kern_vfs": "file cache in RAM",
         "kern_numa": "memory migration between cores",
@@ -1935,22 +2020,24 @@ STR = {
         "about_purpose": "A graphical tuning shell for Linux Mint / Ubuntu / Debian and other systemd distributions: performance, logs, disk, network and gaming tweaks with rollback and backups.",
         "about_author": "Author", "about_author_name": "Dmitry Svistunov",
         "about_ver": "Version",
+        "about_disclaimer": "DISCLAIMER\n\nThis tweaker modifies system files (GRUB, fstab, sysctl, systemd units, application configs). You use it at your own risk. Before applying tweaks, make sure you have a backup of important data and a bootable USB stick in case of boot problems. The author is not responsible for data loss, boot failure or system instability. Backups of modified files are stored in ~/system-tuneup-backups/.",
+        "disabled_reason": "unavailable: %s",
         "msg_run": "A job is already running. Wait for it to finish.",
         "msg_noopt": "Tick at least one option.",
         "msg_sel": "Select table rows first.",
         "msg_nofile": "This file appears after applying the option. Paths the option modifies:",
         "msg_close": "Interrupt the job and close?",
-        "help_title": "About",
+        "msg_running_title": "Already running",
+        "msg_running_text": "Linux Tweaker is already running.",
     },
-}
-
-
+} 
 # ═══════════════════════════════════════════════════════════════════════════
 class MainWindow:
     """Главное окно приложения на Tkinter."""
 
     def __init__(self, root):
         self.root = root
+        self.scale = compute_ui_scale(root)
         self.lang = detect_lang()
         self.theme = "light"
         self.is_running = False
@@ -1965,13 +2052,11 @@ class MainWindow:
         self.opts_state = {k: BooleanVar(value=False) for k in OPTIONS_META}
         self.mount_state = {}
         self.steam_state = {}
-        # разделы с подходящей ФС для commit= (ext2/3/4) и флаги выбора
         self.commit_state = {}
+        self.disabled_reasons = {}
+        self.svc_checked = set()
         self.msg_queue = queue.Queue()
         self._ram_cache = None
-        self.debug_enabled = False
-        self._debug_fh = None
-        self._debug_lock = threading.Lock()
         self.sudo = SudoManager()
         self.sudo.prompt_password = self._ask_password
         self.sudo.show_error = lambda m: messagebox.showwarning(
@@ -1980,8 +2065,6 @@ class MainWindow:
             parent=self.root)
         self.state = SystemState()
         self.state.detect()
-        self.debug_log_path = os.path.join(self.state.user_home,
-                                           "linux-tweaker-debug.log")
         self.corectrl_group = StringVar(
             value=self.state.user_name if self.state.user_name != "root" else "sudo")
         self.swap_value = StringVar(
@@ -2004,7 +2087,6 @@ class MainWindow:
             mounts.append(it)
             self.mount_state[it["mp"]] = BooleanVar(value=False)
         self.mount_items = mounts
-        # для commit= доступны только ext2/3/4
         for m in self.mount_items:
             if fs_supports_commit(m.get("fstype", "")):
                 for mp in m["mps"]:
@@ -2030,7 +2112,7 @@ class MainWindow:
         self._lang_btn = None
         self._about_btn = None
         self._dry_var = BooleanVar(value="--dry-run" in sys.argv)
-        self._debug_var = BooleanVar(value=False)
+        self._compute_disabled_reasons()
         self._build_ui()
         self._apply_theme()
         self._bind_global_wheel()
@@ -2045,7 +2127,6 @@ class MainWindow:
     # ─── i18n и цвета ───────────────────────────────────────────────────
     def t(self, k):
         if k not in STR[self.lang]:
-            self._debug_write("MISSING i18n key: %s" % k)
             return k
         return STR[self.lang][k]
 
@@ -2054,47 +2135,6 @@ class MainWindow:
 
     def colors(self):
         return THEMES[self.theme]
-
-    # ─── отладка ────────────────────────────────────────────────────────
-    def _debug_write(self, msg, tb_obj=None):
-        with self._debug_lock:
-            if not self.debug_enabled or self._debug_fh is None:
-                return
-            try:
-                ts = time.strftime("%Y-%m-%d %H:%M:%S")
-                self._debug_fh.write("[%s] %s\n" % (ts, msg))
-                if tb_obj:
-                    traceback.print_exception(*tb_obj, file=self._debug_fh)
-                self._debug_fh.flush()
-            except Exception:
-                pass
-
-    def _toggle_debug(self):
-        on = bool(self._debug_var.get())
-        self.debug_enabled = on
-        if on:
-            try:
-                with self._debug_lock:
-                    self._debug_fh = open(self.debug_log_path, "a", encoding="utf-8")
-                    self._debug_fh.write("\n=== BUILD %s | session start %s ===\n"
-                                         % (APP_VERSION,
-                                            time.strftime("%Y-%m-%d %H:%M:%S")))
-                    self._debug_fh.flush()
-                self.log("Debug log: %s" % self.debug_log_path, "info")
-            except Exception as e:
-                self.debug_enabled = False
-                with self._debug_lock:
-                    self._debug_fh = None
-                self.log("Cannot open debug log: %s" % e, "error")
-        else:
-            with self._debug_lock:
-                if self._debug_fh:
-                    try:
-                        self._debug_fh.write("=== session end %s ===\n"
-                                             % time.strftime("%Y-%m-%d %H:%M:%S"))
-                        self._debug_fh.close()
-                    finally:
-                        self._debug_fh = None
 
     def _ask_password(self, attempt):
         return simpledialog.askstring(
@@ -2108,6 +2148,37 @@ class MainWindow:
                     "2 раза в месяц (1 и 15)", "Ежемесячно (1 число)")
         return ("Disabled", "Daily", "Weekly (Saturday)",
                 "Twice a month (1 & 15)", "Monthly (1st)")
+
+    # ─── причины недоступности твиков ──────────────────────────────────
+    def _compute_disabled_reasons(self):
+        r = {}
+        if self.state.has_raid:
+            r["raid"] = ("у вас есть RAID" if self.lang == "ru"
+                         else "RAID detected")
+        if not getattr(self.state, "is_intel", False):
+            r["itco_wdt"] = ("не Intel-чипсет" if self.lang == "ru"
+                             else "not an Intel system")
+        elif not getattr(self.state, "has_itco_module", False):
+            r["itco_wdt"] = ("модуль iTCO_wdt не поддерживается ядром"
+                             if self.lang == "ru"
+                             else "iTCO_wdt module not available")
+        if self.state.gpu not in ("AMD", "Unknown"):
+            for k in ("corectrl", "ppfeaturemask", "vrr", "radv"):
+                r[k] = ("только для AMD" if self.lang == "ru"
+                        else "AMD only")
+        if self.state.gpu not in ("NVIDIA", "Unknown"):
+            r["nvidia_modeset"] = ("только для NVIDIA" if self.lang == "ru"
+                                   else "NVIDIA only")
+        if not self.state.has_swap:
+            r["swap"] = ("swap не обнаружен" if self.lang == "ru"
+                         else "no swap found")
+        if not zram_generator_present():
+            r["zram"] = ("нет zram-generator" if self.lang == "ru"
+                         else "zram-generator not installed")
+        if not os.path.exists("/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"):
+            r["ntfs3"] = ("только для Linux Mint" if self.lang == "ru"
+                          else "Linux Mint only")
+        self.disabled_reasons = r
 
     # ─── вспомогательные ────────────────────────────────────────────────
     def _lib_on_ntfs(self, lib):
@@ -2262,7 +2333,6 @@ class MainWindow:
 
     # ─── лог и очередь ──────────────────────────────────────────────────
     def log(self, msg, tag="normal"):
-        self._debug_write("<%s> %s" % (tag, msg.rstrip()))
         self.msg_queue.put(("log", msg, tag))
 
     def _run_bg(self, fn, *args):
@@ -2273,7 +2343,6 @@ class MainWindow:
             fn(*args)
         except Exception:
             traceback.print_exc()
-            self._debug_write("BG CRASH", tb_obj=sys.exc_info())
 
     def _process_queue(self):
         try:
@@ -2329,6 +2398,24 @@ class MainWindow:
         self._terminal.configure(state=DISABLED)
 
     # ─── UI ─────────────────────────────────────────────────────────────
+    def _shrink_fonts(self, w):
+        try:
+            f = w.cget("font")
+            if f:
+                parts = str(f).split()
+                if len(parts) >= 2 and parts[-2].isdigit():
+                    base = int(parts[-2])
+                    new_size = max(7, int(round(base * self.scale)))
+                    rest = parts[:-2] + [str(new_size)]
+                    if parts[-1] in ("bold", "italic", "roman", "normal",
+                                     "underline", "overstrike"):
+                        rest += [parts[-1]]
+                    w.configure(font=" ".join(rest))
+        except Exception:
+            pass
+        for c in w.winfo_children():
+            self._shrink_fonts(c)
+
     def _build_ui(self):
         c = self.colors()
         self.root.title("%s v%s" % (APP_NAME, APP_VERSION))
@@ -2336,9 +2423,10 @@ class MainWindow:
         w = min(1080, sw - 40)
         h = min(820, sh - 60)
         self.root.geometry("%dx%d" % (w, h))
-        self.root.minsize(min(880, sw - 40), min(640, sh - 60))
+        min_w = min(880, sw - 40)
+        min_h = min(640, sh - 60)
+        self.root.minsize(min_w, min_h)
         self.root.configure(bg=c["bg"])
-        # шапка
         head = Frame(self.root, bg=c["bg"])
         head.pack(fill=X, padx=10, pady=(10, 4))
         self._logo_cv = Canvas(head, width=34, height=34, highlightthickness=0,
@@ -2373,15 +2461,6 @@ class MainWindow:
                                 activebackground=c["button_hover"],
                                 relief=FLAT, padx=10, pady=4)
         self._lang_btn.pack(side=RIGHT, padx=(4, 0))
-        self._dry_chk = Checkbutton(head, text=self.t("lbl_dry"),
-                                    variable=self._dry_var,
-                                    bg=c["bg"], fg=c["yellow"],
-                                    activebackground=c["bg"],
-                                    activeforeground=c["yellow"],
-                                    selectcolor=c["bg"],
-                                    font=("DejaVu Sans", 9, "bold"))
-        self._dry_chk.pack(side=RIGHT, padx=(4, 0))
-        # вкладки
         self._notebook = ttk.Notebook(self.root)
         self._notebook.pack(fill=BOTH, expand=True, padx=10, pady=4)
         self._tab_tune = Frame(self._notebook, bg=c["bg"])
@@ -2393,13 +2472,13 @@ class MainWindow:
         self._build_tune_tab()
         self._build_serv_tab()
         self._build_stat_tab()
-        # терминал
         term_lbl = Label(self.root, text=self.t("lbl_terminal"),
                          bg=c["bg"], fg=c["gray"], anchor=W,
                          font=("DejaVu Sans", 9))
         term_lbl.pack(fill=X, padx=10, pady=(4, 0))
+        term_h = 7 if sh >= 800 else 4
         self._terminal = scrolledtext.ScrolledText(
-            self.root, height=7, wrap="word",
+            self.root, height=term_h, wrap="word",
             bg=c["terminal"], fg=c["terminal_fg"],
             insertbackground=c["fg"], relief=FLAT, bd=0,
             font=("DejaVu Sans Mono", 9), state=DISABLED)
@@ -2409,7 +2488,6 @@ class MainWindow:
                          ("info", c["blue"]), ("highlight", c["orange"])):
             self._terminal.tag_configure(tag, foreground=col)
         self._make_copyable(self._terminal)
-        # статусная строка
         sb = Frame(self.root, bg=c["bg"])
         sb.pack(fill=X, padx=10, pady=(0, 8))
         self._status_lbl = Label(sb, text=self.t("ready"), bg=c["bg"],
@@ -2418,13 +2496,14 @@ class MainWindow:
         self._progress = ttk.Progressbar(sb, mode="determinate",
                                          maximum=100, length=200)
         self._progress.pack(side=RIGHT)
-        self._debug_chk = Checkbutton(
-            sb, text=self.t("lbl_debug"), variable=self._debug_var,
-            command=self._toggle_debug,
+        self._dry_chk = Checkbutton(
+            sb, text=self.t("lbl_dry"), variable=self._dry_var,
             bg=c["bg"], fg=c["gray"], activebackground=c["bg"],
             activeforeground=c["gray"], selectcolor=c["bg"],
             font=("DejaVu Sans", 8))
-        self._debug_chk.pack(side=RIGHT, padx=(0, 12))
+        self._dry_chk.pack(side=RIGHT, padx=(0, 12))
+        if self.scale < 1.0:
+            self.root.after(50, lambda: self._shrink_fonts(self.root))
 
     def _build_tune_tab(self):
         c = self.colors()
@@ -2481,8 +2560,6 @@ class MainWindow:
                         font=("DejaVu Sans", 10, "bold"))
             hdr.pack(fill=X, padx=8, pady=(10, 4))
             for k in cats[cat]:
-                # commit= рисуется отдельно в _build_disk_extras —
-                # со своим полем «Значение (сек)» и списком ext-разделов
                 if k == "commit":
                     continue
                 self._build_option_row(k)
@@ -2493,6 +2570,7 @@ class MainWindow:
     def _build_option_row(self, key):
         c = self.colors()
         label, desc, _cat, _short = self.om(key)
+        disabled = key in self.disabled_reasons
         row = Frame(self._tune_inner, bg=c["panel"])
         row.pack(fill=X, padx=8, pady=2)
         top = Frame(row, bg=c["panel"])
@@ -2503,24 +2581,41 @@ class MainWindow:
                           activeforeground=c["fg"],
                           selectcolor=c["panel"],
                           anchor=W, font=("DejaVu Sans", 10))
+        if disabled:
+            chk.configure(state=DISABLED, fg=c["gray"])
+            self.opts_state[key].set(False)
         chk.pack(side=LEFT)
         self.option_widgets[key] = chk
+        if disabled:
+            Label(top, text="(%s)" % self.disabled_reasons[key],
+                  bg=c["panel"], fg=c["gray"],
+                  font=("DejaVu Sans", 9, "italic")).pack(
+                side=LEFT, padx=(8, 0))
         if key == "corectrl":
             Label(top, text=self.t("lbl_group"), bg=c["panel"], fg=c["gray"],
                   font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(10, 2))
-            Entry(top, textvariable=self.corectrl_group, width=12,
-                  bg=c["entry"], fg=c["fg"], relief=FLAT).pack(side=LEFT)
+            e = Entry(top, textvariable=self.corectrl_group, width=12,
+                      bg=c["entry"], fg=c["fg"], relief=FLAT)
+            if disabled:
+                e.configure(state=DISABLED, disabledbackground=c["bg"],
+                            disabledforeground=c["gray"])
+            e.pack(side=LEFT)
         elif key == "swap":
             Label(top, text=self.t("lbl_value"), bg=c["panel"], fg=c["gray"],
                   font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(10, 2))
-            Entry(top, textvariable=self.swap_value, width=6,
-                  bg=c["entry"], fg=c["fg"], relief=FLAT).pack(side=LEFT)
+            e = Entry(top, textvariable=self.swap_value, width=6,
+                      bg=c["entry"], fg=c["fg"], relief=FLAT)
+            if disabled:
+                e.configure(state=DISABLED, disabledbackground=c["bg"],
+                            disabledforeground=c["gray"])
+            e.pack(side=LEFT)
         elif key == "thp":
             Label(top, text=self.t("lbl_value"), bg=c["panel"], fg=c["gray"],
                   font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(10, 2))
             combo = ttk.Combobox(top, textvariable=self.thp_value,
                                  values=["always", "madvise", "never"],
-                                 state="readonly", width=10,
+                                 state="disabled" if disabled else "readonly",
+                                 width=10,
                                  font=("DejaVu Sans", 9),
                                  style="TCombobox")
             combo.pack(side=LEFT)
@@ -2533,7 +2628,8 @@ class MainWindow:
                   font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(10, 2))
             combo = ttk.Combobox(top, textvariable=self.schedule_value,
                                  values=self._schedule_values(),
-                                 state="readonly", width=24,
+                                 state="disabled" if disabled else "readonly",
+                                 width=24,
                                  font=("DejaVu Sans", 9),
                                  style="TCombobox")
             combo.pack(side=LEFT)
@@ -2545,7 +2641,6 @@ class MainWindow:
                       font=("DejaVu Sans", 9, "bold"))
         badge.pack(side=LEFT, padx=(12, 0))
         self.badges[key] = badge
-
         fb = Button(top, text=self.t("btn_file"),
                     command=lambda k=key: self._open_option_file(k),
                     bg=c["button"], fg=c["blue"],
@@ -2555,7 +2650,6 @@ class MainWindow:
                     font=("DejaVu Sans", 8))
         fb._keep_fg = c["blue"]
         fb.pack(side=LEFT, padx=(8, 0))
-
         qb = Button(top, text=self.t("btn_q"),
                     command=lambda k=key: self._show_option_help(k),
                     bg=c["button"], fg=c["blue"],
@@ -2565,15 +2659,13 @@ class MainWindow:
                     font=("DejaVu Sans", 8, "bold"))
         qb._keep_fg = c["blue"]
         qb.pack(side=LEFT, padx=(2, 0))
-
         dl = Label(row, text=desc, bg=c["panel"], fg=c["gray"],
                    anchor=W, justify=LEFT, wraplength=820,
                    font=("DejaVu Sans", 9))
         dl.pack(fill=X, padx=(24, 0))
+
     def _build_disk_extras(self):
         c = self.colors()
-
-        # --- параметры монтирования (noatime) ---
         if self.mount_items:
             top = Frame(self._tune_inner, bg=c["panel"])
             top.pack(fill=X, padx=8, pady=(10, 2))
@@ -2619,8 +2711,6 @@ class MainWindow:
                               font=("DejaVu Sans", 9, "bold"))
                 badge.pack(side=LEFT, padx=(12, 0))
                 self.mount_badges[key] = badge
-
-        # --- commit= только для ext2/3/4 ---
         if self.commit_state:
             top = Frame(self._tune_inner, bg=c["panel"])
             top.pack(fill=X, padx=8, pady=(10, 2))
@@ -2645,9 +2735,6 @@ class MainWindow:
                         font=("DejaVu Sans", 8, "bold"))
             qb._keep_fg = c["blue"]
             qb.pack(side=LEFT, padx=(2, 0))
-
-            # строка со значением commit — ОБЯЗАТЕЛЬНО до описания,
-            # чтобы поле не уезжало под длинный текст
             top2 = Frame(self._tune_inner, bg=c["panel"])
             top2.pack(anchor=W, padx=8, pady=(4, 4))
             Label(top2, text=self.t("commit_value_label"),
@@ -2656,15 +2743,11 @@ class MainWindow:
             Entry(top2, textvariable=self.commit_value, width=8,
                   bg=c["entry"], fg=c["fg"], relief=FLAT,
                   insertbackground=c["fg"]).pack(side=LEFT)
-
-            # краткое описание твика
             Label(self._tune_inner,
                   text=self.om("commit")[1],
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
                 fill=X, padx=(24, 8), pady=(0, 4))
-
-            # чекбоксы разделов с ext2/3/4
             for m in self.mount_items:
                 if not fs_supports_commit(m.get("fstype", "")):
                     continue
@@ -2695,7 +2778,6 @@ class MainWindow:
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
                   wraplength=820, font=("DejaVu Sans", 9)).pack(
                 fill=X, padx=(24, 8), pady=(0, 4))
-        # --- Steam ---
         if self.steam_items:
             top = Frame(self._tune_inner, bg=c["panel"])
             top.pack(fill=X, padx=8, pady=(10, 2))
@@ -2729,6 +2811,7 @@ class MainWindow:
                               font=("DejaVu Sans", 9, "bold"))
                 badge.pack(side=LEFT, padx=(12, 0))
                 self.steam_badges[lib] = badge
+
     def _build_serv_tab(self):
         c = self.colors()
         wrap = Frame(self._tab_serv, bg=c["bg"])
@@ -2745,19 +2828,21 @@ class MainWindow:
                    relief=FLAT, padx=12, pady=6).pack(side=LEFT, padx=2)
         tree_wrap = Frame(wrap, bg=c["bg"])
         tree_wrap.pack(fill=BOTH, expand=True)
-        cols = ("name", "state", "run", "desc", "q")
+        cols = ("sel", "name", "state", "run", "desc", "q")
         self._services_tree = ttk.Treeview(tree_wrap, columns=cols,
                                            show="headings",
                                            selectmode="extended")
+        self._services_tree.heading("sel", text=self.t("svc_col_sel"))
         self._services_tree.heading("name", text=self.t("svc_name"))
         self._services_tree.heading("state", text=self.t("svc_state"))
         self._services_tree.heading("run", text=self.t("svc_run"))
         self._services_tree.heading("desc", text=self.t("svc_desc"))
         self._services_tree.heading("q", text=self.t("svc_help"))
-        self._services_tree.column("name", width=230, anchor=W, stretch=False)
-        self._services_tree.column("state", width=140, anchor=W, stretch=False)
-        self._services_tree.column("run", width=100, anchor=CENTER, stretch=False)
-        self._services_tree.column("desc", width=400, anchor=W, stretch=True)
+        self._services_tree.column("sel", width=30, anchor=CENTER, stretch=False)
+        self._services_tree.column("name", width=220, anchor=W, stretch=False)
+        self._services_tree.column("state", width=130, anchor=W, stretch=False)
+        self._services_tree.column("run", width=90, anchor=CENTER, stretch=False)
+        self._services_tree.column("desc", width=380, anchor=W, stretch=True)
         self._services_tree.column("q", width=34, anchor=CENTER, stretch=False)
         vsb = ttk.Scrollbar(tree_wrap, orient=VERTICAL,
                             command=self._services_tree.yview)
@@ -2910,7 +2995,6 @@ class MainWindow:
             style.map("Treeview.Heading",
                       background=[("active", c["tab_hover"])],
                       foreground=[("active", c["fg"])])
-            # Combobox: явно задаём и поле, и стрелку, и выпадающий список
             style.configure("TCombobox",
                             fieldbackground=c["entry"],
                             background=c["button"],
@@ -2948,7 +3032,6 @@ class MainWindow:
                             borderwidth=0, arrowsize=12)
         except Exception:
             pass
-        # Tk-виджеты внутри выпадающего списка Combobox:
         try:
             self.root.option_add("*TCombobox*Listbox.background", c["panel"])
             self.root.option_add("*TCombobox*Listbox.foreground", c["fg"])
@@ -2956,6 +3039,7 @@ class MainWindow:
             self.root.option_add("*TCombobox*Listbox.selectForeground", c["fg"])
         except Exception:
             pass
+
     def _repaint_all(self):
         c = self.colors()
 
@@ -2963,18 +3047,11 @@ class MainWindow:
             try:
                 cls = w.winfo_class()
                 inside_tune = self._inside(w, self._tune_inner)
-
                 if cls == "Frame" and w is not self.root:
                     w.configure(bg=c["panel"] if inside_tune else c["bg"])
-
                 elif cls == "Label":
-                    # Цвет текста не трогаем — иначе пропадают жёлтые заголовки
-                    # категорий, серые описания и цветные бейджи.
                     w.configure(bg=c["panel"] if inside_tune else c["bg"])
-
                 elif cls == "Checkbutton":
-                    # Явно задаём цвет текста — в тёмной теме Tk иначе
-                    # рисует его почти чёрным.
                     w.configure(
                         bg=c["panel"] if inside_tune else c["bg"],
                         fg=c["fg"],
@@ -2982,16 +3059,12 @@ class MainWindow:
                         activeforeground=c["fg"],
                         selectcolor=c["panel"] if inside_tune else c["bg"],
                     )
-
                 elif cls == "Button":
                     if w is getattr(self, "_apply_btn", None):
-                        # Акцентная кнопка "Применить"
                         w.configure(bg=c["accent"], fg=c["accent_fg"],
                                     activebackground=c["accent2"],
                                     activeforeground=c["accent_fg"])
                     else:
-                        # Если у кнопки свой цвет текста (синие "файл"/"?"),
-                        # сохраняем его, иначе ставим цвет темы.
                         keep = getattr(w, "_keep_fg", None)
                         w.configure(
                             bg=c["button"],
@@ -2999,27 +3072,21 @@ class MainWindow:
                             activebackground=c["button_hover"],
                             activeforeground=keep if keep else c["fg"],
                         )
-
                 elif cls == "Entry":
                     w.configure(bg=c["entry"], fg=c["fg"],
                                 insertbackground=c["fg"],
                                 disabledbackground=c["button_dis"],
                                 disabledforeground=c["fg_dis"])
-
                 elif cls == "Text":
                     w.configure(bg=c["terminal"], fg=c["terminal_fg"],
                                 insertbackground=c["fg"])
-
                 elif cls == "Canvas":
                     w.configure(bg=c["bg"])
-
             except Exception:
                 pass
             for child in w.winfo_children():
                 repaint_panel(child)
-
         repaint_panel(self.root)
-
         if self._terminal is not None:
             for tag, col in (("normal", c["terminal_fg"]),
                              ("success", c["green"]),
@@ -3028,7 +3095,6 @@ class MainWindow:
                              ("info", c["blue"]),
                              ("highlight", c["orange"])):
                 self._terminal.tag_configure(tag, foreground=col)
-
         if self._status_view is not None:
             self._status_view.tag_configure("head", foreground=c["blue"],
                                             font=("DejaVu Sans Mono", 9, "bold"))
@@ -3037,13 +3103,11 @@ class MainWindow:
             self._status_view.tag_configure("no", foreground=c["red"])
             self._status_view.tag_configure("warn", foreground=c["yellow"])
             self._status_view.tag_configure("muted", foreground=c["gray"])
-
         if self._services_tree is not None:
             self._services_tree.tag_configure("ok", foreground=c["green"])
             self._services_tree.tag_configure("warn", foreground=c["yellow"])
             self._services_tree.tag_configure("err", foreground=c["red"])
             self._services_tree.tag_configure("muted", foreground=c["gray"])
-
         self._apply_theme()
 
     def _inside(self, w, parent):
@@ -3106,6 +3170,7 @@ class MainWindow:
             self.steam_state[k] = BooleanVar(value=saved_steam.get(k, False))
         for k in list(self.commit_state.keys()):
             self.commit_state[k] = BooleanVar(value=saved_commit.get(k, False))
+        self._compute_disabled_reasons()
         self._build_ui()
         self._apply_theme()
         self._bind_global_wheel()
@@ -3187,6 +3252,7 @@ class MainWindow:
         sysc = ops.read_file("/etc/sysctl.d/99-gaming-sysctl.conf") or ""
         bashrc = ops.read_file(os.path.join(self.state.user_home, ".bashrc")) or ""
         mint = ops.read_file("/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf") or ""
+        itco = ops.read_file("/etc/modprobe.d/nmi-watchdog.conf") or ""
 
         def sv(p):
             try:
@@ -3200,11 +3266,11 @@ class MainWindow:
         pw = os.path.join(self.state.user_home, ".config", "pipewire",
                           "pipewire.conf.d", "10-sound.conf")
         return {
-            "rsyslog": ops.service_enabled("rsyslog.service") in ("disabled", "masked"),
             "journald": bool(re.search(r"^\s*Storage\s*=\s*volatile\s*$", j, re.M)),
             "audit": "audit=0" in grub,
             "raid": "raid=noautodetect" in grub,
             "nmi_watchdog": "nmi_watchdog=0" in grub,
+            "itco_wdt": "blacklist iTCO_wdt" in itco,
             "corectrl": self._corectrl_found(ops),
             "ppfeaturemask": "amdgpu.ppfeaturemask" in grub,
             "nvidia_modeset": "nvidia-drm.modeset=1" in grub,
@@ -3291,7 +3357,9 @@ class MainWindow:
         for it in self._services_tree.get_children():
             self._services_tree.delete(it)
         for n, st, run, desc, q, tag in rows:
-            self._services_tree.insert("", END, values=(n, st, run, desc, q),
+            mark = "[✓]" if n in self.svc_checked else "[ ]"
+            self._services_tree.insert("", END,
+                                       values=(mark, n, st, run, desc, q),
                                        tags=(tag,))
 
     def _on_service_select(self, _e=None):
@@ -3300,9 +3368,11 @@ class MainWindow:
         items = self._services_tree.selection()
         parts = []
         for it in items[:3]:
-            name = str(self._services_tree.item(it)["values"][0])
-            desc = SERVICES_META.get(name, {}).get(self.lang, "")
-            parts.append("%s — %s" % (name, desc))
+            vals = self._services_tree.item(it)["values"]
+            if len(vals) >= 2:
+                name = str(vals[1])
+                desc = SERVICES_META.get(name, {}).get(self.lang, "")
+                parts.append("%s — %s" % (name, desc))
         self._svc_detail.configure(state=NORMAL)
         self._svc_detail.delete("1.0", END)
         self._svc_detail.insert("1.0", "\n".join(parts))
@@ -3315,14 +3385,26 @@ class MainWindow:
         if region != "cell":
             return
         col = self._services_tree.identify_column(event.x)
-        if col != "#5":
-            return
         row_id = self._services_tree.identify_row(event.y)
         if not row_id:
             return
-        name = str(self._services_tree.item(row_id)["values"][0])
-        self._services_tree.selection_remove(self._services_tree.selection())
-        self._show_service_help(name)
+        vals = self._services_tree.item(row_id)["values"]
+        if len(vals) < 2:
+            return
+        name = str(vals[1])
+        if col == "#1":
+            if name in self.svc_checked:
+                self.svc_checked.discard(name)
+                mark = "[ ]"
+            else:
+                self.svc_checked.add(name)
+                mark = "[✓]"
+            new_vals = list(vals)
+            new_vals[0] = mark
+            self._services_tree.item(row_id, values=new_vals)
+        elif col == "#6":
+            self._services_tree.selection_remove(self._services_tree.selection())
+            self._show_service_help(name)
 
     # ─── бейджи ─────────────────────────────────────────────────────────
     def _update_badges(self):
@@ -3358,7 +3440,8 @@ class MainWindow:
         if self.is_running:
             messagebox.showinfo(APP_NAME, self.t("msg_run"), parent=self.root)
             return
-        selected = [k for k, v in self.opts_state.items() if v.get()]
+        selected = [k for k, v in self.opts_state.items()
+                    if v.get() and k not in self.disabled_reasons]
         mount_sel = [mp for m in self.mount_items
                      if self.mount_state[m["mps"][0]].get()
                      for mp in m["mps"]]
@@ -3391,7 +3474,6 @@ class MainWindow:
         ops = SystemOps(self.sudo, self.state, self.log, dry)
         ops.mount_items = self.mount_items
         ops.commit_targets = commit_sel
-        # commit-твик не входит в selected — отдельный блок
         total = len(selected) + (1 if mount_sel else 0) + (1 if steam_sel else 0) \
             + (1 if commit_sel else 0)
         if total == 0:
@@ -3440,7 +3522,8 @@ class MainWindow:
         if self.is_running:
             messagebox.showinfo(APP_NAME, self.t("msg_run"), parent=self.root)
             return
-        selected = [k for k, v in self.opts_state.items() if v.get()]
+        selected = [k for k, v in self.opts_state.items()
+                    if v.get() and k not in self.disabled_reasons]
         mount_sel = [mp for m in self.mount_items
                      if self.mount_state[m["mps"][0]].get()
                      for mp in m["mps"]]
@@ -3520,6 +3603,8 @@ class MainWindow:
     # ─── выбор всего / ничего ──────────────────────────────────────────
     def select_all_options(self):
         for k, var in self.opts_state.items():
+            if k in self.disabled_reasons:
+                continue
             w = self.option_widgets.get(k)
             if w is not None and str(w.cget("state")) == "normal":
                 var.set(True)
@@ -3541,23 +3626,46 @@ class MainWindow:
             var.set(False)
 
     def select_all_services(self):
-        if self._services_tree is not None:
-            self._services_tree.selection_set(
-                self._services_tree.get_children())
+        if self._services_tree is None:
+            return
+        for item in self._services_tree.get_children():
+            vals = self._services_tree.item(item)["values"]
+            if len(vals) >= 2:
+                name = str(vals[1])
+                self.svc_checked.add(name)
+                new_vals = list(vals)
+                new_vals[0] = "[✓]"
+                self._services_tree.item(item, values=new_vals)
 
     def clear_services_selection(self):
-        if self._services_tree is not None:
-            self._services_tree.selection_remove(
-                self._services_tree.selection())
+        if self._services_tree is None:
+            return
+        self.svc_checked.clear()
+        for item in self._services_tree.get_children():
+            vals = self._services_tree.item(item)["values"]
+            if len(vals) >= 2:
+                new_vals = list(vals)
+                new_vals[0] = "[ ]"
+                self._services_tree.item(item, values=new_vals)
+        self._services_tree.selection_remove(self._services_tree.selection())
+
+    def _checked_service_names(self):
+        if not self.svc_checked:
+            return []
+        if self._services_tree is None:
+            return list(self.svc_checked)
+        present = set()
+        for item in self._services_tree.get_children():
+            vals = self._services_tree.item(item)["values"]
+            if len(vals) >= 2:
+                present.add(str(vals[1]))
+        return [n for n in self.svc_checked if n in present]
 
     def enable_selected(self):
         if self.is_running:
             messagebox.showinfo(APP_NAME, self.t("msg_run"), parent=self.root)
             return
-        if self._services_tree is None:
-            return
-        names = [str(self._services_tree.item(i)["values"][0])
-                 for i in self._services_tree.selection()]
+        names = self._checked_service_names()
         if not names:
             messagebox.showinfo(APP_NAME, self.t("msg_sel"), parent=self.root)
             return
@@ -3584,10 +3692,7 @@ class MainWindow:
         if self.is_running:
             messagebox.showinfo(APP_NAME, self.t("msg_run"), parent=self.root)
             return
-        if self._services_tree is None:
-            return
-        names = [str(self._services_tree.item(i)["values"][0])
-                 for i in self._services_tree.selection()]
+        names = self._checked_service_names()
         if not names:
             messagebox.showinfo(APP_NAME, self.t("msg_sel"), parent=self.root)
             return
@@ -3619,7 +3724,6 @@ class MainWindow:
             self._status_inner()
         except Exception:
             traceback.print_exc()
-            self._debug_write("STATUS CRASH", tb_obj=sys.exc_info())
 
     def _status_inner(self):
         ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, True)
@@ -3694,7 +3798,6 @@ class MainWindow:
         rows.append((self.t("user_lbl") + ": " + self.state.user_name, "info"))
         rows.append((self.t("home_lbl") + ": " + self.state.user_home, "info"))
         rows.append(("", "info"))
-        # разделы
         rows.append((self.t("st_parts"), "head"))
         seen = {}
         for it in parse_mounts():
@@ -3713,7 +3816,6 @@ class MainWindow:
                             info["fstype"], total, self.t("gb"),
                             self.t("free_w"), free, self.t("gb")), "info"))
         rows.append(("", "info"))
-        # твики
         rows.append((self.t("st_tweaks"), "head"))
         for k in OPTIONS_META:
             label, _d, _c, short = self.om(k)
@@ -3738,7 +3840,6 @@ class MainWindow:
             rows.append(("%-42s %-14s %s" % (self.t("steam_short"), mark, lib),
                          "ok" if ok else "no"))
         rows.append(("", "info"))
-        # службы
         rows.append((self.t("st_services"), "head"))
         for name in SERVICES_ORDER:
             if not ops.unit_exists(name):
@@ -3756,7 +3857,6 @@ class MainWindow:
             desc = SERVICES_META[name][self.lang]
             rows.append(("  %s: %s — %s" % (name, word, desc), tag))
         rows.append(("", "info"))
-        # параметры ядра
         rows.append((self.t("st_kernel"), "head"))
         kern = [("vm.swappiness", self.t("kern_sw"), A.get("swap", False)),
                 ("vm.vfs_cache_pressure", self.t("kern_vfs"),
@@ -3857,10 +3957,10 @@ class MainWindow:
             pass
 
     def _show_about(self):
-        text = ("%s v%s\n\n%s\n\n%s: %s\n%s"
+        text = ("%s v%s\n\n%s\n\n%s: %s\n%s\n\n%s"
                 % (APP_NAME, APP_VERSION, self.t("about_purpose"),
                    self.t("about_author"), self.t("about_author_name"),
-                   GITHUB_URL))
+                   GITHUB_URL, self.t("about_disclaimer")))
         self._open_info_dialog(self.t("about_title"), text)
 
     def _open_path(self, path):
@@ -3947,14 +4047,7 @@ class MainWindow:
             if not messagebox.askyesno(APP_NAME, self.t("msg_close"),
                                        parent=self.root):
                 return
-        with self._debug_lock:
-            if self._debug_fh:
-                try:
-                    self._debug_fh.write("=== session end %s ===\n"
-                                         % time.strftime("%Y-%m-%d %H:%M:%S"))
-                    self._debug_fh.flush()
-                except Exception:
-                    pass
+        release_lock()
         try:
             self.root.destroy()
         except Exception:
@@ -3966,6 +4059,16 @@ def main():
         print("%s v%s\npython3 linux_tweaker.py [--dry-run]"
               % (APP_NAME, APP_VERSION))
         sys.exit(0)
+    if not acquire_lock():
+        root = Tk()
+        root.withdraw()
+        lang = detect_lang()
+        messagebox.showwarning(
+            APP_NAME,
+            "Linux Tweaker is already running." if lang == "en"
+            else "Linux Tweaker уже запущен.")
+        root.destroy()
+        sys.exit(1)
     if os.geteuid() == 0:
         print("WARNING: Linux Tweaker should be run as a normal user, not as root. "
               "Sudo will be requested when needed.", file=sys.stderr)
@@ -3975,6 +4078,8 @@ def main():
         root.mainloop()
     except KeyboardInterrupt:
         pass
+    finally:
+        release_lock()
 
 
 if __name__ == "__main__":
