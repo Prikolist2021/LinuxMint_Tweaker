@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Linux Tweaker v0.11
+Linux Tweaker v0.2
 Графическая оболочка тюнинга Linux Mint / Ubuntu / Debian на Tkinter.
 RU/EN, светлая/тёмная тема, детект применённых настроек,
 откат, бэкапы, mount-опции, симлинки compatdata для Steam.
+
+Лицензия: MIT
 """
 import sys, os, re, subprocess, time, shutil, glob, pwd, grp, threading, traceback
 import queue
@@ -17,13 +19,13 @@ from tkinter import (Tk, Toplevel, Frame, Label, Button, Checkbutton, Entry,
 from tkinter import ttk, scrolledtext
 
 APP_NAME = "Linux Tweaker"
-APP_VERSION = "0.11"
-GITHUB_URL = "https://github.com/Prikolist2021/Linux-Tweaker"
+APP_VERSION = "0.2"
+APP_BUILD_DATE = "15.09.2026"
+GITHUB_URL = "https://github.com/Prikolist2021/LinuxMint_Tweaker"
+LICENSE_NAME = "MIT"
 
-# Файловые системы, которые понимают параметр commit= (для ext4-оптимизации)
 COMMIT_OK_FS = {"ext2", "ext3", "ext4"}
 
-# Файл-замок для запрета второй копии приложения
 LOCK_FILE = os.path.join(os.path.expanduser("~"), ".linux-tweaker.lock")
 
 
@@ -97,7 +99,7 @@ OPTIONS_META = {
         "ru": ("audit=0 (GRUB)", "Отключает фоновую запись каждого действия системы. Убирает лишнюю нагрузку. Нужна перезагрузка.", "Ядро и загрузка", "фоновая запись действий"),
         "en": ("audit=0 (GRUB)", "Stops background logging of every system action. Removes extra load. Needs reboot.", "Kernel & boot", "background action logging")},
     "raid": {
-        "ru": ("raid=noautodetect (GRUB)", "Пропускает поиск RAID при загрузке, если его нет. Экономит несколько секунд. ВНИМАНИЕ: не включайте, если у вас есть RAID — система не найдёт массивы. Нужна перезагрузка.", "Ядро и загрузка", "поиск RAID"),
+        "ru": ("raid=noautodetect (GRUB)", "Пропускает поиск RAID при загрузке, если его нет. Экономит несколько секунд. ВНИМАНИЕ: не включайте, если у вас есть RAID. Нужна перезагрузка.", "Ядро и загрузка", "поиск RAID"),
         "en": ("raid=noautodetect (GRUB)", "Skips RAID probe at boot when you have none. Saves a few seconds. WARNING: do not enable with RAID. Needs reboot.", "Kernel & boot", "RAID probe")},
     "nmi_watchdog": {
         "ru": ("nmi_watchdog=0 (GRUB)", "Отключает служебные прерывания отладки. Убирает микро-фризы в играх. Нужна перезагрузка.", "Ядро и загрузка", "прерывания отладки"),
@@ -105,6 +107,9 @@ OPTIONS_META = {
     "itco_wdt": {
         "ru": ("iTCO_wdt blacklist", "Дополнительный способ заглушить NMI watchdog, если параметр ядра не сработал. Модуль iTCO_wdt включает watchdog заново после загрузки. Работает только на Intel. Нужна перезагрузка.", "Ядро и загрузка", "Intel watchdog"),
         "en": ("iTCO_wdt blacklist", "Extra step to silence NMI watchdog when the kernel parameter did not help. Intel only. Needs reboot.", "Kernel & boot", "Intel watchdog")},
+    "zfs_services": {
+        "ru": ("ZFS: отключение и удаление", "Останавливает и маскирует ZFS-службы — они перестают участвовать в загрузке. Кнопка дополнительно удаляет zfsutils-linux и zfs-zed, чтобы модуль ядра вообще не загружался. Доступна только если ZFS-пулы не найдены.", "Ядро и загрузка", "службы ZFS"),
+        "en": ("ZFS: disable and remove", "Stops and masks ZFS services so they no longer take part in boot. The button additionally removes zfsutils-linux and zfs-zed so the kernel module is never loaded. Available only if no ZFS pools are found.", "Kernel & boot", "ZFS services")},
     "corectrl": {
         "ru": ("CoreCtrl (Polkit)", "Разрешает управлять вентиляторами и частотами AMD без пароля. Работает сразу.", "Видеокарта и графика", "управление AMD без пароля"),
         "en": ("CoreCtrl (Polkit)", "Allows controlling AMD fans and clocks without a password. Works immediately.", "GPU & graphics", "AMD control without password")},
@@ -163,8 +168,8 @@ OPTIONS_META = {
         "ru": ("Команды в .bashrc", "Добавляет удобные команды терминала для обновления и очистки. Работает в новых терминалах.", "Удобство", "команды терминала"),
         "en": ("Commands in .bashrc", "Adds handy terminal commands for updating and cleaning. Works in new terminals.", "Convenience", "terminal commands")},
     "autoupdate": {
-        "ru": ("Автообновления", "Сам обновляет систему и Flatpak по расписанию. ВНИМАНИЕ: отключите встроенное автообновление Mint. Работает сразу.", "Обновления", "автообновление по расписанию"),
-        "en": ("Auto-updates", "Auto-updates system and Flatpak on schedule. WARNING: disable Mint's built-in auto-update. Works immediately.", "Updates", "scheduled auto-update")},
+        "ru": ("Автообновления", "Сам обновляет систему и Flatpak по расписанию. При включении автоматически глушит apt-daily.timer, apt-daily-upgrade.timer и unattended-upgrades, чтобы не было двойной работы. ВНИМАНИЕ: отключите встроенное автообновление Mint. Работает сразу.", "Обновления", "автообновление по расписанию"),
+        "en": ("Auto-updates", "Auto-updates system and Flatpak on schedule. When enabled, automatically masks apt-daily.timer, apt-daily-upgrade.timer and unattended-upgrades to avoid double work. WARNING: disable Mint's built-in auto-update. Works immediately.", "Updates", "scheduled auto-update")},
 }
 
 CAT_ORDER = {
@@ -190,6 +195,9 @@ SERVICES_META = {
     "zfs-zed.service": {"ru": "Следит за дисковыми массивами ZFS и предупреждает о проблемах. Не нужен без ZFS.", "en": "Watches ZFS disk arrays and warns on problems. Not needed without ZFS."},
     "kerneloops.service": {"ru": "Отправляет разработчикам отчёты о сбоях ядра. На домашнем ПК это лишняя нагрузка и трафик.", "en": "Sends kernel crash reports to developers. On a home PC this is extra load and traffic."},
     "rsyslog.service": {"ru": "Пишет подробные журналы системы на диск. Отключение экономит место и уменьшает износ SSD; важные сообщения остаются в журнале systemd.", "en": "Writes detailed system logs to disk. Disabling saves space and reduces SSD wear; important messages remain in the systemd journal."},
+    "apt-daily.timer": {"ru": "Ежедневно скачивает списки пакетов и обновления в фоне. Если вы включили автообновления в твикере, этот таймер глушится автоматически.", "en": "Downloads package lists and updates daily in the background. If you enable auto-updates in the tweaker, this timer is masked automatically."},
+    "apt-daily-upgrade.timer": {"ru": "Ежедневно устанавливает обновления в фоне. Может конфликтовать с автообновлениями твикера. Глушится автоматически при их включении.", "en": "Installs updates daily in the background. May conflict with the tweaker's auto-updates. Masked automatically when they are enabled."},
+    "unattended-upgrades.service": {"ru": "Устанавливает обновления безопасности автоматически. Если вы управляете обновлениями сами, служба не нужна.", "en": "Installs security updates automatically. If you manage updates yourself, the service is not needed."},
 }
 SERVICES_ORDER = list(SERVICES_META.keys())
 
@@ -199,6 +207,7 @@ OPTION_FILES = {
     "raid": ["/etc/default/grub"],
     "nmi_watchdog": ["/etc/default/grub"],
     "itco_wdt": ["/etc/modprobe.d/nmi-watchdog.conf"],
+    "zfs_services": ["/etc/default/zfs"],
     "corectrl": ["/etc/polkit-1/rules.d/90-corectrl.rules",
                  "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla"],
     "ppfeaturemask": ["/etc/default/grub"],
@@ -222,8 +231,6 @@ OPTION_FILES = {
     "autoupdate": ["/etc/systemd/system/biweekly-upgrade.timer",
                    "/etc/systemd/system/biweekly-upgrade.service"],
 }
-
-
 def decode_bytes(v):
     return v.decode("utf-8", errors="replace") if isinstance(v, bytes) else str(v)
 
@@ -352,6 +359,119 @@ def lines_in(content):
 def fs_supports_commit(fstype):
     """commit= понимают только ext2/ext3/ext4. Остальные — нет."""
     return (fstype or "").lower() in COMMIT_OK_FS
+
+
+# ─── ZFS helpers ────────────────────────────────────────────────────────────
+ZFS_UNITS = [
+    "zfs-import-cache.service",
+    "zfs-load-module.service",
+    "zfs-mount.service",
+    "zfs-share.service",
+    "zfs-volume-wait.service",
+    "zfs-import.target",
+    "zfs.target",
+    "zfs-volumes.target",
+]
+
+
+def zfs_packages_installed():
+    """True, если установлен хотя бы один из ключевых пакетов ZFS."""
+    for pkg in ("zfsutils-linux", "zfs-zed"):
+        try:
+            r = subprocess.run(
+                ["dpkg-query", "-W", "-f=${Status}", pkg],
+                capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and "install ok installed" in r.stdout:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def zfs_in_use():
+    """True, если ZFS реально используется (пулы, монтирования, fstab)."""
+    # 1. Активные пулы
+    try:
+        r = subprocess.run(["zpool", "list", "-H", "-o", "name"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return True
+    except Exception:
+        pass
+    # 2. Монтирования ZFS
+    try:
+        r = subprocess.run(["findmnt", "-t", "zfs", "-n", "-o", "TARGET"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return True
+    except Exception:
+        pass
+    # 3. Записи в fstab/crypttab
+    for path in ("/etc/fstab", "/etc/crypttab"):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                if "zfs" in f.read().lower():
+                    return True
+        except Exception:
+            pass
+    return False
+
+
+def zfs_units_masked():
+    """True, если все ZFS-юниты замаскированы."""
+    masked = 0
+    present = 0
+    for unit in ZFS_UNITS:
+        try:
+            r = subprocess.run(["systemctl", "is-enabled", unit],
+                               capture_output=True, text=True, timeout=5)
+            state = r.stdout.strip()
+            if state in ("", "not-found"):
+                continue
+            present += 1
+            if state == "masked":
+                masked += 1
+        except Exception:
+            continue
+    return present > 0 and masked == present
+
+
+def zfs_units_unmasked():
+    """True, если ни один ZFS-юнит не замаскирован."""
+    for unit in ZFS_UNITS:
+        try:
+            r = subprocess.run(["systemctl", "is-enabled", unit],
+                               capture_output=True, text=True, timeout=5)
+            if r.stdout.strip() == "masked":
+                return False
+        except Exception:
+            continue
+    return True
+
+
+def apt_daily_units_masked():
+    """True, если apt-daily и unattended-upgrades замаскированы."""
+    units = [
+        "apt-daily.timer",
+        "apt-daily-upgrade.timer",
+        "unattended-upgrades.service",
+    ]
+    found_any = False
+    for unit in units:
+        try:
+            r = subprocess.run(["systemctl", "is-enabled", unit],
+                               capture_output=True, text=True, timeout=5)
+            state = r.stdout.strip()
+            if state in ("", "not-found"):
+                continue
+            found_any = True
+            if state != "masked":
+                return False
+        except Exception:
+            continue
+    return found_any
+
+
 class SudoManager:
     """Обёртка над sudo: аутентификация, keepalive, запуск команд."""
 
@@ -448,6 +568,8 @@ class SystemState:
         self.user_home = "/root"
         self.is_intel = False
         self.has_itco_module = False
+        self.zfs_installed = False
+        self.zfs_used = False
 
     def detect(self):
         try:
@@ -511,7 +633,6 @@ class SystemState:
         s = os.environ.get("DESKTOP_SESSION", "").lower()
         self.cinnamon = "cinnamon" in d or s == "cinnamon"
         self.has_flatpak = bool(shutil.which("flatpak"))
-        # Intel-чипсет и наличие модуля iTCO_wdt (для blacklist-твика)
         self.is_intel = False
         try:
             with open("/proc/cpuinfo", "r", encoding="utf-8", errors="replace") as f:
@@ -525,6 +646,8 @@ class SystemState:
             self.has_itco_module = (r.returncode == 0)
         except Exception:
             pass
+        self.zfs_installed = zfs_packages_installed()
+        self.zfs_used = zfs_in_use()
 
     def _real_user(self):
         for var in ("SUDO_USER", "PKEXEC_USER"):
@@ -547,8 +670,6 @@ class SystemState:
         except Exception:
             pass
         return "root"
-
-
 class SystemOps:
     """Все прикладные операции: применение и откат твиков."""
 
@@ -922,6 +1043,68 @@ class SystemOps:
             return False
         self.log("✓ iTCO_wdt blacklisted (needs reboot)", "success")
         return True
+
+    # ─── ZFS ────────────────────────────────────────────────────────────
+    def apply_zfs_services(self, params=None):
+        """Отключает и маскирует ZFS-юниты. Безопасно, откатывается."""
+        if self.dry_run:
+            for u in ZFS_UNITS:
+                self.log("[DRY RUN] systemctl disable --now %s" % u, "warning")
+                self.log("[DRY RUN] systemctl mask %s" % u, "warning")
+            return True
+        ok_any = False
+        for u in ZFS_UNITS:
+            if not self.unit_exists(u):
+                continue
+            self.sudo_run(["systemctl", "disable", "--now", u], ignore_error=True)
+            if self.sudo_run(["systemctl", "mask", u], ignore_error=True):
+                ok_any = True
+        if ok_any:
+            self.log("✓ ZFS services masked", "success")
+        return ok_any
+
+    def rollback_zfs_services(self, params=None):
+        if self.dry_run:
+            for u in ZFS_UNITS:
+                self.log("[DRY RUN] systemctl unmask %s" % u, "warning")
+                self.log("[DRY RUN] systemctl enable %s" % u, "warning")
+            return True
+        for u in ZFS_UNITS:
+            if not self.unit_exists(u):
+                continue
+            self.sudo_run(["systemctl", "unmask", u], ignore_error=True)
+            self.sudo_run(["systemctl", "enable", u], ignore_error=True)
+        self.log("✓ ZFS services unmasked", "success")
+        return True
+
+    def apply_zfs_remove_packages(self, params=None):
+        """Удаляет пакеты zfsutils-linux и zfs-zed. Необратимо."""
+        if zfs_in_use():
+            self.log("ZFS is in use, aborting package removal", "error")
+            return False
+        if not zfs_packages_installed():
+            self.log("ZFS packages not installed", "info")
+            return True
+        if self.dry_run:
+            self.log("[DRY RUN] apt purge zfs-zed zfsutils-linux", "warning")
+            self.log("[DRY RUN] apt autoremove", "warning")
+            self.log("[DRY RUN] update-initramfs -u -k all", "warning")
+            self.log("[DRY RUN] update-grub", "warning")
+            return True
+        if not self.sudo_run(["apt", "purge", "-y", "zfs-zed", "zfsutils-linux"],
+                             err_msg="apt purge ZFS failed"):
+            return False
+        self.sudo_run(["apt", "autoremove", "-y"], ignore_error=True)
+        self.sudo_run(["update-initramfs", "-u", "-k", "all"], ignore_error=True)
+        self.sudo_run(["update-grub"], ignore_error=True)
+        self.log("✓ ZFS packages removed", "success")
+        return True
+
+    def rollback_zfs_remove_packages(self, params=None):
+        """Откат удаления ZFS невозможен через твикер."""
+        self.log("Rollback of ZFS package removal is not supported. "
+                 "Run 'sudo apt install zfsutils-linux' manually.", "warning")
+        return False
 
     def _polkit_is_new(self):
         try:
@@ -1485,6 +1668,43 @@ class SystemOps:
         return True
 
     # ─── автообновления ─────────────────────────────────────────────────
+    APT_DAILY_UNITS = [
+        "apt-daily.timer",
+        "apt-daily-upgrade.timer",
+        "apt-daily.service",
+        "apt-daily-upgrade.service",
+        "unattended-upgrades.service",
+        "mintupdate-automation-upgrade.timer",
+        "mintupdate-automation-upgrade.service",
+    ]
+
+    def _mask_apt_daily(self):
+        """Глушит apt-daily, unattended-upgrades и mintupdate-automation."""
+        if self.dry_run:
+            for u in self.APT_DAILY_UNITS:
+                self.log("[DRY RUN] mask %s" % u, "warning")
+            return True
+        for u in self.APT_DAILY_UNITS:
+            if not self.unit_exists(u):
+                continue
+            self.sudo_run(["systemctl", "disable", "--now", u], ignore_error=True)
+            self.sudo_run(["systemctl", "mask", u], ignore_error=True)
+        self.log("✓ apt-daily / unattended-upgrades masked", "success")
+        return True
+
+    def _unmask_apt_daily(self):
+        if self.dry_run:
+            for u in self.APT_DAILY_UNITS:
+                self.log("[DRY RUN] unmask %s" % u, "warning")
+            return True
+        for u in self.APT_DAILY_UNITS:
+            if not self.unit_exists(u):
+                continue
+            self.sudo_run(["systemctl", "unmask", u], ignore_error=True)
+        self.sudo_run(["systemctl", "daemon-reload"], ignore_error=True)
+        self.log("✓ apt-daily / unattended-upgrades unmasked", "success")
+        return True
+
     def apply_autoupdate(self, params=None):
         params = params or {}
         sched = params.get("update_schedule", "Отключено")
@@ -1535,13 +1755,11 @@ class SystemOps:
                 self.sudo_run(["systemctl", "daemon-reload"], ignore_error=True)
                 self.sudo_run(["systemctl", "enable", "--now", "biweekly-upgrade.timer"],
                               ignore_error=True)
+            self._mask_apt_daily()
             return True
         if self.dry_run:
             self.log("[DRY RUN] create timer: %s" % desc, "warning"); return True
-        if self.service_enabled("mintupdate-automation-upgrade.timer") == "enabled":
-            self.log("Disabling mintupdate-automation-upgrade.timer", "info")
-            self.sudo_run(["systemctl", "disable", "--now",
-                           "mintupdate-automation-upgrade.timer"], ignore_error=True)
+        self._mask_apt_daily()
         if not self.write_file(svc, svc_c, chmod="644"):
             return False
         if not self.write_file(tmr, tmr_c, chmod="644"):
@@ -1711,9 +1929,10 @@ class SystemOps:
         return False
 
     def rollback_autoupdate(self, params=None):
-        return self.apply_autoupdate({"update_schedule": "Отключено"})
-
-
+        """Убирает таймер твикера и снимает маску с apt-daily / unattended-upgrades."""
+        ok = self.apply_autoupdate({"update_schedule": "Отключено"})
+        self._unmask_apt_daily()
+        return ok
 # ─── Длинные справки по твикам ───────────────────────────────────────────
 OPTIONS_HELP = {
     "journald": {
@@ -1729,12 +1948,16 @@ OPTIONS_HELP = {
         "en": "RAID is a way to combine several physical disks into one logical one: for speed, or for reliability (if one fails, data stays on the other). If your system has such a combination, you have RAID.\n\nIf there is no RAID, the kernel still spends a few seconds at every boot probing for arrays and finds nothing. You can save those seconds: raid=noautodetect disables the probe and speeds up startup.\n\nWARNING: do not enable this option if you use RAID. The system will stop finding your arrays at boot, and you may lose access to your data.\n\nThe parameter is added to GRUB, changes take effect after a reboot. Rolling back removes the parameter from GRUB, also with a reboot.",
     },
     "nmi_watchdog": {
-        "ru": "NMI-watchdog — это служебный механизм ядра для отладки зависаний. Он периодически посылает процессору специальные сигналы (немаскируемые прерывания), чтобы проверить, что система ещё жива. Если система не отвечает — ядро записывает это в журнал.\n\nНа домашнем ПК такая отладка не нужна. А периодические прерывания, пусть и редкие, дают микро-фризы в играх и чувствительных к задержкам задачах. Отключение убирает эти паузы.\n\nНе отключайте, если вы специально занимаетесь отладкой зависаний ядра и вам нужны эти данные.\n\nПараметр nmi_watchdog=0 добавляется в GRUB, поэтому изменения вступают в силу после перезагрузки. Откат убирает параметр и тоже требует перезагрузки.\n\nВАЖНО: на некоторых системах (особенно с Intel-чипсетом) модуль iTCO_wdt включает watchdog заново после загрузки. Проверить можно командой: cat /proc/sys/kernel/nmi_watchdog. Если там 1 — используйте дополнительный твик «iTCO_wdt blacklist».",
+        "ru": "NMI-watchdog — это служебный механизм ядра для отладки зависаний. Он периодически посылает процессору специальные сигналы (немaskируемые прерывания), чтобы проверить, что система ещё жива. Если система не отвечает — ядро записывает это в журнал.\n\nНа домашнем ПК такая отладка не нужна. А периодические прерывания, пусть и редкие, дают микро-фризы в играх и чувствительных к задержкам задачах. Отключение убирает эти паузы.\n\nНе отключайте, если вы специально занимаетесь отладкой зависаний ядра и вам нужны эти данные.\n\nПараметр nmi_watchdog=0 добавляется в GRUB, поэтому изменения вступают в силу после перезагрузки. Откат убирает параметр и тоже требует перезагрузки.\n\nВАЖНО: на некоторых системах (особенно с Intel-чипсетом) модуль iTCO_wdt включает watchdog заново после загрузки. Проверить можно командой: cat /proc/sys/kernel/nmi_watchdog. Если там 1 — используйте дополнительный твик «iTCO_wdt blacklist».",
         "en": "The NMI watchdog is a kernel debugging facility for detecting hangs. It periodically sends special signals to the CPU (non-maskable interrupts) to check that the system is still alive. If the system does not respond, the kernel writes it to the log.\n\nOn a home PC such debugging is unnecessary. And the periodic interrupts, even rare ones, cause micro-stutters in games and latency-sensitive tasks. Disabling them removes those pauses.\n\nDo not disable it if you specifically debug kernel hangs and need that data.\n\nThe nmi_watchdog=0 parameter is added to GRUB, so changes take effect after a reboot. Rolling back removes the parameter and also requires a reboot.\n\nIMPORTANT: on some systems (especially with an Intel chipset) the iTCO_wdt module re-enables the watchdog after boot. Check with: cat /proc/sys/kernel/nmi_watchdog. If it shows 1, use the extra tweak «iTCO_wdt blacklist».",
     },
     "itco_wdt": {
         "ru": "Этот твик — дополнение к «nmi_watchdog=0 (GRUB)». На многих системах с Intel-чипсетом после загрузки ядра модуль iTCO_wdt снова включает NMI watchdog, даже если вы передали параметр nmi_watchdog=0. В итоге /proc/sys/kernel/nmi_watchdog снова становится 1, и микро-фризы возвращаются.\n\nРешение — заблокировать модуль iTCO_wdt, чтобы он вообще не загружался. В файле /etc/modprobe.d/nmi-watchdog.conf прописываются строки blacklist и install ... /bin/false. Первое запрещает автозагрузку, второе блокирует явную загрузку через modprobe.\n\nЭтот твик доступен только на системах с Intel-чипсетом, где модуль iTCO_wdt вообще поддерживается ядром. На AMD и в виртуалках он неактивен.\n\nПроверить состояние после перезагрузки: cat /proc/sys/kernel/nmi_watchdog — должно быть 0. Откат удаляет файл и позволяет модулю загружаться снова.",
         "en": "This tweak complements «nmi_watchdog=0 (GRUB)». On many systems with an Intel chipset, the iTCO_wdt module re-enables the NMI watchdog after the kernel is loaded — even if you passed nmi_watchdog=0. As a result /proc/sys/kernel/nmi_watchdog becomes 1 again, and micro-stutters come back.\n\nThe fix is to block the iTCO_wdt module entirely. In /etc/modprobe.d/nmi-watchdog.conf lines blacklist and install ... /bin/false are written. The first forbids autoload, the second blocks explicit modprobe.\n\nThis tweak is only available on Intel chipset systems where the kernel actually supports iTCO_wdt. On AMD and in VMs it stays disabled.\n\nCheck the state after reboot: cat /proc/sys/kernel/nmi_watchdog — should be 0. Rolling back removes the file and lets the module load again.",
+    },
+    "zfs_services": {
+        "ru": "ZFS — это файловая система и менеджер томов, который используется на серверах и NAS. На домашнем ПК его обычно не ставят, но некоторые дистрибутивы (Ubuntu, Mint) устанавливают пакеты ZFS «на всякий случай» — как зависимость других пакетов или по умолчанию.\n\nПроблема в том, что даже если ZFS не используется (нет пулов, нет ZFS-монтирований), его службы всё равно запускаются при загрузке: zfs-import.target, zfs-mount.service, zfs-share.service, zfs-volume-wait.service. Они тянут за собой systemd-udev-settle.service, который на некоторых системах занимает несколько секунд. В итоге загрузка замедляется без всякой пользы.\n\nЭтот твик делает две вещи. Первое — при отметке останавливает и маскирует ZFS-службы: они больше не запускаются, но пакеты остаются на месте. Это обратимо: снятие отметки возвращает всё как было. Второе — кнопка «Удалить пакеты (осторожно)» полностью удаляет zfsutils-linux и zfs-zed, чтобы модуль ядра вообще не загружался. Эта операция необратима: вернуть можно только вручную командой sudo apt install zfsutils-linux, при этом прежнее состояние служб не восстановится.\n\nВАЖНО: перед удалением пакетов твикер проверяет, используется ли ZFS на самом деле. Он смотрит zpool list, findmnt -t zfs и записи в /etc/fstab и /etc/crypttab. Если найден хотя бы один пул или монтирование, кнопка удаления становится серой. Это защита от случайного удаления ZFS на системе, где он действительно нужен.\n\nЕсли вы не знаете, используете ли ZFS — отметьте только первый вариант (отключение служб). Он безопасен и даёт заметную часть выигрыша. Удаление пакетов стоит делать только если вы точно уверены, что ZFS не используется.",
+        "en": "ZFS is a file system and volume manager used on servers and NAS. It is usually not installed on a home PC, but some distributions (Ubuntu, Mint) install ZFS packages «just in case» — as a dependency or by default.\n\nThe problem is that even if ZFS is not used (no pools, no ZFS mounts), its services still run at boot: zfs-import.target, zfs-mount.service, zfs-share.service, zfs-volume-wait.service. They pull in systemd-udev-settle.service, which on some systems takes several seconds. The result is slower boot with no benefit.\n\nThis tweak does two things. First — when ticked, it stops and masks ZFS services: they no longer start, but the packages remain. This is reversible: unticking returns everything as it was. Second — the «Remove packages (careful)» button fully removes zfsutils-linux and zfs-zed so the kernel module is never loaded. That operation is irreversible: you can only return it manually with sudo apt install zfsutils-linux, and the previous state of the services will not be restored.\n\nIMPORTANT: before removing packages, the tweaker checks whether ZFS is actually used. It looks at zpool list, findmnt -t zfs and entries in /etc/fstab and /etc/crypttab. If at least one pool or mount is found, the removal button becomes greyed out. This protects against accidental removal on systems where ZFS is actually needed.\n\nIf you do not know whether ZFS is used — tick only the first option (disable services). It is safe and gives a noticeable part of the gain. Package removal should only be done if you are absolutely sure ZFS is not used.",
     },
     "corectrl": {
         "ru": "CoreCtrl — это программа для тонкой настройки видеокарт AMD. Она позволяет менять частоты, управлять вентиляторами, задавать лимиты питания и следить за температурой. Без неё видеокарта работает по стандартным профилям, а с ней можно выжать больше производительности или сделать систему тише.\n\nПо умолчанию все действия CoreCtrl требуют пароль администратора. Это неудобно: чтобы менять частоты, приходится каждый раз вводить пароль. Данная опция создаёт правило Polkit, которое разрешает вашей группе пользователей управлять видеокартой без пароля.\n\nНе включайте, если у вас не AMD или вы не пользуетесь CoreCtrl. В поле «Группа» укажите группу пользователей, которой разрешено управление. По умолчанию подставляется ваша группа.\n\nОпция работает сразу, перезагрузка не нужна. Откат удаляет правило Polkit.",
@@ -1805,7 +2028,7 @@ OPTIONS_HELP = {
         "en": "NTFS is the Windows file system. Linux can read and write it two ways: through the old slow ntfs-3g driver in userspace, and through the new fast ntfs3 driver inside the kernel. The second is much faster.\n\nLinux Mint blocks ntfs3 by default and uses ntfs-3g. The reason is historical: ntfs3 used to have stability issues. Those are fixed now, and ntfs3 works reliably. This option lifts the block, and NTFS disks start working noticeably faster.\n\nWARNING: do not enable it if you have no NTFS disks — there will be no effect. If you have an NTFS disk with important data, make a backup before enabling, just in case.\n\nAfter the block is lifted, already mounted disks keep using the old driver until you remount them. A reboot or manual remount is required. Rolling back restores the block.",
     },
     "commit": {
-        "ru": "Параметр commit=NN заставляет файловую систему реже сбрасывать накопленные данные на диск: не раз в 5 секунд по умолчанию, а раз в NN секунд. Это уменьшает число операций записи и продлевает жизнь SSD.\n\nВАЖНО: параметр понимают ТОЛЬКО файловые системы семейства ext — ext2, ext3, ext4. Для NTFS, FAT32, exFAT, btrfs, xfs, f2fs и других он неизвестен: в лучшем случае ядро его проигнорирует, в худшем — откажется монтировать раздел, и система при загрузке упадёт в emergency-режим (аварийную консоль восстановления).\n\nПоэтому в этом твикере для commit= показываются только разделы с ext2/ext3/ext4 — их можно выбрать галочкой. Разделы с другими файловыми системами отключены намеренно, чтобы случайно не сломать загрузку.\n\nВНИМАНИЕ: чем больше интервал, тем выше риск потерять последние записанные данные при внезапном отключении питания. Разумные значения — 60–120 секунд. Значение 0 отключает периодический сброс полностью и годится только для тестовых машин.\n\nИзменения записываются в /etc/fstab и вступают в силу после перезагрузки. Откат убирает параметр из fstab, тоже с перезагрузкой.",
+        "ru": "Параметр commit=NN заставляет файловую систему реже сбрасывать накопленные данные на диск: не раз в 5 секунд по умолчанию, а раз в NN секунд. Это уменьшает число операций записи и продлевает жизнь SSD.\n\nВАЖНО: параметр понимают ТОЛЬКО файловые системы семейства ext — ext2, ext3, ext4. Для NTFS, FAT32, exFAT, btrfs, xfs, f2fs и других он неизвестен: в лучшем случае ядро его проигнорирует, в худшем — откажется монтировать раздел, и система при загрузке упадёт в emergency-режим (аварийную консоль восстановления).\n\nПоэтому в этом твикере для commit= показываются только разделы с ext2/ext3/ext4 — их можно выбрать. Разделы с другими файловыми системами отключены намеренно, чтобы случайно не сломать загрузку.\n\nВНИМАНИЕ: чем больше интервал, тем выше риск потерять последние записанные данные при внезапном отключении питания. Разумные значения — 60–120 секунд. Значение 0 отключает периодический сброс полностью и годится только для тестовых машин.\n\nИзменения записываются в /etc/fstab и вступают в силу после перезагрузки. Откат убирает параметр из fstab, тоже с перезагрузкой.",
         "en": "The commit=NN parameter makes the file system flush accumulated data to disk less often: not every 5 seconds by default, but every NN seconds. This reduces write operations and extends SSD life.\n\nIMPORTANT: only file systems of the ext family support this — ext2, ext3, ext4. For NTFS, FAT32, exFAT, btrfs, xfs, f2fs and others the parameter is unknown: at best the kernel silently ignores it, at worst it refuses to mount the partition and the system drops into emergency mode on boot.\n\nTherefore in this tweaker only partitions with ext2/ext3/ext4 are shown for commit= — they can be ticked. Partitions with other file systems are intentionally disabled so that boot cannot be broken by accident.\n\nWARNING: the longer the interval, the higher the risk of losing the latest written data on sudden power loss. Reasonable values are 60–120 seconds. Value 0 disables periodic flushing entirely and is only suitable for test machines.\n\nChanges are written to /etc/fstab and take effect after a reboot. Rolling back removes the parameter from fstab, also with a reboot.",
     },
     "aliases": {
@@ -1813,8 +2036,8 @@ OPTIONS_HELP = {
         "en": "Linux has many routine terminal actions: updating packages, clearing cache, checking disk space. Typing long commands every time is tiring. To avoid this, short wrapper functions are added to the .bashrc file.\n\nThis option adds a ready set of commands to your .bashrc: upd (update package lists), upgr (upgrade packages), update_all (full system update, including Flatpak), clean (remove unnecessary packages), space (show free disk space), mem (clear memory cache), fix (repair broken packages) and others. Type three letters — get a result.\n\nDo not enable it if you do not use the terminal. Also do not enable it if you already have your own functions with these names — they may conflict.\n\nThe option applies immediately, but the commands only appear in new terminals. Open a new terminal or run «source ~/.bashrc». Rolling back removes the command block.",
     },
     "autoupdate": {
-        "ru": "Обновления системы нужно ставить регулярно — это вопросы безопасности и свежих функций. Вручную это делать лень, поэтому логично поручить задачу systemd. Он умеет запускать команды по расписанию с помощью таймеров.\n\nЭта опция создаёт systemd-таймер, который сам запускает обновление APT и Flatpak в выбранное время. Вы один раз настраиваете расписание (например, каждую субботу в 18:30) и забываете об этом. При включённом Cinnamon дополнительно обновляются апплеты и темы.\n\nВНИМАНИЕ: в Linux Mint есть встроенное автообновление (mintupdate). Если его не отключить, обновления будут запускаться дважды и могут конфликтовать. Отключите mintupdate перед включением этой опции.\n\nТаймер включается сразу, перезагрузка не нужна. Первое обновление произойдёт в ближайшее выбранное время. Откат удаляет таймер.",
-        "en": "System updates need to be installed regularly — it is a matter of security and fresh features. Doing it manually is tiring, so it makes sense to delegate the task to systemd. It can run commands on a schedule using timers.\n\nThis option creates a systemd timer that runs APT and Flatpak updates at the chosen time. You configure the schedule once (say, every Saturday at 18:30) and forget about it. On Cinnamon, applets and themes are updated as well.\n\nWARNING: Linux Mint has a built-in auto-update (mintupdate). If you do not disable it, updates will run twice and may conflict. Disable mintupdate before enabling this option.\n\nThe timer starts immediately, no reboot needed. The first update runs at the next chosen time. Rolling back removes the timer.",
+        "ru": "Обновления системы нужно ставить регулярно — это вопросы безопасности и свежих функций. Вручную это делать лень, поэтому логично поручить задачу systemd. Он умеет запускать команды по расписанию с помощью таймеров.\n\nЭта опция создаёт systemd-таймер, который сам запускает обновление APT и Flatpak в выбранное время. Вы один раз настраиваете расписание (например, каждую субботу в 18:30) и забываете об этом. При включённом Cinnamon дополнительно обновляются апплеты и темы.\n\nПри включении этой опции твикер автоматически глушит apt-daily.timer, apt-daily-upgrade.timer, unattended-upgrades.service и (если есть) mintupdate-automation-upgrade.timer. Это нужно, чтобы обновления не запускались дважды — по системному расписанию и по вашему. При откате твикера маска с этих служб снимается автоматически.\n\nВНИМАНИЕ: в Linux Mint есть встроенное автообновление (mintupdate). Твикер глушит только его systemd-таймер, но настройки самого mintupdate остаются как есть. Если вы хотите полностью отдать обновления твикеру — отключите автообновление в mintupdate вручную.\n\nТаймер включается сразу, перезагрузка не нужна. Первое обновление произойдёт в ближайшее выбранное время. Откат удаляет таймер и снимает маску с системных служб.",
+        "en": "System updates need to be installed regularly — it is a matter of security and fresh features. Doing it manually is tiring, so it makes sense to delegate the task to systemd. It can run commands on a schedule using timers.\n\nThis option creates a systemd timer that runs APT and Flatpak updates at the chosen time. You configure the schedule once (say, every Saturday at 18:30) and forget about it. On Cinnamon, applets and themes are updated as well.\n\nWhen this option is enabled, the tweaker automatically masks apt-daily.timer, apt-daily-upgrade.timer, unattended-upgrades.service and (if present) mintupdate-automation-upgrade.timer. This is needed so updates do not run twice — once on the system schedule and once on yours. When rolling back the tweaker, the mask is removed automatically.\n\nWARNING: Linux Mint has a built-in auto-update (mintupdate). The tweaker masks only its systemd timer, but the mintupdate settings themselves remain untouched. If you want to hand updates fully to the tweaker — disable auto-update inside mintupdate manually.\n\nThe timer starts immediately, no reboot needed. The first update runs at the next chosen time. Rolling back removes the timer and unmasks the system services.",
     },
     "mount": {
         "ru": "Когда система открывает файл на чтение, она по умолчанию обновляет время последнего доступа к нему. Это нужно для некоторых служебных задач, но на домашнем ПК бесполезно: никто не смотрит на эти метки. При этом каждая запись — это операция на диск, которая тратит ресурс SSD.\n\nОпция noatime отключает обновление времени доступа. Файлы и папки читаются как обычно, но система не делает служебную запись при каждом чтении. Диск меньше работает, SSD живёт дольше, чтение немного быстрее.\n\nНе включайте, если у вас обычный HDD и вас не волнует ресурс диска. На SSD выгода ощутимее. Также не включайте, если у вас есть программы, которые специально следят за временем доступа — таких мало, но они существуют.\n\nПараметры записываются в /etc/fstab, поэтому применяются после перезагрузки. Откат убирает их из fstab, тоже с перезагрузкой.",
@@ -1879,6 +2102,18 @@ SERVICES_HELP = {
         "ru": "rsyslog — это служба, которая постоянно пишет подробные журналы системы в текстовые файлы на диске. Каждую секунду она дописывает туда события: запуск служб, ошибки, вход пользователей. На домашнем ПК эти файлы почти никто не читает, но диск получает постоянные операции записи.\n\nОтключение освобождает место в /var/log и уменьшает износ SSD. Важные сообщения при этом никуда не пропадают — они идут в журнал systemd, который смотрится командой journalctl.\n\nНе отключайте, если вы привыкли разбираться с проблемами по старым файлам журналов.\n\nОтключение безопасно и работает сразу. Включение обратно возвращает прежнее поведение.",
         "en": "rsyslog is a service that constantly writes detailed system logs into text files on the disk. Every second it appends events: service starts, errors, user logins. On a home PC nobody reads these files, but the disk keeps getting write operations.\n\nDisabling it frees space in /var/log and reduces SSD wear. Important messages are not lost — they go to the systemd journal, which you can view with journalctl.\n\nDo not disable it if you are used to troubleshooting by reading old log files.\n\nDisabling is safe and works immediately. Re-enabling restores the previous behaviour.",
     },
+    "apt-daily.timer": {
+        "ru": "apt-daily.timer — это systemd-таймер, который раз в сутки запускает загрузку свежих списков пакетов и обновлений в фоне. Он есть в Ubuntu, Linux Mint и Debian — это часть системы, а не отдельная программа.\n\nПроблема в том, что если вы уже включили автообновления в твикере, этот таймер начинает работать параллельно и создаёт двойную нагрузку на сеть и диск. Твикер глушит его автоматически при включении автообновлений — отдельно отмечать не нужно.\n\nОтключайте его вручную только если вы вообще не хотите, чтобы система что-то скачивала в фоне. Например, у вас лимитированный интернет или вы обновляетесь только вручную.\n\nЕсли вы не включаете автообновления в твикере и не управляете обновлениями вручную — не трогайте этот таймер.",
+        "en": "apt-daily.timer is a systemd timer that once a day fetches fresh package lists and updates in the background. It exists in Ubuntu, Linux Mint and Debian — it is part of the system, not a separate program.\n\nThe problem is that if you have already enabled auto-updates in the tweaker, this timer runs in parallel and creates a double load on network and disk. The tweaker masks it automatically when auto-updates are enabled — you do not need to tick it separately.\n\nDisable it manually only if you do not want the system to download anything in the background at all. For example, you have metered internet or update only manually.\n\nIf you do not enable auto-updates in the tweaker and do not manage updates manually — leave this timer alone.",
+    },
+    "apt-daily-upgrade.timer": {
+        "ru": "apt-daily-upgrade.timer — это дополнение к apt-daily.timer: он не просто скачивает списки пакетов, а устанавливает обновления в фоне. Обычно он запускается позже apt-daily.timer и делает установку по расписанию systemd.\n\nЕсли вы включили автообновления в твикере, этот таймер дублирует их работу. Твикер глушит его автоматически, чтобы не было двух параллельных обновлений.\n\nОтключайте вручную только если вы точно управляете обновлениями сами и не хотите фоновой установки. Не отключайте на системах, где вы полагаетесь на автоматические обновления безопасности.\n\nЕсли вы не включаете автообновления в твикере и не разбираетесь в системе обновлений — не трогайте этот таймер.",
+        "en": "apt-daily-upgrade.timer complements apt-daily.timer: it not only downloads package lists but actually installs updates in the background. It usually runs later than apt-daily.timer and installs on the systemd schedule.\n\nIf you enabled auto-updates in the tweaker, this timer duplicates their work. The tweaker masks it automatically so there are no two parallel update runs.\n\nDisable it manually only if you truly manage updates yourself and do not want background installs. Do not disable it on systems where you rely on automatic security updates.\n\nIf you do not enable auto-updates in the tweaker and do not understand the update system — leave this timer alone.",
+    },
+    "unattended-upgrades.service": {
+        "ru": "unattended-upgrades — это служба, которая устанавливает обновления безопасности автоматически, без вашего участия. Она появилась в Debian и Ubuntu как способ держать систему защищённой даже если пользователь забывает обновляться.\n\nНа домашнем ПК это удобно, если вы не хотите думать об обновлениях. Но если вы уже управляете обновлениями через твикер, служба становится лишней — она может устанавливать пакеты в момент, когда вы этого не ждёте, или конфликтовать с вашим расписанием. Твикер глушит её автоматически при включении автообновлений.\n\nОтключайте вручную только если вы точно контролируете обновления и не хотите фоновой установки.\n\nЕсли вы не включаете автообновления в твикере и не управляете обновлениями вручную — лучше оставить службу включённой.",
+        "en": "unattended-upgrades is a service that installs security updates automatically, without your involvement. It appeared in Debian and Ubuntu as a way to keep the system protected even if the user forgets to update.\n\nOn a home PC this is convenient if you do not want to think about updates. But if you already manage updates through the tweaker, the service becomes redundant — it may install packages at a moment you do not expect, or conflict with your schedule. The tweaker masks it automatically when auto-updates are enabled.\n\nDisable it manually only if you fully control updates and do not want background installs.\n\nIf you do not enable auto-updates in the tweaker and do not manage updates manually — better leave the service enabled.",
+    },
 }
 
 STR = {
@@ -1893,11 +2128,13 @@ STR = {
         "ready": "Готово", "running": "Выполнение...", "done": "Готово",
         "applied_yes": "✓ применено", "applied_no": "не применено",
         "btn_file": "файл", "btn_q": "?",
+        "btn_remove_zfs": "Удалить пакеты (осторожно)",
+        "btn_remove_zfs_unavailable": "Удалить пакеты (недоступно)",
         "menu_copy": "Копировать", "menu_copy_all": "Копировать всё",
         "menu_select_all": "Выделить всё",
         "svc_name": "Служба", "svc_state": "Состояние", "svc_run": "Запуск",
         "svc_desc": "Описание", "svc_help": "?",
-        "svc_hint": "Выберите строку, чтобы увидеть описание; «?» — подробности.",
+        "svc_hint": "Клик по первой колонке — отметить службу; «?» — подробности.",
         "svc_on": "работает", "svc_onoff": "не запущена", "svc_off": "остановлена",
         "svc_masked": "заблокирована", "svc_na": "нет в системе",
         "run_yes": "работает", "run_no": "остановлена",
@@ -1940,21 +2177,29 @@ STR = {
         "tw_name": "Твик", "kn_param": "Параметр", "kn_val": "Значение",
         "sudo_title": "sudo", "sudo_prompt": "Пароль sudo (попытка %d из 3):",
         "sudo_wrong": "Неверный пароль или нет прав sudo.",
-        "autoupdate_warn": "Включено автообновление по расписанию. Отключите встроенное автообновление Mint (mintupdate), иначе обновления будут выполняться дважды.",
+        "autoupdate_warn": "Включено автообновление по расписанию. Твикер автоматически отключит apt-daily, apt-daily-upgrade и unattended-upgrades, чтобы обновления не выполнялись дважды. Встроенное автообновление Mint (mintupdate) останется как есть — отключите его вручную, если не хотите дублирования.",
         "viewer": "Просмотр файла", "viewer_ext": "Открыть во внешнем редакторе",
         "about_title": "О твикере",
         "about_purpose": "Графическая оболочка тюнинга для Linux Mint / Ubuntu / Debian и других systemd-дистрибутивов: твики производительности, логов, дисков, сети и игр с откатом и бэкапами.",
         "about_author": "Автор", "about_author_name": "Дмитрий Свистунов",
         "about_ver": "Версия",
+        "about_license": "Лицензия",
         "about_disclaimer": "ОТКАЗ ОТ ОТВЕТСТВЕННОСТИ\n\nТвикер изменяет системные файлы (GRUB, fstab, sysctl, systemd-юниты, конфиги приложений). Все изменения вы делаете на свой страх и риск. Перед применением твиков убедитесь, что у вас есть резервная копия важных данных и загрузочная флешка на случай проблем с загрузкой. Автор не несёт ответственности за потерю данных, отказ загрузки или нестабильную работу системы. Бэкапы изменённых файлов сохраняются в ~/system-tuneup-backups/.",
+        "zfs_remove_title": "Удаление пакетов ZFS",
+        "zfs_remove_body": "Твикер проверил: ZFS-пулов нет, ZFS-монтирований нет, записей в /etc/fstab и /etc/crypttab нет.\n\nЕсли вы устанавливали ZFS вручную и используете его вне стандартных мест — удаление приведёт к потере доступа к данным.\n\nОтмена возможна только через «sudo apt install zfsutils-linux», при этом прежнее состояние служб не восстановится.\n\nУдалить пакеты zfsutils-linux и zfs-zed?",
+        "zfs_remove_btn": "Удалить",
+        "zfs_remove_cancel": "Отмена",
         "disabled_reason": "недоступно: %s",
         "msg_run": "Скрипт уже запущен. Дождитесь завершения.",
         "msg_noopt": "Отметьте хотя бы одну опцию.",
-        "msg_sel": "Сначала выберите строки в таблице.",
+        "msg_sel": "Сначала отметьте службы в первой колонке.",
         "msg_nofile": "Файл ещё не существует. Пути, где опция вносит изменения:",
         "msg_close": "Прервать выполнение и закрыть?",
         "msg_running_title": "Уже запущено",
         "msg_running_text": "Linux Tweaker уже запущен.",
+        "sched_daily": "Ежедневно", "sched_weekly": "Еженедельно (суббота)",
+        "sched_twice": "2 раза в месяц (1 и 15)", "sched_monthly": "Ежемесячно (1 число)",
+        "sched_disabled": "Отключено",
     },
     "en": {
         "tab_tune": "Tuning", "tab_serv": "Services", "tab_stat": "Status",
@@ -1967,11 +2212,13 @@ STR = {
         "ready": "Ready", "running": "Running...", "done": "Done",
         "applied_yes": "✓ applied", "applied_no": "not applied",
         "btn_file": "file", "btn_q": "?",
+        "btn_remove_zfs": "Remove packages (careful)",
+        "btn_remove_zfs_unavailable": "Remove packages (unavailable)",
         "menu_copy": "Copy", "menu_copy_all": "Copy all",
         "menu_select_all": "Select all",
         "svc_name": "Service", "svc_state": "State", "svc_run": "Running",
         "svc_desc": "Description", "svc_help": "?",
-        "svc_hint": "Select a row to see the description; “?” opens details.",
+        "svc_hint": "Click the first column to mark a service; “?” opens details.",
         "svc_on": "running", "svc_onoff": "not running", "svc_off": "stopped",
         "svc_masked": "blocked", "svc_na": "not installed",
         "run_yes": "running", "run_no": "stopped",
@@ -2014,23 +2261,31 @@ STR = {
         "tw_name": "Tweak", "kn_param": "Parameter", "kn_val": "Value",
         "sudo_title": "sudo", "sudo_prompt": "sudo password (attempt %d of 3):",
         "sudo_wrong": "Wrong password or no sudo rights.",
-        "autoupdate_warn": "Scheduled auto-update enabled. Disable the built-in Mint auto-update (mintupdate), otherwise updates will run twice.",
+        "autoupdate_warn": "Scheduled auto-update enabled. The tweaker will automatically mask apt-daily, apt-daily-upgrade and unattended-upgrades so updates do not run twice. Mint's built-in auto-update (mintupdate) is left as is — disable it manually if you do not want duplicates.",
         "viewer": "File viewer", "viewer_ext": "Open in external editor",
         "about_title": "About",
         "about_purpose": "A graphical tuning shell for Linux Mint / Ubuntu / Debian and other systemd distributions: performance, logs, disk, network and gaming tweaks with rollback and backups.",
         "about_author": "Author", "about_author_name": "Dmitry Svistunov",
         "about_ver": "Version",
+        "about_license": "License",
         "about_disclaimer": "DISCLAIMER\n\nThis tweaker modifies system files (GRUB, fstab, sysctl, systemd units, application configs). You use it at your own risk. Before applying tweaks, make sure you have a backup of important data and a bootable USB stick in case of boot problems. The author is not responsible for data loss, boot failure or system instability. Backups of modified files are stored in ~/system-tuneup-backups/.",
+        "zfs_remove_title": "ZFS package removal",
+        "zfs_remove_body": "The tweaker checked: no ZFS pools, no ZFS mounts, no entries in /etc/fstab or /etc/crypttab.\n\nIf you installed ZFS manually and use it outside standard locations, removal will cut off access to your data.\n\nRollback is possible only via «sudo apt install zfsutils-linux», and the previous state of the services will not be restored.\n\nRemove packages zfsutils-linux and zfs-zed?",
+        "zfs_remove_btn": "Remove",
+        "zfs_remove_cancel": "Cancel",
         "disabled_reason": "unavailable: %s",
         "msg_run": "A job is already running. Wait for it to finish.",
         "msg_noopt": "Tick at least one option.",
-        "msg_sel": "Select table rows first.",
+        "msg_sel": "Tick services in the first column first.",
         "msg_nofile": "This file appears after applying the option. Paths the option modifies:",
         "msg_close": "Interrupt the job and close?",
         "msg_running_title": "Already running",
         "msg_running_text": "Linux Tweaker is already running.",
+        "sched_daily": "Daily", "sched_weekly": "Weekly (Saturday)",
+        "sched_twice": "Twice a month (1 & 15)", "sched_monthly": "Monthly (1st)",
+        "sched_disabled": "Disabled",
     },
-} 
+}
 # ═══════════════════════════════════════════════════════════════════════════
 class MainWindow:
     """Главное окно приложения на Tkinter."""
@@ -2057,6 +2312,7 @@ class MainWindow:
         self.svc_checked = set()
         self.msg_queue = queue.Queue()
         self._ram_cache = None
+        self._zfs_button = None
         self.sudo = SudoManager()
         self.sudo.prompt_password = self._ask_password
         self.sudo.show_error = lambda m: messagebox.showwarning(
@@ -2162,6 +2418,10 @@ class MainWindow:
             r["itco_wdt"] = ("модуль iTCO_wdt не поддерживается ядром"
                              if self.lang == "ru"
                              else "iTCO_wdt module not available")
+        if not getattr(self.state, "zfs_installed", False):
+            r["zfs_services"] = ("пакеты ZFS не установлены"
+                                 if self.lang == "ru"
+                                 else "ZFS packages not installed")
         if self.state.gpu not in ("AMD", "Unknown"):
             for k in ("corectrl", "ppfeaturemask", "vrr", "radv"):
                 r[k] = ("только для AMD" if self.lang == "ru"
@@ -2418,7 +2678,7 @@ class MainWindow:
 
     def _build_ui(self):
         c = self.colors()
-        self.root.title("%s v%s" % (APP_NAME, APP_VERSION))
+        self.root.title("%s v%s (%s)" % (APP_NAME, APP_VERSION, APP_BUILD_DATE))
         sw, sh, _ = self._screen_info()
         w = min(1080, sw - 40)
         h = min(820, sh - 60)
@@ -2438,8 +2698,8 @@ class MainWindow:
         title = Label(head, text=APP_NAME, bg=c["bg"], fg=c["accent"],
                       font=("DejaVu Sans", 16, "bold"))
         title.pack(side=LEFT, padx=(8, 4))
-        ver = Label(head, text="v%s" % APP_VERSION, bg=c["bg"], fg=c["gray"],
-                    font=("DejaVu Sans", 9))
+        ver = Label(head, text="v%s (%s)" % (APP_VERSION, APP_BUILD_DATE),
+                    bg=c["bg"], fg=c["gray"], font=("DejaVu Sans", 9))
         ver.pack(side=LEFT, pady=(6, 0))
         self._about_btn = Button(head, text=self.t("btn_about"),
                                  command=self._show_about,
@@ -2663,6 +2923,22 @@ class MainWindow:
                    anchor=W, justify=LEFT, wraplength=820,
                    font=("DejaVu Sans", 9))
         dl.pack(fill=X, padx=(24, 0))
+        # Кнопка удаления пакетов ZFS — только для твика zfs_services
+        if key == "zfs_services":
+            zfs_removable = (self.state.zfs_installed and not self.state.zfs_used)
+            btn_text = (self.t("btn_remove_zfs") if zfs_removable
+                        else self.t("btn_remove_zfs_unavailable"))
+            self._zfs_button = Button(
+                row, text=btn_text,
+                command=self._zfs_remove_packages,
+                bg=c["button"],
+                fg=c["red"] if zfs_removable else c["gray"],
+                activebackground=c["button_hover"],
+                activeforeground=c["red"] if zfs_removable else c["gray"],
+                state=NORMAL if zfs_removable else DISABLED,
+                relief=FLAT, padx=10, pady=4,
+                font=("DejaVu Sans", 9))
+            self._zfs_button.pack(anchor=W, padx=(24, 0), pady=(4, 0))
 
     def _build_disk_extras(self):
         c = self.colors()
@@ -3064,6 +3340,15 @@ class MainWindow:
                         w.configure(bg=c["accent"], fg=c["accent_fg"],
                                     activebackground=c["accent2"],
                                     activeforeground=c["accent_fg"])
+                    elif w is getattr(self, "_zfs_button", None):
+                        # ZFS-кнопка: сохраняем красный цвет, если активна
+                        zfs_removable = (self.state.zfs_installed
+                                         and not self.state.zfs_used)
+                        w.configure(
+                            bg=c["button"],
+                            fg=c["red"] if zfs_removable else c["gray"],
+                            activebackground=c["button_hover"],
+                            activeforeground=c["red"] if zfs_removable else c["gray"])
                     else:
                         keep = getattr(w, "_keep_fg", None)
                         w.configure(
@@ -3162,6 +3447,7 @@ class MainWindow:
         self._theme_btn = None
         self._lang_btn = None
         self._about_btn = None
+        self._zfs_button = None
         self.opts_state = {k: BooleanVar(value=saved_opts.get(k, False))
                            for k in OPTIONS_META}
         for k in list(self.mount_state.keys()):
@@ -3170,6 +3456,8 @@ class MainWindow:
             self.steam_state[k] = BooleanVar(value=saved_steam.get(k, False))
         for k in list(self.commit_state.keys()):
             self.commit_state[k] = BooleanVar(value=saved_commit.get(k, False))
+        self.state.zfs_installed = zfs_packages_installed()
+        self.state.zfs_used = zfs_in_use()
         self._compute_disabled_reasons()
         self._build_ui()
         self._apply_theme()
@@ -3271,6 +3559,7 @@ class MainWindow:
             "raid": "raid=noautodetect" in grub,
             "nmi_watchdog": "nmi_watchdog=0" in grub,
             "itco_wdt": "blacklist iTCO_wdt" in itco,
+            "zfs_services": zfs_units_masked() if self.state.zfs_installed else False,
             "corectrl": self._corectrl_found(ops),
             "ppfeaturemask": "amdgpu.ppfeaturemask" in grub,
             "nvidia_modeset": "nvidia-drm.modeset=1" in grub,
@@ -3434,6 +3723,57 @@ class MainWindow:
     def _style_badge(self, lbl, ok, c):
         lbl.config(text=self.t("applied_yes") if ok else self.t("applied_no"),
                    bg=c["panel"], fg=c["green"] if ok else c["gray"])
+
+    # ─── ZFS: удаление пакетов ──────────────────────────────────────────
+    def _zfs_remove_packages(self):
+        if self.state.zfs_used:
+            messagebox.showwarning(
+                APP_NAME,
+                "ZFS is in use, removal blocked."
+                if self.lang == "en"
+                else "ZFS используется, удаление заблокировано.",
+                parent=self.root)
+            return
+        if not self.state.zfs_installed:
+            messagebox.showinfo(
+                APP_NAME,
+                "ZFS packages not installed."
+                if self.lang == "en"
+                else "Пакеты ZFS не установлены.",
+                parent=self.root)
+            return
+        answer = messagebox.askyesno(
+            self.t("zfs_remove_title"),
+            self.t("zfs_remove_body"),
+            parent=self.root, default=messagebox.NO)
+        if not answer:
+            return
+        if not self.sudo.ensure():
+            self.log("sudo failed", "error")
+            return
+        self.is_running = True
+        self._set_running(True)
+        self.msg_queue.put(("progress", 0))
+        self.msg_queue.put(("statusbar", self.t("running")))
+        self._run_bg(self._zfs_remove_work)
+
+    def _zfs_remove_work(self):
+        ops = SystemOps(self.sudo, self.state, self.log, self._dry_var.get())
+        try:
+            ok = ops.apply_zfs_remove_packages()
+            if ok:
+                self.log("ZFS packages removed. Rolling back requires "
+                         "'sudo apt install zfsutils-linux'.", "info")
+        except Exception as e:
+            self.log("Critical error: %s" % e, "error")
+        finally:
+            self.state.zfs_installed = zfs_packages_installed()
+            self.state.zfs_used = zfs_in_use()
+            self.is_running = False
+            self._set_running(False)
+            self._run_bg(self._applied_work)
+            self._run_bg(self._status_work)
+            self._run_bg(self._services_work)
 
     # ─── apply / rollback ───────────────────────────────────────────────
     def apply_selected(self):
@@ -3957,10 +4297,13 @@ class MainWindow:
             pass
 
     def _show_about(self):
-        text = ("%s v%s\n\n%s\n\n%s: %s\n%s\n\n%s"
-                % (APP_NAME, APP_VERSION, self.t("about_purpose"),
+        text = ("%s v%s (%s)\n\n%s\n\n%s: %s\n%s: %s\n%s\n\n%s"
+                % (APP_NAME, APP_VERSION, APP_BUILD_DATE,
+                   self.t("about_purpose"),
                    self.t("about_author"), self.t("about_author_name"),
-                   GITHUB_URL, self.t("about_disclaimer")))
+                   self.t("about_license"), LICENSE_NAME,
+                   GITHUB_URL,
+                   self.t("about_disclaimer")))
         self._open_info_dialog(self.t("about_title"), text)
 
     def _open_path(self, path):
@@ -4056,8 +4399,8 @@ class MainWindow:
 
 def main():
     if "--help" in sys.argv or "-h" in sys.argv:
-        print("%s v%s\npython3 linux_tweaker.py [--dry-run]"
-              % (APP_NAME, APP_VERSION))
+        print("%s v%s (%s)\npython3 linux_tweaker.py [--dry-run]"
+              % (APP_NAME, APP_VERSION, APP_BUILD_DATE))
         sys.exit(0)
     if not acquire_lock():
         root = Tk()
