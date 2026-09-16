@@ -35,9 +35,9 @@ set -euxo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-
 apt-get install -y --no-install-recommends \
-    python3 python3-tk python3-pip \
+    python3 python3-tk python3-pip python3-dev \
+    libpython3.8 libpython3.8-dev \
     wget ca-certificates file desktop-file-utils \
     libglib2.0-bin binutils patchelf libfuse2
 
