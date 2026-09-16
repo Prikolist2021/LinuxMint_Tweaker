@@ -1,10 +1,10 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-if [ ! -f tuneup_gui.py ]; then
-    echo "Ошибка: рядом должен быть файл tuneup_gui.py" >&2
+if [ ! -f linux_tweaker.py ]; then
+    echo "Ошибка: рядом должен быть файл linux_tweaker.py" >&2
     exit 1
 fi
 
@@ -18,7 +18,15 @@ fi
 rm -rf build-appimage
 mkdir -p build-appimage/src
 
-cp tuneup_gui.py build-appimage/src/
+cp linux_tweaker.py build-appimage/src/
+
+# Если рядом есть иконка — копируем её в сборку
+if [ -f linux-tweaker.png ]; then
+    cp linux-tweaker.png build-appimage/linux-tweaker.png
+    echo "Иконка linux-tweaker.png будет включена в AppImage."
+else
+    echo "Иконка linux-tweaker.png не найдена — будет сгенерирована заглушка."
+fi
 
 cat > build-appimage/build-inside.sh <<'EOF'
 #!/bin/bash
@@ -28,7 +36,10 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
 
-apt-get install -y --no-install-recommends python3 python3-tk python3-pip libpython3.8 libpython3.8-dev wget ca-certificates file desktop-file-utils libglib2.0-bin binutils patchelf
+apt-get install -y --no-install-recommends \
+    python3 python3-tk python3-pip \
+    wget ca-certificates file desktop-file-utils \
+    libglib2.0-bin binutils patchelf libfuse2
 
 python3 -m pip install --upgrade pip
 python3 -m pip install pyinstaller
@@ -36,47 +47,53 @@ python3 -m pip install pyinstaller
 pyinstaller \
     --onefile \
     --windowed \
-    --name system-tuneup \
+    --name linux-tweaker \
     --hidden-import tkinter \
-    src/tuneup_gui.py
+    --hidden-import _tkinter \
+    --collect-all tkinter \
+    --clean \
+    src/linux_tweaker.py
 
 mkdir -p AppDir/usr/bin
 mkdir -p AppDir/usr/share/applications
 mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
 
-cp dist/system-tuneup AppDir/usr/bin/system-tuneup
-chmod +x AppDir/usr/bin/system-tuneup
+cp dist/linux-tweaker AppDir/usr/bin/linux-tweaker
+chmod +x AppDir/usr/bin/linux-tweaker
 
 cat > AppDir/AppRun <<'APPRUN'
 #!/bin/sh
 SELF_DIR="$(dirname "$(readlink -f "$0")")"
-exec "$SELF_DIR/usr/bin/system-tuneup" "$@"
+exec "$SELF_DIR/usr/bin/linux-tweaker" "$@"
 APPRUN
 
 chmod +x AppDir/AppRun
 
-cat > AppDir/system-tuneup.desktop <<'DESKTOP'
+cat > AppDir/linux-tweaker.desktop <<'DESKTOP'
 [Desktop Entry]
 Type=Application
-Name=System Tuneup
-Comment=System tuning GUI for Linux Mint/Ubuntu/Debian
-Exec=system-tuneup
-Icon=system-tuneup
+Name=Linux Tweaker
+Comment=System tuning GUI for Linux Mint / Ubuntu / Debian
+Exec=linux-tweaker
+Icon=linux-tweaker
 Terminal=false
 Categories=System;Settings;
+StartupWMClass=LinuxTweaker
 DESKTOP
 
-cp AppDir/system-tuneup.desktop AppDir/usr/share/applications/
+cp AppDir/linux-tweaker.desktop AppDir/usr/share/applications/
 
-# Генерируем простую тёмную иконку 256x256 без внешних зависимостей
-python3 - <<'PY'
+# Иконка: используем готовую, если есть; иначе генерируем заглушку
+if [ -f linux-tweaker.png ]; then
+    cp linux-tweaker.png AppDir/linux-tweaker.png
+else
+    python3 - <<'PY'
 import struct
 import zlib
 
 width = 256
 height = 256
 
-# Цвет фона: тёмный, примерно как интерфейс программы
 rgba = b'\x1e\x1e\x1e\xff'
 
 raw = b''
@@ -97,11 +114,15 @@ png += chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
 png += chunk(b'IDAT', zlib.compress(raw))
 png += chunk(b'IEND', b'')
 
-with open('AppDir/system-tuneup.png', 'wb') as f:
+with open('AppDir/linux-tweaker.png', 'wb') as f:
     f.write(png)
 PY
+fi
 
-cp AppDir/system-tuneup.png AppDir/usr/share/icons/hicolor/256x256/apps/system-tuneup.png
+cp AppDir/linux-tweaker.png AppDir/usr/share/icons/hicolor/256x256/apps/linux-tweaker.png
+
+# .DirIcon — используется проводниками для показа иконки самого AppImage
+ln -sf linux-tweaker.png AppDir/.DirIcon
 
 wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
 wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage
@@ -110,7 +131,7 @@ chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-appimage-x86_64.AppImage
 
 export APPIMAGE_EXTRACT_AND_RUN=1
 export ARCH=x86_64
-export OUTPUT=SystemTuneup-x86_64.AppImage
+export OUTPUT=LinuxTweaker-x86_64.AppImage
 
 ./linuxdeploy-x86_64.AppImage --appdir AppDir --output appimage
 
@@ -129,15 +150,15 @@ docker run --rm \
     ubuntu:20.04 \
     bash ./build-inside.sh
 
-cp build-appimage/SystemTuneup-x86_64.AppImage .
-chmod +x SystemTuneup-x86_64.AppImage
+cp build-appimage/LinuxTweaker-x86_64.AppImage .
+chmod +x LinuxTweaker-x86_64.AppImage
 
 echo ""
 echo "Готово."
-echo "Файл: $(pwd)/SystemTuneup-x86_64.AppImage"
+echo "Файл: $(pwd)/LinuxTweaker-x86_64.AppImage"
 echo ""
 echo "Запуск:"
-echo "  ./SystemTuneup-x86_64.AppImage"
+echo "  ./LinuxTweaker-x86_64.AppImage"
 echo ""
 echo "Сухой прогон:"
-echo "  ./SystemTuneup-x86_64.AppImage --dry-run"
+echo "  ./LinuxTweaker-x86_64.AppImage --dry-run"
