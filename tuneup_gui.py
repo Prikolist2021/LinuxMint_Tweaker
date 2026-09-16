@@ -129,8 +129,8 @@ OPTIONS_META = {
         "ru": ("MESA_SHADER_CACHE=4G", "Увеличивает кэш шейдеров, игры меньше подтормаживают в первые минуты. Нужен перезаход.", "Видеокарта и графика", "кэш шейдеров"),
         "en": ("MESA_SHADER_CACHE=4G", "Enlarges the shader cache so games stutter less at start. Requires re-login.", "GPU & graphics", "shader cache")},
     "pipewire": {
-        "ru": ("PipeWire (звук)", "Убирает треск и щелчки звука, увеличив буферы звукового сервера. Нужен перезаход в сеанс.", "Звук", "чистый звук"),
-        "en": ("PipeWire (sound)", "Removes sound crackling by enlarging sound-server buffers. Requires re-login.", "Sound", "clean sound")},
+        "ru": ("PipeWire", "Убирает треск и щелчки звука, увеличив буферы звукового сервера. Нужен перезаход в сеанс.", "Звук", "чистый звук"),
+        "en": ("PipeWire", "Removes sound crackling by enlarging sound-server buffers. Requires re-login.", "Sound", "clean sound")},
     "bbr": {
         "ru": ("TCP BBR", "Ускоряет интернет и убирает задержки на нестабильных каналах. Работает сразу.", "Сеть", "быстрый интернет"),
         "en": ("TCP BBR", "Speeds up internet and cuts latency on unstable links. Works immediately.", "Network", "faster internet")},
@@ -361,6 +361,62 @@ def fs_supports_commit(fstype):
     return (fstype or "").lower() in COMMIT_OK_FS
 
 
+# ─── PipeWire helpers ───────────────────────────────────────────────────────
+def pipewire_active():
+    """True, если PipeWire установлен или запущен как звуковой сервер."""
+    # 1. Демон запущен?
+    try:
+        r = subprocess.run(["pgrep", "-x", "pipewire"],
+                           capture_output=True, timeout=3)
+        if r.returncode == 0:
+            return True
+    except Exception:
+        pass
+    # 2. PulseAudio запущен вместо PipeWire?
+    try:
+        r = subprocess.run(["pgrep", "-x", "pulseaudio"],
+                           capture_output=True, timeout=3)
+        if r.returncode == 0:
+            return False
+    except Exception:
+        pass
+    # 3. Пакет установлен?
+    for pkg in ("pipewire", "pipewire-pulse", "pipewire-bin"):
+        try:
+            r = subprocess.run(["dpkg-query", "-W", "-f=${Status}", pkg],
+                               capture_output=True, text=True, timeout=3)
+            if r.returncode == 0 and "install ok installed" in r.stdout:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+# ─── NMI watchdog helpers ───────────────────────────────────────────────────
+def nmi_watchdog_active():
+    """True, если /proc/sys/kernel/nmi_watchdog показывает 1."""
+    try:
+        with open("/proc/sys/kernel/nmi_watchdog", "r") as f:
+            return f.read().strip() == "1"
+    except Exception:
+        return False
+
+
+def nmi_watchdog_in_grub():
+    """True, если nmi_watchdog=0 присутствует в GRUB_CMDLINE_LINUX_DEFAULT."""
+    try:
+        with open("/etc/default/grub", "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        for line in content.splitlines():
+            m = re.match(r"^\s*GRUB_CMDLINE_LINUX_DEFAULT=(.*)$", line)
+            if m:
+                raw = m.group(1).strip().strip('"').strip("'")
+                return "nmi_watchdog=0" in raw.split()
+    except Exception:
+        pass
+    return False
+
+
 # ─── ZFS helpers ────────────────────────────────────────────────────────────
 ZFS_UNITS = [
     "zfs-import-cache.service",
@@ -390,7 +446,6 @@ def zfs_packages_installed():
 
 def zfs_in_use():
     """True, если ZFS реально используется (пулы, монтирования, fstab)."""
-    # 1. Активные пулы
     try:
         r = subprocess.run(["zpool", "list", "-H", "-o", "name"],
                            capture_output=True, text=True, timeout=5)
@@ -398,7 +453,6 @@ def zfs_in_use():
             return True
     except Exception:
         pass
-    # 2. Монтирования ZFS
     try:
         r = subprocess.run(["findmnt", "-t", "zfs", "-n", "-o", "TARGET"],
                            capture_output=True, text=True, timeout=5)
@@ -406,7 +460,6 @@ def zfs_in_use():
             return True
     except Exception:
         pass
-    # 3. Записи в fstab/crypttab
     for path in ("/etc/fstab", "/etc/crypttab"):
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -570,6 +623,9 @@ class SystemState:
         self.has_itco_module = False
         self.zfs_installed = False
         self.zfs_used = False
+        self.pipewire_active = False
+        self.nmi_watchdog_active = False
+        self.nmi_watchdog_in_grub = False
 
     def detect(self):
         try:
@@ -648,6 +704,9 @@ class SystemState:
             pass
         self.zfs_installed = zfs_packages_installed()
         self.zfs_used = zfs_in_use()
+        self.pipewire_active = pipewire_active()
+        self.nmi_watchdog_active = nmi_watchdog_active()
+        self.nmi_watchdog_in_grub = nmi_watchdog_in_grub()
 
     def _real_user(self):
         for var in ("SUDO_USER", "PKEXEC_USER"):
@@ -1046,7 +1105,6 @@ class SystemOps:
 
     # ─── ZFS ────────────────────────────────────────────────────────────
     def apply_zfs_services(self, params=None):
-        """Отключает и маскирует ZFS-юниты. Безопасно, откатывается."""
         if self.dry_run:
             for u in ZFS_UNITS:
                 self.log("[DRY RUN] systemctl disable --now %s" % u, "warning")
@@ -1078,7 +1136,6 @@ class SystemOps:
         return True
 
     def apply_zfs_remove_packages(self, params=None):
-        """Удаляет пакеты zfsutils-linux и zfs-zed. Необратимо."""
         if zfs_in_use():
             self.log("ZFS is in use, aborting package removal", "error")
             return False
@@ -1101,7 +1158,6 @@ class SystemOps:
         return True
 
     def rollback_zfs_remove_packages(self, params=None):
-        """Откат удаления ZFS невозможен через твикер."""
         self.log("Rollback of ZFS package removal is not supported. "
                  "Run 'sudo apt install zfsutils-linux' manually.", "warning")
         return False
@@ -1176,6 +1232,9 @@ class SystemOps:
                                 r"^\s*MESA_SHADER_CACHE_MAX_SIZE=.*")
 
     def apply_pipewire(self, params=None):
+        if not self.state.pipewire_active:
+            self.log("PipeWire not active, skipping", "warning")
+            return True
         d = os.path.join(self.state.user_home, ".config", "pipewire", "pipewire.conf.d")
         path = os.path.join(d, "10-sound.conf")
         if self.dry_run:
@@ -1339,7 +1398,7 @@ class SystemOps:
             return False
         self.log("blacklist ntfs3 not found", "warning"); return True
 
-    # ─── fstab: mount-опции и commit (безопасно, только ext2/3/4) ───────
+    # ─── fstab: mount-опции и commit ────────────────────────────────────
     def _uuid_of(self, dev):
         try:
             res = subprocess.run(["lsblk", "-no", "UUID", dev],
@@ -1402,7 +1461,6 @@ class SystemOps:
         return True
 
     def _mount_commit_edit(self, mp, val, add=True):
-        """Правка commit= в /etc/fstab. Только для ext2/3/4."""
         path = "/etc/fstab"
         fstype = self._fstype_of_mp(mp)
         if add and not fs_supports_commit(fstype):
@@ -1448,8 +1506,6 @@ class SystemOps:
         return ok
 
     def apply_commit(self, params=None):
-        """commit=NN применяется ТОЛЬКО к выбранным пользователем разделам
-        с ФС ext2/ext3/ext4. Разделы с другими ФС пропускаются."""
         params = params or {}
         val = str(params.get("commit_value", "60")).strip() or "60"
         try:
@@ -1505,8 +1561,6 @@ class SystemOps:
         return ok
 
     def _commit_applied(self):
-        """Проверяет, стоит ли commit= хотя бы на одном ext2/3/4-разделе
-        из списка commit_targets (или на любом ext2/3/4, если список пуст)."""
         try:
             with open("/etc/fstab", "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
@@ -1679,7 +1733,6 @@ class SystemOps:
     ]
 
     def _mask_apt_daily(self):
-        """Глушит apt-daily, unattended-upgrades и mintupdate-automation."""
         if self.dry_run:
             for u in self.APT_DAILY_UNITS:
                 self.log("[DRY RUN] mask %s" % u, "warning")
@@ -1929,7 +1982,6 @@ class SystemOps:
         return False
 
     def rollback_autoupdate(self, params=None):
-        """Убирает таймер твикера и снимает маску с apt-daily / unattended-upgrades."""
         ok = self.apply_autoupdate({"update_schedule": "Отключено"})
         self._unmask_apt_daily()
         return ok
@@ -1948,12 +2000,12 @@ OPTIONS_HELP = {
         "en": "RAID is a way to combine several physical disks into one logical one: for speed, or for reliability (if one fails, data stays on the other). If your system has such a combination, you have RAID.\n\nIf there is no RAID, the kernel still spends a few seconds at every boot probing for arrays and finds nothing. You can save those seconds: raid=noautodetect disables the probe and speeds up startup.\n\nWARNING: do not enable this option if you use RAID. The system will stop finding your arrays at boot, and you may lose access to your data.\n\nThe parameter is added to GRUB, changes take effect after a reboot. Rolling back removes the parameter from GRUB, also with a reboot.",
     },
     "nmi_watchdog": {
-        "ru": "NMI-watchdog — это служебный механизм ядра для отладки зависаний. Он периодически посылает процессору специальные сигналы (немaskируемые прерывания), чтобы проверить, что система ещё жива. Если система не отвечает — ядро записывает это в журнал.\n\nНа домашнем ПК такая отладка не нужна. А периодические прерывания, пусть и редкие, дают микро-фризы в играх и чувствительных к задержкам задачах. Отключение убирает эти паузы.\n\nНе отключайте, если вы специально занимаетесь отладкой зависаний ядра и вам нужны эти данные.\n\nПараметр nmi_watchdog=0 добавляется в GRUB, поэтому изменения вступают в силу после перезагрузки. Откат убирает параметр и тоже требует перезагрузки.\n\nВАЖНО: на некоторых системах (особенно с Intel-чипсетом) модуль iTCO_wdt включает watchdog заново после загрузки. Проверить можно командой: cat /proc/sys/kernel/nmi_watchdog. Если там 1 — используйте дополнительный твик «iTCO_wdt blacklist».",
+        "ru": "NMI-watchdog — это служебный механизм ядра для отладки зависаний. Он периодически посылает процессору специальные сигналы (немаскируемые прерывания), чтобы проверить, что система ещё жива. Если система не отвечает — ядро записывает это в журнал.\n\nНа домашнем ПК такая отладка не нужна. А периодические прерывания, пусть и редкие, дают микро-фризы в играх и чувствительных к задержкам задачах. Отключение убирает эти паузы.\n\nНе отключайте, если вы специально занимаетесь отладкой зависаний ядра и вам нужны эти данные.\n\nПараметр nmi_watchdog=0 добавляется в GRUB, поэтому изменения вступают в силу после перезагрузки. Откат убирает параметр и тоже требует перезагрузки.\n\nВАЖНО: на некоторых системах (особенно с Intel-чипсетом) модуль iTCO_wdt включает watchdog заново после загрузки. Проверить можно командой: cat /proc/sys/kernel/nmi_watchdog. Если там 1 — используйте дополнительный твик «iTCO_wdt blacklist».",
         "en": "The NMI watchdog is a kernel debugging facility for detecting hangs. It periodically sends special signals to the CPU (non-maskable interrupts) to check that the system is still alive. If the system does not respond, the kernel writes it to the log.\n\nOn a home PC such debugging is unnecessary. And the periodic interrupts, even rare ones, cause micro-stutters in games and latency-sensitive tasks. Disabling them removes those pauses.\n\nDo not disable it if you specifically debug kernel hangs and need that data.\n\nThe nmi_watchdog=0 parameter is added to GRUB, so changes take effect after a reboot. Rolling back removes the parameter and also requires a reboot.\n\nIMPORTANT: on some systems (especially with an Intel chipset) the iTCO_wdt module re-enables the watchdog after boot. Check with: cat /proc/sys/kernel/nmi_watchdog. If it shows 1, use the extra tweak «iTCO_wdt blacklist».",
     },
     "itco_wdt": {
-        "ru": "Этот твик — дополнение к «nmi_watchdog=0 (GRUB)». На многих системах с Intel-чипсетом после загрузки ядра модуль iTCO_wdt снова включает NMI watchdog, даже если вы передали параметр nmi_watchdog=0. В итоге /proc/sys/kernel/nmi_watchdog снова становится 1, и микро-фризы возвращаются.\n\nРешение — заблокировать модуль iTCO_wdt, чтобы он вообще не загружался. В файле /etc/modprobe.d/nmi-watchdog.conf прописываются строки blacklist и install ... /bin/false. Первое запрещает автозагрузку, второе блокирует явную загрузку через modprobe.\n\nЭтот твик доступен только на системах с Intel-чипсетом, где модуль iTCO_wdt вообще поддерживается ядром. На AMD и в виртуалках он неактивен.\n\nПроверить состояние после перезагрузки: cat /proc/sys/kernel/nmi_watchdog — должно быть 0. Откат удаляет файл и позволяет модулю загружаться снова.",
-        "en": "This tweak complements «nmi_watchdog=0 (GRUB)». On many systems with an Intel chipset, the iTCO_wdt module re-enables the NMI watchdog after the kernel is loaded — even if you passed nmi_watchdog=0. As a result /proc/sys/kernel/nmi_watchdog becomes 1 again, and micro-stutters come back.\n\nThe fix is to block the iTCO_wdt module entirely. In /etc/modprobe.d/nmi-watchdog.conf lines blacklist and install ... /bin/false are written. The first forbids autoload, the second blocks explicit modprobe.\n\nThis tweak is only available on Intel chipset systems where the kernel actually supports iTCO_wdt. On AMD and in VMs it stays disabled.\n\nCheck the state after reboot: cat /proc/sys/kernel/nmi_watchdog — should be 0. Rolling back removes the file and lets the module load again.",
+        "ru": "Этот твик — дополнение к «nmi_watchdog=0 (GRUB)». На многих системах с Intel-чипсетом после загрузки ядра модуль iTCO_wdt снова включает NMI watchdog, даже если вы передали параметр nmi_watchdog=0. В итоге /proc/sys/kernel/nmi_watchdog снова становится 1, и микро-фризы возвращаются.\n\nРешение — заблокировать модуль iTCO_wdt, чтобы он вообще не загружался. В файле /etc/modprobe.d/nmi-watchdog.conf прописываются строки blacklist и install ... /bin/false. Первое запрещает автозагрузку, второе блокирует явную загрузку через modprobe.\n\nТвик становится активным только если одновременно выполнены три условия: Intel-чипсет, модуль iTCO_wdt поддерживается ядром и NMI watchdog всё ещё активен (nmi_watchdog=0 уже в GRUB, но /proc/sys/kernel/nmi_watchdog показывает 1). Если watchdog уже отключён — твик не нужен, и он будет серым.\n\nПроверить состояние после перезагрузки: cat /proc/sys/kernel/nmi_watchdog — должно быть 0. Откат удаляет файл и позволяет модулю загружаться снова.\n\nЕсли и этот твик не помог (watchdog всё ещё 1), значит его включает другой модуль — например, intel_oc_wdt или sp5100_tco. Проверить: lsmod | grep -i wdt. В таком случае нужно вручную добавить их в чёрный список или использовать параметр nowatchdog в GRUB.",
+        "en": "This tweak complements «nmi_watchdog=0 (GRUB)». On many systems with an Intel chipset, the iTCO_wdt module re-enables the NMI watchdog after the kernel is loaded — even if you passed nmi_watchdog=0. As a result /proc/sys/kernel/nmi_watchdog becomes 1 again, and micro-stutters come back.\n\nThe fix is to block the iTCO_wdt module entirely. In /etc/modprobe.d/nmi-watchdog.conf lines blacklist and install ... /bin/false are written. The first forbids autoload, the second blocks explicit modprobe.\n\nThe tweak becomes active only when three conditions are met at once: Intel chipset, iTCO_wdt module supported by the kernel, and NMI watchdog still active (nmi_watchdog=0 already in GRUB but /proc/sys/kernel/nmi_watchdog shows 1). If the watchdog is already off — the tweak is not needed and stays greyed out.\n\nCheck the state after reboot: cat /proc/sys/kernel/nmi_watchdog — should be 0. Rolling back removes the file and lets the module load again.\n\nIf even this tweak does not help (watchdog is still 1), then another module enables it — for example intel_oc_wdt or sp5100_tco. Check: lsmod | grep -i wdt. In that case add them to the blacklist manually or use the nowatchdog kernel parameter.",
     },
     "zfs_services": {
         "ru": "ZFS — это файловая система и менеджер томов, который используется на серверах и NAS. На домашнем ПК его обычно не ставят, но некоторые дистрибутивы (Ubuntu, Mint) устанавливают пакеты ZFS «на всякий случай» — как зависимость других пакетов или по умолчанию.\n\nПроблема в том, что даже если ZFS не используется (нет пулов, нет ZFS-монтирований), его службы всё равно запускаются при загрузке: zfs-import.target, zfs-mount.service, zfs-share.service, zfs-volume-wait.service. Они тянут за собой systemd-udev-settle.service, который на некоторых системах занимает несколько секунд. В итоге загрузка замедляется без всякой пользы.\n\nЭтот твик делает две вещи. Первое — при отметке останавливает и маскирует ZFS-службы: они больше не запускаются, но пакеты остаются на месте. Это обратимо: снятие отметки возвращает всё как было. Второе — кнопка «Удалить пакеты (осторожно)» полностью удаляет zfsutils-linux и zfs-zed, чтобы модуль ядра вообще не загружался. Эта операция необратима: вернуть можно только вручную командой sudo apt install zfsutils-linux, при этом прежнее состояние служб не восстановится.\n\nВАЖНО: перед удалением пакетов твикер проверяет, используется ли ZFS на самом деле. Он смотрит zpool list, findmnt -t zfs и записи в /etc/fstab и /etc/crypttab. Если найден хотя бы один пул или монтирование, кнопка удаления становится серой. Это защита от случайного удаления ZFS на системе, где он действительно нужен.\n\nЕсли вы не знаете, используете ли ZFS — отметьте только первый вариант (отключение служб). Он безопасен и даёт заметную часть выигрыша. Удаление пакетов стоит делать только если вы точно уверены, что ZFS не используется.",
@@ -1984,8 +2036,8 @@ OPTIONS_HELP = {
         "en": "MESA is a set of graphics libraries that games and applications use to render the picture. One of MESA's features is caching compiled shaders. A shader is a small program for the GPU that must be compiled before first use.\n\nBy default the MESA cache is small, and when it overflows, old shaders are deleted. The next time you launch the game, they are recompiled — that is what causes stutters in the first minutes. If you raise the cache to 4 GB, shaders stay, and the game launches smoothly right away.\n\nDo not enable it if you do not play shader-heavy games (which is almost all modern games). For office tasks there is no difference.\n\nThe variable is written to /etc/environment and applies at login. You need to re-login or reboot.",
     },
     "pipewire": {
-        "ru": "PipeWire — это звуковой сервер, который передаёт звук от приложений к колонкам и наушникам. У него есть настройка размера буферов: маленькие буферы дают низкую задержку, но на некоторых системах вызывают треск и щелчки. Большие буферы убирают артефакты, но добавляют небольшую задержку (на практике незаметно).\n\nЭта опция увеличивает буферы PipeWire. Треск, щелчки и прерывистый звук в наушниках и колонках исчезают. Особенно заметно на встроенных звуковых картах и на некоторых USB-ЦАПах.\n\nНе включайте, если у вас нет проблем со звуком. Если звук работает нормально, не стоит ничего менять.\n\nСоздаётся конфиг в вашей домашней папке. Нужно перезайти в сеанс или перезагрузиться. Откат удаляет конфиг, тоже с перезаходом.",
-        "en": "PipeWire is the sound server that hands audio from applications to speakers and headphones. It has a buffer-size setting: small buffers give low latency but on some systems cause crackling and pops. Large buffers remove the artifacts but add a little latency (imperceptible in practice).\n\nThis option enlarges PipeWire buffers. Crackling, pops and stuttering in headphones and speakers disappear. Especially noticeable on built-in sound cards and some USB DACs.\n\nDo not enable it if you have no sound problems. If audio works fine, there is no reason to change anything.\n\nA config is created in your home folder. You need to re-login or reboot. Rolling back removes the config, also with a re-login.",
+        "ru": "PipeWire — это звуковой сервер, который передаёт звук от приложений к колонкам и наушникам. У него есть настройка размера буферов: маленькие буферы дают низкую задержку, но на некоторых системах вызывают треск и щелчки. Большие буферы убирают артефакты, но добавляют небольшую задержку (на практике незаметно).\n\nЭта опция увеличивает буферы PipeWire. Треск, щелчки и прерывистый звук в наушниках и колонках исчезают. Особенно заметно на встроенных звуковых картах и на некоторых USB-ЦАПах.\n\nТвик доступен только если PipeWire установлен или уже запущен как звуковой сервер. Если у вас PulseAudio или чистая ALSA — конфиг PipeWire ничего не даст, и твик будет серым.\n\nНе включайте, если у вас нет проблем со звуком. Если звук работает нормально, не стоит ничего менять.\n\nСоздаётся конфиг в вашей домашней папке. Нужно перезайти в сеанс или перезагрузиться. Откат удаляет конфиг, тоже с перезаходом.",
+        "en": "PipeWire is the sound server that hands audio from applications to speakers and headphones. It has a buffer-size setting: small buffers give low latency but on some systems cause crackling and pops. Large buffers remove the artifacts but add a little latency (imperceptible in practice).\n\nThis option enlarges PipeWire buffers. Crackling, pops and stuttering in headphones and speakers disappear. Especially noticeable on built-in sound cards and some USB DACs.\n\nThe tweak is available only if PipeWire is installed or already running as the sound server. If you use PulseAudio or plain ALSA — the PipeWire config will do nothing, and the tweak stays greyed out.\n\nDo not enable it if you have no sound problems. If audio works fine, there is no reason to change anything.\n\nA config is created in your home folder. You need to re-login or reboot. Rolling back removes the config, also with a re-login.",
     },
     "bbr": {
         "ru": "BBR — это современный алгоритм управления перегрузками TCP, разработанный Google. Он определяет, с какой скоростью отправлять данные по сети, чтобы не перегружать канал и не терять пакеты. Старый алгоритм CUBIC работает хорошо на стабильных каналах, но BBR выигрывает на нестабильных.\n\nЭта опция включает BBR и очередь fq. На Wi-Fi, VPN, мобильном интернете и дальних серверах скорость загрузки становится выше, а задержки — меньше. На стабильном кабеле разница почти не заметна.\n\nНе включайте, если у вас стабильный проводной интернет и вы не жалуетесь на задержки. BBR не сломает соединение, но и заметной выгоды не даст.\n\nПараметр применяется сразу, перезагрузка не нужна. Откат возвращает старый алгоритм CUBIC и тоже работает без перезагрузки.",
@@ -2115,7 +2167,6 @@ SERVICES_HELP = {
         "en": "unattended-upgrades is a service that installs security updates automatically, without your involvement. It appeared in Debian and Ubuntu as a way to keep the system protected even if the user forgets to update.\n\nOn a home PC this is convenient if you do not want to think about updates. But if you already manage updates through the tweaker, the service becomes redundant — it may install packages at a moment you do not expect, or conflict with your schedule. The tweaker masks it automatically when auto-updates are enabled.\n\nDisable it manually only if you fully control updates and do not want background installs.\n\nIf you do not enable auto-updates in the tweaker and do not manage updates manually — better leave the service enabled.",
     },
 }
-
 STR = {
     "ru": {
         "tab_tune": "Тюнинг", "tab_serv": "Службы", "tab_stat": "Статус",
@@ -2124,6 +2175,8 @@ STR = {
         "btn_about": "О твикере", "btn_close": "Закрыть",
         "theme_dark": "Тёмная тема", "theme_light": "Светлая тема",
         "lbl_dry": "Сухой прогон", "lbl_terminal": "Терминальный вывод:",
+        "lbl_search": "Поиск:", "btn_search_clear": "Сбросить",
+        "search_no_results": "Ничего не найдено по запросу «%s».",
         "lbl_group": "Группа:", "lbl_value": "Значение:", "lbl_schedule": "Расписание:",
         "ready": "Готово", "running": "Выполнение...", "done": "Готово",
         "applied_yes": "✓ применено", "applied_no": "не применено",
@@ -2134,20 +2187,21 @@ STR = {
         "menu_select_all": "Выделить всё",
         "svc_name": "Служба", "svc_state": "Состояние", "svc_run": "Запуск",
         "svc_desc": "Описание", "svc_help": "?",
-        "svc_hint": "Клик по первой колонке — отметить службу; «?» — подробности.",
+        "svc_hint": "Клик по первой колонке — отметить службу; клик по заголовку — сортировка; «?» — подробности.",
         "svc_on": "работает", "svc_onoff": "не запущена", "svc_off": "остановлена",
         "svc_masked": "заблокирована", "svc_na": "нет в системе",
         "run_yes": "работает", "run_no": "остановлена",
         "svc_on_sel": "Включить выбранные", "svc_off_sel": "Отключить выбранные",
         "svc_col_sel": "✓",
+        "sort_asc": "▲", "sort_desc": "▼",
         "stat_refresh": "Обновить статус",
         "st_hw": "ИНФОРМАЦИЯ О СИСТЕМЕ", "st_parts": "РАЗДЕЛЫ СИСТЕМЫ",
         "st_tweaks": "ТВИКИ", "st_services": "СЛУЖБЫ", "st_kernel": "ПАРАМЕТРЫ ЯДРА",
         "st_timer": "Таймер автообновлений",
         "st_enabled": "включён", "st_disabled": "отключён",
         "st_masked": "заблокирован", "st_notfound": "не найден",
-        "part_mount": "Раздел", "part_fs": "ФС", "part_total": "Всего",
-        "part_free": "Свободно",
+        "part_dev": "Устройство", "part_mount": "Точка монтирования",
+        "part_fs": "ФС", "part_total": "Всего", "part_free": "Свободно",
         "os_lbl": "ОС", "gpu_lbl": "Видеокарта", "screen_lbl": "Разрешение экрана",
         "swap_lbl": "Файл подкачки", "kernel_lbl": "Ядро", "de_lbl": "Оболочка",
         "ram_lbl": "ОЗУ", "cpu_lbl": "Процессор", "disk_lbl": "Диск",
@@ -2187,8 +2241,6 @@ STR = {
         "about_disclaimer": "ОТКАЗ ОТ ОТВЕТСТВЕННОСТИ\n\nТвикер изменяет системные файлы (GRUB, fstab, sysctl, systemd-юниты, конфиги приложений). Все изменения вы делаете на свой страх и риск. Перед применением твиков убедитесь, что у вас есть резервная копия важных данных и загрузочная флешка на случай проблем с загрузкой. Автор не несёт ответственности за потерю данных, отказ загрузки или нестабильную работу системы. Бэкапы изменённых файлов сохраняются в ~/system-tuneup-backups/.",
         "zfs_remove_title": "Удаление пакетов ZFS",
         "zfs_remove_body": "Твикер проверил: ZFS-пулов нет, ZFS-монтирований нет, записей в /etc/fstab и /etc/crypttab нет.\n\nЕсли вы устанавливали ZFS вручную и используете его вне стандартных мест — удаление приведёт к потере доступа к данным.\n\nОтмена возможна только через «sudo apt install zfsutils-linux», при этом прежнее состояние служб не восстановится.\n\nУдалить пакеты zfsutils-linux и zfs-zed?",
-        "zfs_remove_btn": "Удалить",
-        "zfs_remove_cancel": "Отмена",
         "disabled_reason": "недоступно: %s",
         "msg_run": "Скрипт уже запущен. Дождитесь завершения.",
         "msg_noopt": "Отметьте хотя бы одну опцию.",
@@ -2197,9 +2249,18 @@ STR = {
         "msg_close": "Прервать выполнение и закрыть?",
         "msg_running_title": "Уже запущено",
         "msg_running_text": "Linux Tweaker уже запущен.",
-        "sched_daily": "Ежедневно", "sched_weekly": "Еженедельно (суббота)",
-        "sched_twice": "2 раза в месяц (1 и 15)", "sched_monthly": "Ежемесячно (1 число)",
-        "sched_disabled": "Отключено",
+        "reason_raid": "у вас есть RAID",
+        "reason_itco_not_intel": "не Intel-чипсет",
+        "reason_itco_no_module": "модуль iTCO_wdt не поддерживается ядром",
+        "reason_itco_watchdog_off": "NMI watchdog уже отключён",
+        "reason_itco_grub_missing": "сначала примените nmi_watchdog=0",
+        "reason_zfs_not_installed": "пакеты ZFS не установлены",
+        "reason_amd_only": "только для AMD",
+        "reason_nvidia_only": "только для NVIDIA",
+        "reason_no_swap": "swap не обнаружен",
+        "reason_no_zram": "нет zram-generator",
+        "reason_mint_only": "только для Linux Mint",
+        "reason_pipewire_inactive": "PipeWire не используется",
     },
     "en": {
         "tab_tune": "Tuning", "tab_serv": "Services", "tab_stat": "Status",
@@ -2208,6 +2269,8 @@ STR = {
         "btn_about": "About", "btn_close": "Close",
         "theme_dark": "Dark theme", "theme_light": "Light theme",
         "lbl_dry": "Dry run", "lbl_terminal": "Terminal output:",
+        "lbl_search": "Search:", "btn_search_clear": "Reset",
+        "search_no_results": "Nothing found for query “%s”.",
         "lbl_group": "Group:", "lbl_value": "Value:", "lbl_schedule": "Schedule:",
         "ready": "Ready", "running": "Running...", "done": "Done",
         "applied_yes": "✓ applied", "applied_no": "not applied",
@@ -2218,20 +2281,21 @@ STR = {
         "menu_select_all": "Select all",
         "svc_name": "Service", "svc_state": "State", "svc_run": "Running",
         "svc_desc": "Description", "svc_help": "?",
-        "svc_hint": "Click the first column to mark a service; “?” opens details.",
+        "svc_hint": "Click the first column to mark a service; click a header to sort; “?” opens details.",
         "svc_on": "running", "svc_onoff": "not running", "svc_off": "stopped",
         "svc_masked": "blocked", "svc_na": "not installed",
         "run_yes": "running", "run_no": "stopped",
         "svc_on_sel": "Enable selected", "svc_off_sel": "Disable selected",
         "svc_col_sel": "✓",
+        "sort_asc": "▲", "sort_desc": "▼",
         "stat_refresh": "Refresh status",
         "st_hw": "SYSTEM INFORMATION", "st_parts": "SYSTEM PARTITIONS",
         "st_tweaks": "TWEAKS", "st_services": "SERVICES", "st_kernel": "KERNEL PARAMETERS",
         "st_timer": "Auto-update timer",
         "st_enabled": "enabled", "st_disabled": "disabled",
         "st_masked": "blocked", "st_notfound": "not found",
-        "part_mount": "Partition", "part_fs": "FS", "part_total": "Total",
-        "part_free": "Free",
+        "part_dev": "Device", "part_mount": "Mount point",
+        "part_fs": "FS", "part_total": "Total", "part_free": "Free",
         "os_lbl": "OS", "gpu_lbl": "GPU", "screen_lbl": "Screen resolution",
         "swap_lbl": "Swap", "kernel_lbl": "Kernel", "de_lbl": "Desktop",
         "ram_lbl": "RAM", "cpu_lbl": "CPU", "disk_lbl": "Disk",
@@ -2271,8 +2335,6 @@ STR = {
         "about_disclaimer": "DISCLAIMER\n\nThis tweaker modifies system files (GRUB, fstab, sysctl, systemd units, application configs). You use it at your own risk. Before applying tweaks, make sure you have a backup of important data and a bootable USB stick in case of boot problems. The author is not responsible for data loss, boot failure or system instability. Backups of modified files are stored in ~/system-tuneup-backups/.",
         "zfs_remove_title": "ZFS package removal",
         "zfs_remove_body": "The tweaker checked: no ZFS pools, no ZFS mounts, no entries in /etc/fstab or /etc/crypttab.\n\nIf you installed ZFS manually and use it outside standard locations, removal will cut off access to your data.\n\nRollback is possible only via «sudo apt install zfsutils-linux», and the previous state of the services will not be restored.\n\nRemove packages zfsutils-linux and zfs-zed?",
-        "zfs_remove_btn": "Remove",
-        "zfs_remove_cancel": "Cancel",
         "disabled_reason": "unavailable: %s",
         "msg_run": "A job is already running. Wait for it to finish.",
         "msg_noopt": "Tick at least one option.",
@@ -2281,9 +2343,18 @@ STR = {
         "msg_close": "Interrupt the job and close?",
         "msg_running_title": "Already running",
         "msg_running_text": "Linux Tweaker is already running.",
-        "sched_daily": "Daily", "sched_weekly": "Weekly (Saturday)",
-        "sched_twice": "Twice a month (1 & 15)", "sched_monthly": "Monthly (1st)",
-        "sched_disabled": "Disabled",
+        "reason_raid": "RAID detected",
+        "reason_itco_not_intel": "not an Intel system",
+        "reason_itco_no_module": "iTCO_wdt module not available",
+        "reason_itco_watchdog_off": "NMI watchdog already disabled",
+        "reason_itco_grub_missing": "apply nmi_watchdog=0 first",
+        "reason_zfs_not_installed": "ZFS packages not installed",
+        "reason_amd_only": "AMD only",
+        "reason_nvidia_only": "NVIDIA only",
+        "reason_no_swap": "no swap found",
+        "reason_no_zram": "zram-generator not installed",
+        "reason_mint_only": "Linux Mint only",
+        "reason_pipewire_inactive": "PipeWire is not in use",
     },
 }
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2310,6 +2381,10 @@ class MainWindow:
         self.commit_state = {}
         self.disabled_reasons = {}
         self.svc_checked = set()
+        self.svc_rows = []
+        self._svc_sort_col = None
+        self._svc_sort_reverse = False
+        self._tune_filter = StringVar(value="")
         self.msg_queue = queue.Queue()
         self._ram_cache = None
         self._zfs_button = None
@@ -2356,7 +2431,6 @@ class MainWindow:
         self._tune_inner = None
         self._tune_canvas = None
         self._services_tree = None
-        self._services_count_lbl = None
         self._status_view = None
         self._terminal = None
         self._progress = None
@@ -2409,35 +2483,31 @@ class MainWindow:
     def _compute_disabled_reasons(self):
         r = {}
         if self.state.has_raid:
-            r["raid"] = ("у вас есть RAID" if self.lang == "ru"
-                         else "RAID detected")
+            r["raid"] = self.t("reason_raid")
+        # itco_wdt: три условия — Intel, модуль есть, watchdog активен
         if not getattr(self.state, "is_intel", False):
-            r["itco_wdt"] = ("не Intel-чипсет" if self.lang == "ru"
-                             else "not an Intel system")
+            r["itco_wdt"] = self.t("reason_itco_not_intel")
         elif not getattr(self.state, "has_itco_module", False):
-            r["itco_wdt"] = ("модуль iTCO_wdt не поддерживается ядром"
-                             if self.lang == "ru"
-                             else "iTCO_wdt module not available")
+            r["itco_wdt"] = self.t("reason_itco_no_module")
+        elif not getattr(self.state, "nmi_watchdog_active", False):
+            r["itco_wdt"] = self.t("reason_itco_watchdog_off")
+        elif not getattr(self.state, "nmi_watchdog_in_grub", False):
+            r["itco_wdt"] = self.t("reason_itco_grub_missing")
         if not getattr(self.state, "zfs_installed", False):
-            r["zfs_services"] = ("пакеты ZFS не установлены"
-                                 if self.lang == "ru"
-                                 else "ZFS packages not installed")
+            r["zfs_services"] = self.t("reason_zfs_not_installed")
         if self.state.gpu not in ("AMD", "Unknown"):
             for k in ("corectrl", "ppfeaturemask", "vrr", "radv"):
-                r[k] = ("только для AMD" if self.lang == "ru"
-                        else "AMD only")
+                r[k] = self.t("reason_amd_only")
         if self.state.gpu not in ("NVIDIA", "Unknown"):
-            r["nvidia_modeset"] = ("только для NVIDIA" if self.lang == "ru"
-                                   else "NVIDIA only")
+            r["nvidia_modeset"] = self.t("reason_nvidia_only")
         if not self.state.has_swap:
-            r["swap"] = ("swap не обнаружен" if self.lang == "ru"
-                         else "no swap found")
+            r["swap"] = self.t("reason_no_swap")
         if not zram_generator_present():
-            r["zram"] = ("нет zram-generator" if self.lang == "ru"
-                         else "zram-generator not installed")
+            r["zram"] = self.t("reason_no_zram")
         if not os.path.exists("/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"):
-            r["ntfs3"] = ("только для Linux Mint" if self.lang == "ru"
-                          else "Linux Mint only")
+            r["ntfs3"] = self.t("reason_mint_only")
+        if not getattr(self.state, "pipewire_active", False):
+            r["pipewire"] = self.t("reason_pipewire_inactive")
         self.disabled_reasons = r
 
     # ─── вспомогательные ────────────────────────────────────────────────
@@ -2644,7 +2714,8 @@ class MainWindow:
             if self._sched_lbl is not None:
                 self._sched_lbl.config(text=self.t("sched_cur") % item[1])
         elif kind == "services_rows":
-            self._render_services_rows(item[1])
+            self.svc_rows = item[1]
+            self._render_services_rows()
         elif kind == "status_text":
             self._render_status(item[1])
 
@@ -2678,7 +2749,7 @@ class MainWindow:
 
     def _build_ui(self):
         c = self.colors()
-        self.root.title("%s v%s (%s)" % (APP_NAME, APP_VERSION, APP_BUILD_DATE))
+        self.root.title("%s v%s" % (APP_NAME, APP_VERSION))
         sw, sh, _ = self._screen_info()
         w = min(1080, sw - 40)
         h = min(820, sh - 60)
@@ -2698,7 +2769,7 @@ class MainWindow:
         title = Label(head, text=APP_NAME, bg=c["bg"], fg=c["accent"],
                       font=("DejaVu Sans", 16, "bold"))
         title.pack(side=LEFT, padx=(8, 4))
-        ver = Label(head, text="v%s (%s)" % (APP_VERSION, APP_BUILD_DATE),
+        ver = Label(head, text="v%s" % APP_VERSION,
                     bg=c["bg"], fg=c["gray"], font=("DejaVu Sans", 9))
         ver.pack(side=LEFT, pady=(6, 0))
         self._about_btn = Button(head, text=self.t("btn_about"),
@@ -2770,7 +2841,7 @@ class MainWindow:
         wrap = Frame(self._tab_tune, bg=c["bg"])
         wrap.pack(fill=BOTH, expand=True, padx=6, pady=6)
         bar = Frame(wrap, bg=c["bg"])
-        bar.pack(fill=X, pady=(0, 6))
+        bar.pack(fill=X, pady=(0, 4))
         self._apply_btn = Button(bar, text=self.t("btn_apply"),
                                  command=self.apply_selected,
                                  bg=c["accent"], fg=c["accent_fg"],
@@ -2788,6 +2859,24 @@ class MainWindow:
         Button(bar, text=self.t("btn_selnone"), command=self.reset_options,
                bg=c["button"], fg=c["fg"], activebackground=c["button_hover"],
                relief=FLAT, padx=12, pady=6).pack(side=LEFT, padx=2)
+        # ─── Строка поиска ───
+        search_bar = Frame(wrap, bg=c["bg"])
+        search_bar.pack(fill=X, pady=(0, 6))
+        Label(search_bar, text=self.t("lbl_search"),
+              bg=c["bg"], fg=c["gray"],
+              font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(2, 4))
+        self._search_entry = Entry(search_bar, textvariable=self._tune_filter,
+                                   bg=c["entry"], fg=c["fg"], relief=FLAT,
+                                   insertbackground=c["fg"],
+                                   font=("DejaVu Sans", 9))
+        self._search_entry.pack(side=LEFT, fill=X, expand=True, padx=(0, 6))
+        self._tune_filter.trace_add("write", lambda *a: self._rebuild_tune_list())
+        Button(search_bar, text=self.t("btn_search_clear"),
+               command=lambda: self._tune_filter.set(""),
+               bg=c["button"], fg=c["fg"],
+               activebackground=c["button_hover"],
+               relief=FLAT, padx=10, pady=2,
+               font=("DejaVu Sans", 9)).pack(side=LEFT)
         scroll_frame = Frame(wrap, bg=c["bg"])
         scroll_frame.pack(fill=BOTH, expand=True)
         self._tune_canvas = Canvas(scroll_frame, bg=c["panel"],
@@ -2807,25 +2896,66 @@ class MainWindow:
         self._tune_canvas.bind(
             "<Configure>",
             lambda e: self._tune_canvas.itemconfig(win_id, width=e.width))
+        self._rebuild_tune_list()
+        self._bind_wheel_tree(self._tune_inner)
+
+    def _rebuild_tune_list(self):
+        """Пересобирает список твиков с учётом текущего фильтра поиска."""
+        if self._tune_inner is None:
+            return
+        # Очистить содержимое
+        for child in self._tune_inner.winfo_children():
+            child.destroy()
+        # Сбросить ссылки на виджеты, которые сейчас создадутся заново
+        self.badges = {}
+        self.mount_badges = {}
+        self.steam_badges = {}
+        self.commit_badges = {}
+        self.option_widgets = {}
+        self._sched_lbl = None
+        self._thp_lbl = None
+        self._zfs_button = None
+        c = self.colors()
         cats = {}
         for k in OPTIONS_META:
             cats.setdefault(self.om(k)[2], []).append(k)
         order = CAT_ORDER[self.lang]
         seq = [x for x in order if x in cats] + \
               [x for x in sorted(cats) if x not in order]
+        query = self._tune_filter.get().strip().lower()
         disk_cat = self.om("ntfs3")[2]
+        any_shown = False
         for cat in seq:
+            matches = []
+            for k in cats[cat]:
+                if k == "commit":
+                    continue
+                label, desc, _c, short = self.om(k)
+                if not query or (query in label.lower()
+                                 or query in desc.lower()
+                                 or query in short.lower()):
+                    matches.append(k)
+            # Показать категорию только если есть совпадения
+            show_disk_extras = (cat == disk_cat and not query)
+            if not matches and not show_disk_extras:
+                continue
+            any_shown = True
             hdr = Label(self._tune_inner, text="─── %s ───" % cat,
                         bg=c["panel"], fg=c["yellow"], anchor=W,
                         font=("DejaVu Sans", 10, "bold"))
             hdr.pack(fill=X, padx=8, pady=(10, 4))
-            for k in cats[cat]:
-                if k == "commit":
-                    continue
+            for k in matches:
                 self._build_option_row(k)
-            if cat == disk_cat:
+            if show_disk_extras:
                 self._build_disk_extras()
+        if not any_shown:
+            Label(self._tune_inner,
+                  text=self.t("search_no_results") % self._tune_filter.get(),
+                  bg=c["panel"], fg=c["gray"], anchor=W,
+                  font=("DejaVu Sans", 10, "italic")).pack(
+                fill=X, padx=24, pady=20)
         self._bind_wheel_tree(self._tune_inner)
+        self._update_badges()
 
     def _build_option_row(self, key):
         c = self.colors()
@@ -2923,7 +3053,6 @@ class MainWindow:
                    anchor=W, justify=LEFT, wraplength=820,
                    font=("DejaVu Sans", 9))
         dl.pack(fill=X, padx=(24, 0))
-        # Кнопка удаления пакетов ZFS — только для твика zfs_services
         if key == "zfs_services":
             zfs_removable = (self.state.zfs_installed and not self.state.zfs_used)
             btn_text = (self.t("btn_remove_zfs") if zfs_removable
@@ -3109,10 +3238,14 @@ class MainWindow:
                                            show="headings",
                                            selectmode="extended")
         self._services_tree.heading("sel", text=self.t("svc_col_sel"))
-        self._services_tree.heading("name", text=self.t("svc_name"))
-        self._services_tree.heading("state", text=self.t("svc_state"))
-        self._services_tree.heading("run", text=self.t("svc_run"))
-        self._services_tree.heading("desc", text=self.t("svc_desc"))
+        self._services_tree.heading("name", text=self.t("svc_name"),
+                                    command=lambda: self._sort_services("name"))
+        self._services_tree.heading("state", text=self.t("svc_state"),
+                                    command=lambda: self._sort_services("state"))
+        self._services_tree.heading("run", text=self.t("svc_run"),
+                                    command=lambda: self._sort_services("run"))
+        self._services_tree.heading("desc", text=self.t("svc_desc"),
+                                    command=lambda: self._sort_services("desc"))
         self._services_tree.heading("q", text=self.t("svc_help"))
         self._services_tree.column("sel", width=30, anchor=CENTER, stretch=False)
         self._services_tree.column("name", width=220, anchor=W, stretch=False)
@@ -3139,6 +3272,62 @@ class MainWindow:
                                 font=("DejaVu Sans", 9))
         self._svc_detail.pack(fill=X, pady=(2, 0))
         self._make_copyable(self._svc_detail)
+
+    def _sort_services(self, col):
+        """Сортировка служб по клику на заголовок."""
+        if self._svc_sort_col == col:
+            self._svc_sort_reverse = not self._svc_sort_reverse
+        else:
+            self._svc_sort_col = col
+            self._svc_sort_reverse = False
+        self._render_services_rows()
+
+    def _sort_key_for(self, row, col):
+        """Ключ сортировки. row = (name, st, run, desc, q, tag)."""
+        name, st, run, desc, q, tag = row
+        if col == "name":
+            return name.lower()
+        if col == "state":
+            order = {"err": 0, "muted": 1, "ok": 2, "warn": 3}
+            return order.get(tag, 9)
+        if col == "run":
+            return 0 if run in ("running", "работает") else 1
+        if col == "desc":
+            return desc.lower()
+        return name.lower()
+
+    def _render_services_rows(self):
+        if self._services_tree is None:
+            return
+        for it in self._services_tree.get_children():
+            self._services_tree.delete(it)
+        rows = list(self.svc_rows)
+        if self._svc_sort_col:
+            rows.sort(key=lambda r: self._sort_key_for(r, self._svc_sort_col),
+                      reverse=self._svc_sort_reverse)
+        # обновить индикаторы сортировки в заголовках
+        self._update_sort_indicators()
+        for n, st, run, desc, q, tag in rows:
+            mark = "[✓]" if n in self.svc_checked else "[ ]"
+            self._services_tree.insert("", END,
+                                       values=(mark, n, st, run, desc, q),
+                                       tags=(tag,))
+
+    def _update_sort_indicators(self):
+        if self._services_tree is None:
+            return
+        base = {
+            "name": self.t("svc_name"),
+            "state": self.t("svc_state"),
+            "run": self.t("svc_run"),
+            "desc": self.t("svc_desc"),
+        }
+        for col, text in base.items():
+            if col == self._svc_sort_col:
+                arrow = self.t("sort_desc") if self._svc_sort_reverse else self.t("sort_asc")
+                self._services_tree.heading(col, text="%s %s" % (text, arrow))
+            else:
+                self._services_tree.heading(col, text=text)
 
     def _build_stat_tab(self):
         c = self.colors()
@@ -3341,7 +3530,6 @@ class MainWindow:
                                     activebackground=c["accent2"],
                                     activeforeground=c["accent_fg"])
                     elif w is getattr(self, "_zfs_button", None):
-                        # ZFS-кнопка: сохраняем красный цвет, если активна
                         zfs_removable = (self.state.zfs_installed
                                          and not self.state.zfs_used)
                         w.configure(
@@ -3639,17 +3827,6 @@ class MainWindow:
             run = self.t("run_yes") if ac == "active" else self.t("run_no")
             rows.append((n, st, run, desc, "?", tag))
         self.msg_queue.put(("services_rows", rows))
-
-    def _render_services_rows(self, rows):
-        if self._services_tree is None:
-            return
-        for it in self._services_tree.get_children():
-            self._services_tree.delete(it)
-        for n, st, run, desc, q, tag in rows:
-            mark = "[✓]" if n in self.svc_checked else "[ ]"
-            self._services_tree.insert("", END,
-                                       values=(mark, n, st, run, desc, q),
-                                       tags=(tag,))
 
     def _on_service_select(self, _e=None):
         if self._services_tree is None or self._svc_detail is None:
@@ -4138,6 +4315,7 @@ class MainWindow:
         rows.append((self.t("user_lbl") + ": " + self.state.user_name, "info"))
         rows.append((self.t("home_lbl") + ": " + self.state.user_home, "info"))
         rows.append(("", "info"))
+        # ─── Разделы системы: выровненные столбцы ───
         rows.append((self.t("st_parts"), "head"))
         seen = {}
         for it in parse_mounts():
@@ -4146,16 +4324,26 @@ class MainWindow:
                 continue
             seen.setdefault(it["dev"], {"mps": [], "fstype": it["fstype"]})
             seen[it["dev"]]["mps"].append(it["mp"])
+        header = "  %-12s %-32s %-7s %10s %10s" % (
+            self.t("part_dev"), self.t("part_mount"), self.t("part_fs"),
+            self.t("part_total"), self.t("part_free"))
+        rows.append((header, "muted"))
         for dev, info in seen.items():
             d = self._disk_info(info["mps"][0])
             if not d:
                 continue
             total, free = d
-            rows.append(("%s (%s, %s): %.1f %s, %s %.1f %s"
-                         % (", ".join(info["mps"]), os.path.basename(dev),
-                            info["fstype"], total, self.t("gb"),
-                            self.t("free_w"), free, self.t("gb")), "info"))
+            mp_str = ", ".join(info["mps"])
+            if len(mp_str) > 32:
+                mp_str = mp_str[:29] + "…"
+            dev_short = os.path.basename(dev)
+            total_str = "%.1f %s" % (total, self.t("gb"))
+            free_str = "%.1f %s" % (free, self.t("gb"))
+            line = "  %-12s %-32s %-7s %10s %10s" % (
+                dev_short, mp_str, info["fstype"], total_str, free_str)
+            rows.append((line, "info"))
         rows.append(("", "info"))
+        # ─── Твики ───
         rows.append((self.t("st_tweaks"), "head"))
         for k in OPTIONS_META:
             label, _d, _c, short = self.om(k)
@@ -4180,6 +4368,7 @@ class MainWindow:
             rows.append(("%-42s %-14s %s" % (self.t("steam_short"), mark, lib),
                          "ok" if ok else "no"))
         rows.append(("", "info"))
+        # ─── Службы ───
         rows.append((self.t("st_services"), "head"))
         for name in SERVICES_ORDER:
             if not ops.unit_exists(name):
@@ -4197,6 +4386,7 @@ class MainWindow:
             desc = SERVICES_META[name][self.lang]
             rows.append(("  %s: %s — %s" % (name, word, desc), tag))
         rows.append(("", "info"))
+        # ─── Параметры ядра ───
         rows.append((self.t("st_kernel"), "head"))
         kern = [("vm.swappiness", self.t("kern_sw"), A.get("swap", False)),
                 ("vm.vfs_cache_pressure", self.t("kern_vfs"),
@@ -4399,8 +4589,8 @@ class MainWindow:
 
 def main():
     if "--help" in sys.argv or "-h" in sys.argv:
-        print("%s v%s (%s)\npython3 linux_tweaker.py [--dry-run]"
-              % (APP_NAME, APP_VERSION, APP_BUILD_DATE))
+        print("%s v%s\npython3 linux_tweaker.py [--dry-run]"
+              % (APP_NAME, APP_VERSION))
         sys.exit(0)
     if not acquire_lock():
         root = Tk()
