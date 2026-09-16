@@ -1,4 +1,4 @@
-name: Build AppImage Online
+name: Build AppImage
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ jobs:
       - name: Checkout files
         uses: actions/checkout@v4
 
-      - name: Fix Windows line endings
+      - name: Fix line endings
         run: sed -i 's/\r$//' build_appimage.sh
 
       - name: Build AppImage
@@ -21,5 +21,5 @@ jobs:
       - name: Save finished AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: SystemTuneup-AppImage
-          path: SystemTuneup-x86_64.AppImage
+          name: LinuxTweaker-AppImage
+          path: LinuxTweaker-x86_64.AppImage
