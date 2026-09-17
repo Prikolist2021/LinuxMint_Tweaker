@@ -8,6 +8,10 @@ if [ ! -f linux_tweaker.py ]; then
     exit 1
 fi
 
+if [ ! -f tweaker_packages.py ]; then
+    echo "Предупреждение: файл tweaker_packages.py не найден — вкладка «Приложения» будет пустой." >&2
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
     echo "Ошибка: нужен Docker." >&2
     echo "Установите: sudo apt install docker.io" >&2
@@ -19,6 +23,9 @@ rm -rf build-appimage
 mkdir -p build-appimage/src
 
 cp linux_tweaker.py build-appimage/src/
+if [ -f tweaker_packages.py ]; then
+    cp tweaker_packages.py build-appimage/src/
+fi
 
 # Если рядом есть иконка — копируем её в сборку
 if [ -f linux-tweaker.png ]; then
@@ -50,6 +57,7 @@ pyinstaller \
     --name linux-tweaker \
     --hidden-import tkinter \
     --hidden-import _tkinter \
+    --hidden-import tweaker_packages \
     --collect-all tkinter \
     --clean \
     src/linux_tweaker.py
