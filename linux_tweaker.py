@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Linux Tweaker v0.3
+Linux Tweaker v0.4
 Графическая оболочка тюнинга Linux Mint / Ubuntu / Debian на Tkinter.
 RU/EN, светлая/тёмная тема, детект применённых настроек,
-откат, бэкапы, mount-опции, симлинки compatdata для Steam.
+откат, бэкапы, mount-опции, симлинки compatdata для Steam,
+вкладка «Приложения» для удаления ненужных пакетов.
 
 Лицензия: MIT
 """
@@ -18,9 +19,14 @@ from tkinter import (Tk, Toplevel, Frame, Label, Button, Checkbutton, Entry,
                      simpledialog, filedialog)
 from tkinter import ttk, scrolledtext
 
+try:
+    from tweaker_packages import REMOVABLE_PACKAGES
+except ImportError:
+    REMOVABLE_PACKAGES = {}
+
 APP_NAME = "Linux Tweaker"
-APP_VERSION = "0.3"
-APP_BUILD_DATE = "16.09.2026"
+APP_VERSION = "0.4"
+APP_BUILD_DATE = "17.09.2026"
 GITHUB_URL = "https://github.com/Prikolist2021/LinuxMint_Tweaker"
 LICENSE_NAME = "MIT"
 
@@ -28,13 +34,24 @@ COMMIT_OK_FS = {"ext2", "ext3", "ext4"}
 
 LOCK_FILE = os.path.join(os.path.expanduser("~"), ".linux-tweaker.lock")
 
-# Возможные значения для vm.max_map_count
 MAX_MAP_COUNT_VALUES = ["65530", "524288", "1048576", "2147483642"]
 MAX_MAP_COUNT_DEFAULT = "1048576"
 
-# Экспериментальные значения для vm.dirty_bytes (в байтах)
-DIRTY_BYTES_DEFAULT = "268435456"          # 256 MB
-DIRTY_BG_BYTES_DEFAULT = "134217728"       # 128 MB
+DIRTY_BYTES_DEFAULT = "268435456"
+DIRTY_BG_BYTES_DEFAULT = "134217728"
+
+APPS_CATEGORY_ORDER = {
+    "ru": ["Офис", "Графика", "Интернет", "Мультимедиа",
+           "Игры", "Утилиты", "Прочее"],
+    "en": ["Office", "Graphics", "Internet", "Multimedia",
+           "Games", "Utilities", "Other"],
+}
+
+SYSTEM_PACKAGE_MASKS = (
+    "mint-meta-", "ubuntu-desktop", "xubuntu-", "kubuntu-",
+    "lubuntu-", "cinnamon", "mate-desktop", "xfce4",
+    "gnome-shell", "ubuntu-minimal", "ubuntu-standard",
+)
 
 
 def compute_ui_scale(root):
@@ -218,7 +235,6 @@ SERVICES_META = {
     "unattended-upgrades.service": {"ru": "Устанавливает обновления безопасности автоматически. Если вы управляете обновлениями сами, служба не нужна.", "en": "Installs security updates automatically. If you manage updates yourself, the service is not needed."},
 }
 SERVICES_ORDER = list(SERVICES_META.keys())
-
 OPTION_FILES = {
     "journald": ["/etc/systemd/journald.conf"],
     "audit": ["/etc/default/grub"],
@@ -253,6 +269,8 @@ OPTION_FILES = {
     "autoupdate": ["/etc/systemd/system/biweekly-upgrade.timer",
                    "/etc/systemd/system/biweekly-upgrade.service"],
 }
+
+
 def decode_bytes(v):
     return v.decode("utf-8", errors="replace") if isinstance(v, bytes) else str(v)
 
@@ -297,6 +315,19 @@ def detect_lang():
         if val:
             return "ru" if val.lower().startswith("ru") else "en"
     return "en"
+
+
+def is_debian_based():
+    """True, если дистрибутив на базе Debian / Ubuntu / Mint."""
+    try:
+        if os.path.exists("/etc/debian_version"):
+            return True
+        with open("/etc/os-release", "r", encoding="utf-8", errors="replace") as f:
+            content = f.read().lower()
+        return ("debian" in content or "ubuntu" in content
+                or "mint" in content or "id_like=debian" in content)
+    except Exception:
+        return False
 
 
 def zram_generator_present():
@@ -381,7 +412,7 @@ def fs_supports_commit(fstype):
     return (fstype or "").lower() in COMMIT_OK_FS
 
 
-# ─── PipeWire helpers ───────────────────────────────────────────────────────
+# ─── PipeWire ───────────────────────────────────────────────────────────────
 def pipewire_active():
     try:
         r = subprocess.run(["pgrep", "-x", "pipewire"],
@@ -408,7 +439,7 @@ def pipewire_active():
     return False
 
 
-# ─── NMI watchdog helpers ───────────────────────────────────────────────────
+# ─── NMI watchdog ───────────────────────────────────────────────────────────
 def nmi_watchdog_active():
     try:
         with open("/proc/sys/kernel/nmi_watchdog", "r") as f:
@@ -431,7 +462,7 @@ def nmi_watchdog_in_grub():
     return False
 
 
-# ─── ZFS helpers ────────────────────────────────────────────────────────────
+# ─── ZFS ────────────────────────────────────────────────────────────────────
 ZFS_UNITS = [
     "zfs-import-cache.service",
     "zfs-load-module.service",
@@ -447,9 +478,8 @@ ZFS_UNITS = [
 def zfs_packages_installed():
     for pkg in ("zfsutils-linux", "zfs-zed"):
         try:
-            r = subprocess.run(
-                ["dpkg-query", "-W", "-f=${Status}", pkg],
-                capture_output=True, text=True, timeout=5)
+            r = subprocess.run(["dpkg-query", "-W", "-f=${Status}", pkg],
+                               capture_output=True, text=True, timeout=5)
             if r.returncode == 0 and "install ok installed" in r.stdout:
                 return True
         except Exception:
@@ -512,31 +542,8 @@ def zfs_units_unmasked():
     return True
 
 
-def apt_daily_units_masked():
-    units = [
-        "apt-daily.timer",
-        "apt-daily-upgrade.timer",
-        "unattended-upgrades.service",
-    ]
-    found_any = False
-    for unit in units:
-        try:
-            r = subprocess.run(["systemctl", "is-enabled", unit],
-                               capture_output=True, text=True, timeout=5)
-            state = r.stdout.strip()
-            if state in ("", "not-found"):
-                continue
-            found_any = True
-            if state != "masked":
-                return False
-        except Exception:
-            continue
-    return found_any
-
-
-# ─── I/O scheduler helpers ──────────────────────────────────────────────────
+# ─── I/O scheduler ──────────────────────────────────────────────────────────
 def get_block_devices():
-    """Возвращает список устройств (/dev/sda, /dev/nvme0n1, ...)."""
     devices = []
     try:
         for name in os.listdir("/sys/block"):
@@ -553,7 +560,6 @@ def get_block_devices():
 
 
 def io_scheduler_info(dev):
-    """Возвращает (текущий, [доступные]) для устройства или (None, [])."""
     base = os.path.basename(dev)
     sched_path = "/sys/block/%s/queue/scheduler" % base
     try:
@@ -568,7 +574,6 @@ def io_scheduler_info(dev):
 
 
 def is_rotational(dev):
-    """True для HDD, False для SSD."""
     base = os.path.basename(dev)
     path = "/sys/block/%s/queue/rotational" % base
     try:
@@ -583,17 +588,14 @@ def is_nvme(dev):
 
 
 def desired_scheduler(dev):
-    """Целевой планировщик для устройства: 'bfq' | 'none' | 'mq-deadline' | None."""
     if is_nvme(dev):
         return "none"
     if is_rotational(dev):
         return "bfq"
-    # SATA SSD: mq-deadline предпочтителен, иначе bfq
     return "mq-deadline"
 
 
 def any_io_scheduler_usable():
-    """True, если хотя бы на одном устройстве есть альтернативы."""
     for dev in get_block_devices():
         current, available = io_scheduler_info(dev)
         target = desired_scheduler(dev)
@@ -607,7 +609,17 @@ def any_io_scheduler_usable():
     return False
 
 
-# ─── /tmp tmpfs helpers ─────────────────────────────────────────────────────
+def current_io_schedulers_summary():
+    """Краткая строка 'sda=mq-deadline, nvme0n1=none' для статуса."""
+    parts = []
+    for dev in get_block_devices():
+        cur, _avail = io_scheduler_info(dev)
+        if cur:
+            parts.append("%s=%s" % (os.path.basename(dev), cur))
+    return ", ".join(parts)
+
+
+# ─── tmpfs /tmp ─────────────────────────────────────────────────────────────
 def tmpfs_tmp_mounted():
     try:
         with open("/proc/mounts", "r", encoding="utf-8", errors="replace") as f:
@@ -635,7 +647,76 @@ def fstab_has_tmp_tmpfs():
     return False
 
 
-# ─── Sudo manager ───────────────────────────────────────────────────────────
+# ─── пакеты приложений ──────────────────────────────────────────────────────
+def installed_packages_set():
+    """Один вызов dpkg-query -W, возвращает set установленных пакетов."""
+    try:
+        r = subprocess.run(["dpkg-query", "-W", "-f=${Package}\t${Status}\n"],
+                           capture_output=True, text=True, timeout=15)
+        installed = set()
+        for line in r.stdout.splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) == 2 and "install ok installed" in parts[1]:
+                installed.add(parts[0])
+        return installed
+    except Exception:
+        return set()
+
+
+def format_size(bytes_val):
+    try:
+        b = float(bytes_val)
+    except Exception:
+        return "?"
+    for unit in ("B", "KB", "MB", "GB"):
+        if b < 1024 or unit == "GB":
+            return "%.1f %s" % (b, unit)
+        b /= 1024.0
+    return "?"
+
+
+def estimate_packages_size(pkgs):
+    try:
+        r = subprocess.run(["dpkg-query", "-W", "-f=${Installed-Size}\n"] + pkgs,
+                           capture_output=True, text=True, timeout=5)
+        total_kb = 0
+        for line in r.stdout.splitlines():
+            try:
+                total_kb += int(line.strip())
+            except Exception:
+                pass
+        return format_size(total_kb * 1024)
+    except Exception:
+        return "?"
+
+
+def apt_dry_run_purge(pkgs):
+    """Возвращает (explicit, deps, system_hits). Через apt-get -s purge."""
+    try:
+        r = subprocess.run(["apt-get", "-s", "purge", "-y"] + list(pkgs),
+                           capture_output=True, text=True, timeout=30)
+        output = decode_bytes(r.stdout) + "\n" + decode_bytes(r.stderr)
+    except Exception:
+        return (list(pkgs), [], [])
+    removed = []
+    in_block = False
+    for line in output.splitlines():
+        if "The following packages will be REMOVED" in line \
+                or "Будут УДАЛЕНЫ" in line:
+            in_block = True
+            continue
+        if in_block:
+            if not line.strip():
+                break
+            for token in line.split():
+                token = token.strip().strip(",")
+                if token and not token.startswith("("):
+                    removed.append(token)
+    explicit = [p for p in pkgs if p in removed]
+    deps = [p for p in removed if p not in explicit]
+    system_hits = [p for p in removed
+                   if any(p.startswith(m) for m in SYSTEM_PACKAGE_MASKS)]
+    return (explicit, deps, system_hits)
 class SudoManager:
     def __init__(self):
         self.prompt_password = None
@@ -855,7 +936,7 @@ class SystemOps:
         self.commit_targets = []
         self.backup_dir = os.path.join(state.user_home, "system-tuneup-backups")
 
-    # ─── бэкапы ─────────────────────────────────────────────────────────
+    # ─── базовые файловые операции ──────────────────────────────────────
     def backup_file(self, path):
         if self.dry_run:
             return
@@ -1215,6 +1296,11 @@ class SystemOps:
         self.log("✓ iTCO_wdt blacklisted (needs reboot)", "success")
         return True
 
+    def rollback_itco_wdt(self, params=None):
+        self._rm("/etc/modprobe.d/nmi-watchdog.conf")
+        self.sudo_run(["modprobe", "-r", "iTCO_wdt"], ignore_error=True)
+        self.log("✓ iTCO_wdt blacklist removed", "success"); return True
+
     # ─── ZFS ────────────────────────────────────────────────────────────
     def apply_zfs_services(self, params=None):
         if self.dry_run:
@@ -1314,6 +1400,11 @@ class SystemOps:
             return True
         return False
 
+    def rollback_corectrl(self, params=None):
+        self._rm("/etc/polkit-1/rules.d/90-corectrl.rules")
+        self._rm("/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla")
+        self.log("✓ CoreCtrl rule removed", "success"); return True
+
     def apply_ppfeaturemask(self, params=None):
         return self.add_grub_params(["amdgpu.ppfeaturemask=0xffffffff"])
 
@@ -1340,7 +1431,6 @@ class SystemOps:
         return self.ensure_line("/etc/environment", "MESA_SHADER_CACHE_MAX_SIZE=4G",
                                 r"^\s*MESA_SHADER_CACHE_MAX_SIZE=.*")
 
-    # ─── PipeWire ───────────────────────────────────────────────────────
     def apply_pipewire(self, params=None):
         if not self.state.pipewire_active:
             self.log("PipeWire not active, skipping", "warning")
@@ -1366,7 +1456,6 @@ class SystemOps:
                           ignore_error=True)
         self.log("✓ PipeWire configured", "success"); return True
 
-    # ─── Сеть ───────────────────────────────────────────────────────────
     def apply_bbr(self, params=None):
         path = "/etc/sysctl.d/99-bbr.conf"
         content = "net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr\n"
@@ -1378,7 +1467,6 @@ class SystemOps:
         self.sudo_run(["sysctl", "-p", path], ignore_error=True)
         self.log("✓ TCP BBR enabled", "success"); return True
 
-    # ─── Память ─────────────────────────────────────────────────────────
     def apply_swap(self, params=None):
         params = params or {}
         if not self.state.has_swap:
@@ -1479,7 +1567,6 @@ class SystemOps:
             return True
         return False
 
-    # ─── vm.max_map_count ───────────────────────────────────────────────
     def apply_max_map_count(self, params=None):
         params = params or {}
         val = str(params.get("max_map_count_value", MAX_MAP_COUNT_DEFAULT)).strip()
@@ -1503,7 +1590,6 @@ class SystemOps:
         self.log("✓ vm.max_map_count back to 65530", "success")
         return True
 
-    # ─── vm.dirty_bytes ─────────────────────────────────────────────────
     def apply_dirty_bytes(self, params=None):
         params = params or {}
         dirty = str(params.get("dirty_bytes_value", DIRTY_BYTES_DEFAULT)).strip()
@@ -1535,7 +1621,6 @@ class SystemOps:
         self.log("✓ vm.dirty_bytes removed", "success")
         return True
 
-    # ─── /tmp tmpfs ─────────────────────────────────────────────────────
     def apply_tmpfs_tmp(self, params=None):
         params = params or {}
         size = str(params.get("tmpfs_size_value", "512M")).strip() or "512M"
@@ -1580,7 +1665,6 @@ class SystemOps:
         self.log("✓ /tmp tmpfs removed (reboot to apply)", "success")
         return True
 
-    # ─── ntsync, ntfs3 ──────────────────────────────────────────────────
     def apply_ntsync(self, params=None):
         if self.dry_run:
             self.log("[DRY RUN] ntsync modules-load", "warning"); return True
@@ -1615,6 +1699,20 @@ class SystemOps:
             return False
         self.log("blacklist ntfs3 not found", "warning"); return True
 
+    def rollback_ntfs3(self, params=None):
+        path = "/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"
+        content = self.read_file(path)
+        if not content:
+            self.log("File not found: %s" % path, "info"); return True
+        if re.search(r"^\s*blacklist\s+ntfs3\s*$", content, re.M):
+            self.log("ntfs3 already blocked", "info"); return True
+        new = re.sub(r"^\s*#\s*blacklist\s+ntfs3\s*$", "blacklist ntfs3",
+                     content, flags=re.M)
+        self.backup_file(path)
+        if self.write_file(path, new, backup=False):
+            self.log("✓ ntfs3 blocked again", "success"); return True
+        return False
+
     # ─── I/O scheduler ──────────────────────────────────────────────────
     def apply_io_scheduler(self, params=None):
         if self.dry_run:
@@ -1628,7 +1726,6 @@ class SystemOps:
                 continue
             target = desired_scheduler(dev)
             if not target or target not in available:
-                # Попробуем fallback для SATA SSD
                 if target == "mq-deadline" and "bfq" in available:
                     target = "bfq"
                 else:
@@ -1636,11 +1733,9 @@ class SystemOps:
                              % (dev, target, " ".join(available)), "info")
                     continue
             base = os.path.basename(dev)
-            key = base
-            if key in seen:
+            if base in seen:
                 continue
-            seen.add(key)
-            # Определяем подходящее правило по шаблону имени устройства
+            seen.add(base)
             if base.startswith("nvme"):
                 rule = ('ACTION=="add|change", KERNEL=="%s", '
                         'ATTR{queue/scheduler}="%s"' % (base, target))
@@ -1653,6 +1748,7 @@ class SystemOps:
                         'ATTR{queue/rotational}=="0", '
                         'ATTR{queue/scheduler}="%s"' % (base, target))
             rules.append(rule)
+            self.log("  %s → %s" % (base, target), "info")
         if not rules:
             self.log("No usable devices for io scheduler rule", "warning")
             return False
@@ -2091,6 +2187,11 @@ class SystemOps:
                       err_msg="Cannot enable timer")
         return True
 
+    def rollback_autoupdate(self, params=None):
+        ok = self.apply_autoupdate({"update_schedule": "Отключено"})
+        self._unmask_apt_daily()
+        return ok
+
     # ─── rollback: базовые ──────────────────────────────────────────────
     def _rm(self, path):
         if self.dry_run:
@@ -2138,16 +2239,6 @@ class SystemOps:
 
     def rollback_nmi_watchdog(self, params=None):
         return self._remove_grub_params(["nmi_watchdog=0"])
-
-    def rollback_itco_wdt(self, params=None):
-        self._rm("/etc/modprobe.d/nmi-watchdog.conf")
-        self.sudo_run(["modprobe", "-r", "iTCO_wdt"], ignore_error=True)
-        self.log("✓ iTCO_wdt blacklist removed", "success"); return True
-
-    def rollback_corectrl(self, params=None):
-        self._rm("/etc/polkit-1/rules.d/90-corectrl.rules")
-        self._rm("/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla")
-        self.log("✓ CoreCtrl rule removed", "success"); return True
 
     def rollback_ppfeaturemask(self, params=None):
         return self._remove_grub_params(["amdgpu.ppfeaturemask=0xffffffff"])
@@ -2213,20 +2304,6 @@ class SystemOps:
         self._rm("/etc/modules-load.d/ntsync.conf")
         self.log("✓ ntsync removed", "success"); return True
 
-    def rollback_ntfs3(self, params=None):
-        path = "/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"
-        content = self.read_file(path)
-        if not content:
-            self.log("File not found: %s" % path, "info"); return True
-        if re.search(r"^\s*blacklist\s+ntfs3\s*$", content, re.M):
-            self.log("ntfs3 already blocked", "info"); return True
-        new = re.sub(r"^\s*#\s*blacklist\s+ntfs3\s*$", "blacklist ntfs3",
-                     content, flags=re.M)
-        self.backup_file(path)
-        if self.write_file(path, new, backup=False):
-            self.log("✓ ntfs3 blocked again", "success"); return True
-        return False
-
     def rollback_aliases(self, params=None):
         bashrc = os.path.join(self.state.user_home, ".bashrc")
         content = self.read_file(bashrc)
@@ -2249,11 +2326,18 @@ class SystemOps:
             self.log("✓ commands removed from .bashrc", "success"); return True
         return False
 
-    def rollback_autoupdate(self, params=None):
-        ok = self.apply_autoupdate({"update_schedule": "Отключено"})
-        self._unmask_apt_daily()
-        return ok
-# ─── Длинные справки по твикам ───────────────────────────────────────────
+    # ─── удаление приложений ────────────────────────────────────────────
+    def apps_purge(self, pkgs):
+        """Выполняет purge выбранных пакетов + autoremove. Возвращает (ok, freed_str)."""
+        if self.dry_run:
+            self.log("[DRY RUN] apt purge " + " ".join(pkgs), "warning")
+            return True, "?"
+        freed = estimate_packages_size(pkgs)
+        if not self.sudo_run(["apt-get", "purge", "-y"] + list(pkgs),
+                             err_msg="apt purge failed"):
+            return False, "?"
+        self.sudo_run(["apt-get", "autoremove", "-y"], ignore_error=True)
+        return True, freed
 OPTIONS_HELP = {
     "journald": {
         "ru": "Журнал systemd — это запись всех событий системы: запуск служб, ошибки, подключения устройств. Обычно он хранится на диске и со временем разрастается до сотен мегабайт.\n\nЭта опция переносит журнал в оперативную память и ограничивает его 50 мегабайтами. Диск перестаёт получать постоянные записи, а значит, меньше изнашивается. Особенно полезно на SSD и на домашнем ПК, где журнал почти никто не читает.\n\nНе включайте, если вы привыкли разбирать старые проблемы по логам: после перезагрузки журнал в памяти исчезнет. Если вам нужны долгосрочные записи — оставьте как есть.\n\nОпция применяется сразу, перезагрузка не нужна.",
@@ -2272,8 +2356,8 @@ OPTIONS_HELP = {
         "en": "The NMI watchdog is a kernel debugging facility for detecting hangs. It periodically sends special signals to the CPU (non-maskable interrupts) to check that the system is still alive.\n\nOn a home PC such debugging is unnecessary. And the periodic interrupts, even rare ones, cause micro-stutters in games and latency-sensitive tasks. Disabling them removes those pauses.\n\nDo not disable it if you specifically debug kernel hangs and need that data.\n\nThe nmi_watchdog=0 parameter is added to GRUB, so changes take effect after a reboot.\n\nIMPORTANT: on some systems (especially with an Intel chipset) the iTCO_wdt module re-enables the watchdog after boot. Check with: cat /proc/sys/kernel/nmi_watchdog. If it shows 1, use the extra tweak «iTCO_wdt blacklist».",
     },
     "itco_wdt": {
-        "ru": "Этот твик — дополнение к «nmi_watchdog=0 (GRUB)». На многих системах с Intel-чипсетом после загрузки ядра модуль iTCO_wdt снова включает NMI watchdog, даже если вы передали параметр nmi_watchdog=0. В итоге /proc/sys/kernel/nmi_watchdog снова становится 1, и микро-фризы возвращаются.\n\nРешение — заблокировать модуль iTCO_wdt, чтобы он вообще не загружался. В файле /etc/modprobe.d/nmi-watchdog.conf прописываются строки blacklist и install ... /bin/false.\n\nТвик становится активным только если одновременно выполнены три условия: Intel-чипсет, модуль iTCO_wdt поддерживается ядром и NMI watchdog всё ещё активен (nmi_watchdog=0 уже в GRUB, но /proc/sys/kernel/nmi_watchdog показывает 1).\n\nВАЖНО: NMI watchdog помогает диагностировать аппаратные зависания (например, сбои процессора или памяти). Отключая его, вы теряете часть возможностей диагностики. Если у вас нет конкретной проблемы с микро-фризами или нестабильностью, этот твик может быть не оправдан.\n\nЕсли и этот твик не помог (watchdog всё ещё 1), значит его включает другой модуль — например, intel_oc_wdt или sp5100_tco. Проверить: lsmod | grep -i wdt. В таком случае нужно вручную добавить их в чёрный список или использовать параметр nowatchdog в GRUB.\n\nПроверить состояние после перезагрузки: cat /proc/sys/kernel/nmi_watchdog — должно быть 0.",
-        "en": "This tweak complements «nmi_watchdog=0 (GRUB)». On many systems with an Intel chipset, the iTCO_wdt module re-enables the NMI watchdog after the kernel is loaded — even if you passed nmi_watchdog=0.\n\nThe fix is to block the iTCO_wdt module entirely. In /etc/modprobe.d/nmi-watchdog.conf lines blacklist and install ... /bin/false are written.\n\nThe tweak becomes active only when three conditions are met at once: Intel chipset, iTCO_wdt module supported by the kernel, and NMI watchdog still active (nmi_watchdog=0 already in GRUB but /proc/sys/kernel/nmi_watchdog shows 1).\n\nIMPORTANT: the NMI watchdog helps diagnose hardware hangs (e.g. CPU or memory failures). By disabling it, you lose some diagnostic capability. If you do not have a specific problem with micro-stutters or instability, this tweak may not be justified.\n\nIf even this tweak does not help (watchdog is still 1), another module enables it — for example intel_oc_wdt or sp5100_tco. Check: lsmod | grep -i wdt. In that case add them to the blacklist manually or use the nowatchdog kernel parameter.\n\nCheck the state after reboot: cat /proc/sys/kernel/nmi_watchdog — should be 0.",
+        "ru": "Этот твик — дополнение к «nmi_watchdog=0 (GRUB)». На многих системах с Intel-чипсетом после загрузки ядра модуль iTCO_wdt снова включает NMI watchdog, даже если вы передали параметр nmi_watchdog=0. В итоге /proc/sys/kernel/nmi_watchdog снова становится 1, и микро-фризы возвращаются.\n\nРешение — заблокировать модуль iTCO_wdt, чтобы он вообще не загружался. В файле /etc/modprobe.d/nmi-watchdog.conf прописываются строки blacklist и install ... /bin/false.\n\nТвик становится активным только если одновременно выполнены три условия: Intel-чипсет, модуль iTCO_wdt поддерживается ядром и NMI watchdog всё ещё активен (nmi_watchdog=0 уже в GRUB, но /proc/sys/kernel/nmi_watchdog показывает 1).\n\nВАЖНО: NMI watchdog помогает диагностировать аппаратные зависания (например, сбои процессора или памяти). Отключая его, вы теряете часть возможностей диагностики. Если у вас нет конкретной проблемы с микро-фризами или нестабильностью, этот твик может быть не оправдан.\n\nЕсли и этот твик не помог (watchdog всё ещё 1), значит его включает другой модуль — например, intel_oc_wdt или sp5100_tco. Проверить: lsmod | grep -i wdt.\n\nПроверить состояние после перезагрузки: cat /proc/sys/kernel/nmi_watchdog — должно быть 0.",
+        "en": "This tweak complements «nmi_watchdog=0 (GRUB)». On many systems with an Intel chipset, the iTCO_wdt module re-enables the NMI watchdog after the kernel is loaded — even if you passed nmi_watchdog=0.\n\nThe fix is to block the iTCO_wdt module entirely. In /etc/modprobe.d/nmi-watchdog.conf lines blacklist and install ... /bin/false are written.\n\nThe tweak becomes active only when three conditions are met at once: Intel chipset, iTCO_wdt module supported by the kernel, and NMI watchdog still active (nmi_watchdog=0 already in GRUB but /proc/sys/kernel/nmi_watchdog shows 1).\n\nIMPORTANT: the NMI watchdog helps diagnose hardware hangs. By disabling it, you lose some diagnostic capability. If you do not have a specific problem with micro-stutters or instability, this tweak may not be justified.\n\nIf even this tweak does not help (watchdog is still 1), another module enables it — for example intel_oc_wdt or sp5100_tco. Check: lsmod | grep -i wdt.\n\nCheck the state after reboot: cat /proc/sys/kernel/nmi_watchdog — should be 0.",
     },
     "zfs_services": {
         "ru": "ZFS — это файловая система и менеджер томов, который используется на серверах и NAS. На домашнем ПК его обычно не ставят, но некоторые дистрибутивы (Ubuntu, Mint) устанавливают пакеты ZFS «на всякий случай».\n\nПроблема в том, что даже если ZFS не используется, его службы всё равно запускаются при загрузке: zfs-import.target, zfs-mount.service, zfs-share.service, zfs-volume-wait.service. Они тянут за собой systemd-udev-settle.service, который может занимать несколько секунд.\n\nЭтот твик делает две вещи. Первое — при отметке останавливает и маскирует ZFS-службы: они больше не запускаются, но пакеты остаются на месте. Это обратимо. Второе — кнопка «Удалить пакеты (осторожно)» полностью удаляет zfsutils-linux и zfs-zed. Эта операция необратима: вернуть можно только вручную командой sudo apt install zfsutils-linux.\n\nВАЖНО: перед удалением пакетов твикер проверяет, используется ли ZFS на самом деле. Если найден хотя бы один пул или монтирование, кнопка удаления становится серой.\n\nЕсли вы не знаете, используете ли ZFS — отметьте только первый вариант (отключение служб). Он безопасен и даёт заметную часть выигрыша.",
@@ -2364,8 +2448,8 @@ OPTIONS_HELP = {
         "en": "EXPERIMENTAL TWEAK. Do not enable by default.\n\nThe Linux kernel does not write data to disk immediately. It accumulates it in RAM (“dirty pages”), then flushes to disk in batches. The settings are percentages of RAM (vm.dirty_ratio and vm.dirty_background_ratio). On machines with a lot of RAM this works poorly: a percentage of 32 GB is gigabytes of dirty data, and flushing causes freezes.\n\nByte versions (vm.dirty_bytes and vm.dirty_background_bytes) let you set a fixed amount. For example, flush at 128 MB and hard-limit at 256 MB. This reduces peak latency during writes.\n\nWARNING: the effect strongly depends on workload, disk type, RAM and file system. On fast systems the reduction may lower throughput. Enable only if you have freezes during heavy writes and are ready to experiment.\n\nDefault values: 128 MB background, 256 MB hard limit.",
     },
     "tmpfs_tmp": {
-        "ru": "РАСШИРЕННЫЙ ТВИК. Включайте только если понимаете риск.\n\nМонтирует /tmp как tmpfs — то есть в оперативной памяти. Файлы в /tmp исчезают при перезагрузке, диск не получает постоянные записи.\n\nВНИМАНИЕ — несколько важных предупреждений:\n\n1. ГИБЕРНАЦИЯ. tmpfs использует оперативную память и его страницы могут быть выгружены в swap. Если swap-раздел мал или отсутствует, гибернация может сломаться. У некоторых пользователей система перестаёт выходить из ждущего режима. При этом suspend и гибернация — разные режимы; обычный suspend обычно не требует записи всего содержимого RAM на диск.\n\n2. ПОТЕРЯ ДАННЫХ. Всё, что лежит в /tmp, исчезнет после выключения или перезагрузки. Отдельные приложения могут рассчитывать на сохранение временных файлов в течение работы системы — после перезагрузки они их не найдут.\n\n3. РАЗМЕР. Параметр size=512M — это верхний предел, а не резервирование. Если приложение попытается записать больше, оно упадёт с ошибкой «no space left on device». Для рендеринга видео, работы с большими архивами и компиляции может не хватить.\n\n4. НЕ ПУТАТЬ С /var/tmp. /var/tmp по определению предназначен для данных, сохраняющихся между перезагрузками. Его в tmpfs монтировать нельзя.\n\nПеред изменением /etc/fstab рекомендуется проверить конфигурацию через mount -a, иначе можно получить ошибку монтирования при загрузке.\n\nОткат: удалить строку из /etc/fstab, перезагрузиться. На работающей системе нельзя бездумно выполнять umount /tmp — его могут использовать десятки процессов.",
-        "en": "ADVANCED TWEAK. Enable only if you understand the risk.\n\nMounts /tmp as tmpfs — that is, in RAM. Files in /tmp disappear on reboot, the disk gets no constant writes.\n\nWARNING — several important notes:\n\n1. HIBERNATION. tmpfs uses RAM and its pages can be swapped out. If the swap partition is small or absent, hibernation may break. Some users find the system no longer resumes from sleep. Note that suspend and hibernation are different modes; ordinary suspend usually does not require writing all of RAM to disk.\n\n2. DATA LOSS. Everything in /tmp disappears after shutdown or reboot. Some applications may expect temporary files to survive within a session — after reboot they will not find them.\n\n3. SIZE. The size=512M parameter is an upper limit, not a reservation. If an application tries to write more, it crashes with «no space left on device». For video rendering, large archives and compilation it may be insufficient.\n\n4. DO NOT CONFUSE WITH /var/tmp. /var/tmp is by definition for data that survives reboots. Mounting it in tmpfs is wrong.\n\nBefore editing /etc/fstab it is recommended to verify the configuration with mount -a, otherwise you may get a mount error at boot.\n\nRollback: remove the line from /etc/fstab, reboot. On a running system you cannot safely run umount /tmp — dozens of processes may use it.",
+        "ru": "РАСШИРЕННЫЙ ТВИК. Включайте только если понимаете риск.\n\nМонтирует /tmp как tmpfs — то есть в оперативной памяти. Файлы в /tmp исчезают при перезагрузке, диск не получает постоянные записи.\n\nВНИМАНИЕ — несколько важных предупреждений:\n\n1. ГИБЕРНАЦИЯ. tmpfs использует оперативную память и его страницы могут быть выгружены в swap. Если swap-раздел мал или отсутствует, гибернация может сломаться. У некоторых пользователей система перестаёт выходить из ждущего режима.\n\n2. ПОТЕРЯ ДАННЫХ. Всё, что лежит в /tmp, исчезнет после выключения или перезагрузки. Отдельные приложения могут рассчитывать на сохранение временных файлов в течение работы системы — после перезагрузки они их не найдут.\n\n3. РАЗМЕР. Параметр size=512M — это верхний предел, а не резервирование. Если приложение попытается записать больше, оно упадёт с ошибкой «no space left on device».\n\n4. НЕ ПУТАТЬ С /var/tmp. /var/tmp по определению предназначен для данных, сохраняющихся между перезагрузками. Его в tmpfs монтировать нельзя.\n\nОткат: удалить строку из /etc/fstab, перезагрузиться.",
+        "en": "ADVANCED TWEAK. Enable only if you understand the risk.\n\nMounts /tmp as tmpfs — that is, in RAM. Files in /tmp disappear on reboot, the disk gets no constant writes.\n\nWARNING — several important notes:\n\n1. HIBERNATION. tmpfs uses RAM and its pages can be swapped out. If the swap partition is small or absent, hibernation may break. Some users find the system no longer resumes from sleep.\n\n2. DATA LOSS. Everything in /tmp disappears after shutdown or reboot. Some applications may expect temporary files to survive within a session — after reboot they will not find them.\n\n3. SIZE. The size=512M parameter is an upper limit, not a reservation. If an application tries to write more, it crashes with «no space left on device».\n\n4. DO NOT CONFUSE WITH /var/tmp. /var/tmp is by definition for data that survives reboots. Mounting it in tmpfs is wrong.\n\nRollback: remove the line from /etc/fstab, reboot.",
     },
     "aliases": {
         "ru": "В Linux много рутинных действий в терминале: обновление пакетов, очистка кэша, проверка места на диске. Каждый раз набирать длинные команды утомительно. Чтобы этого избежать, в файл .bashrc добавляют короткие функции-обёртки.\n\nЭта опция добавляет в ваш .bashrc готовый набор команд: upd (обновить списки пакетов), upgr (обновить пакеты), update_all (полное обновление системы, включая Flatpak), clean (очистка ненужных пакетов), space (показать свободное место), mem (очистить кэш памяти), fix (починить сломанные пакеты) и другие.\n\nНе включайте, если вы не пользуетесь терминалом.\n\nОпция применяется сразу, но команды появятся только в новых терминалах. Откройте новый терминал или выполните «source ~/.bashrc».",
@@ -2459,6 +2543,7 @@ SERVICES_HELP = {
 STR = {
     "ru": {
         "tab_tune": "Тюнинг", "tab_serv": "Службы", "tab_stat": "Статус",
+        "tab_apps": "Приложения",
         "btn_apply": "Применить выбранное", "btn_rollback": "Откатить выбранное",
         "btn_selall": "Выбрать все", "btn_selnone": "Снять выделение",
         "btn_about": "О твикере", "btn_close": "Закрыть",
@@ -2536,7 +2621,7 @@ STR = {
         "about_author": "Автор", "about_author_name": "Дмитрий Свистунов",
         "about_ver": "Версия",
         "about_license": "Лицензия",
-        "about_disclaimer": "ОТКАЗ ОТ ОТВЕТСТВЕННОСТИ\n\nТвикер изменяет системные файлы (GRUB, fstab, sysctl, systemd-юниты, конфиги приложений). Все изменения вы делаете на свой страх и риск. Перед применением твиков убедитесь, что у вас есть резервная копия важных данных и загрузочная флешка на случай проблем с загрузкой. Автор не несёт ответственности за потерю данных, отказ загрузки или нестабильную работу системы. Бэкапы изменённых файлов сохраняются в ~/system-tuneup-backups/.",
+        "about_disclaimer": "ОТКАЗ ОТ ОТВЕТСТВЕННОСТИ\n\nТвикер изменяет системные файлы (GRUB, fstab, sysctl, systemd-юниты, конфиги приложений) и может удалять пакеты. Все изменения вы делаете на свой страх и риск. Перед применением твиков убедитесь, что у вас есть резервная копия важных данных и загрузочная флешка на случай проблем с загрузкой. Автор не несёт ответственности за потерю данных, отказ загрузки или нестабильную работу системы. Бэкапы изменённых файлов сохраняются в ~/system-tuneup-backups/.",
         "zfs_remove_title": "Удаление пакетов ZFS",
         "zfs_remove_body": "Твикер проверил: ZFS-пулов нет, ZFS-монтирований нет, записей в /etc/fstab и /etc/crypttab нет.\n\nЕсли вы устанавливали ZFS вручную и используете его вне стандартных мест — удаление приведёт к потере доступа к данным.\n\nОтмена возможна только через «sudo apt install zfsutils-linux», при этом прежнее состояние служб не восстановится.\n\nУдалить пакеты zfsutils-linux и zfs-zed?",
         "disabled_reason": "недоступно: %s",
@@ -2560,9 +2645,32 @@ STR = {
         "reason_mint_only": "только для Linux Mint",
         "reason_pipewire_inactive": "PipeWire не используется",
         "reason_no_io_sched": "нет доступных альтернативных планировщиков",
+        "apps_search": "Поиск:",
+        "apps_refresh": "Обновить",
+        "apps_clear": "Снять выделение",
+        "apps_remove": "Удалить выбранное",
+        "apps_empty": "Из списка ничего не установлено.",
+        "apps_unsupported": "Функция недоступна в этом дистрибутиве.\nУдаление пакетов поддерживается только в системах на базе Debian, Ubuntu или Linux Mint.",
+        "apps_no_list": "Список пакетов не найден (tweaker_packages.py отсутствует).",
+        "apps_selected": "Выбрано: %d пакетов, ~%s",
+        "apps_selected_none": "Ничего не выбрано",
+        "apps_confirm_title": "Удаление пакетов",
+        "apps_confirm_will_remove": "Будут удалены:",
+        "apps_confirm_deps": "Вместе с ними apt хочет удалить (зависимости):",
+        "apps_confirm_size": "Будет освобождено примерно:",
+        "apps_confirm_system_warn": "ВНИМАНИЕ: apt также хочет удалить системные пакеты:",
+        "apps_confirm_system_hint": "Это может сломать систему. Продолжайте, только если понимаете, что делаете.",
+        "apps_confirm_no_rollback": "Отмена невозможна. Конфиги будут стёрты.",
+        "apps_confirm_btn": "Удалить",
+        "apps_cancel": "Отмена",
+        "apps_done": "Удалено %d пакетов, освобождено ~%s",
+        "apps_failed": "Не удалось удалить пакеты.",
+        "apps_installed": "установлен",
+        "apps_careful_mark": "⚠",
     },
     "en": {
         "tab_tune": "Tuning", "tab_serv": "Services", "tab_stat": "Status",
+        "tab_apps": "Applications",
         "btn_apply": "Apply selected", "btn_rollback": "Rollback selected",
         "btn_selall": "Select all", "btn_selnone": "Deselect",
         "btn_about": "About", "btn_close": "Close",
@@ -2640,7 +2748,7 @@ STR = {
         "about_author": "Author", "about_author_name": "Dmitry Svistunov",
         "about_ver": "Version",
         "about_license": "License",
-        "about_disclaimer": "DISCLAIMER\n\nThis tweaker modifies system files (GRUB, fstab, sysctl, systemd units, application configs). You use it at your own risk. Before applying tweaks, make sure you have a backup of important data and a bootable USB stick in case of boot problems. The author is not responsible for data loss, boot failure or system instability. Backups of modified files are stored in ~/system-tuneup-backups/.",
+        "about_disclaimer": "DISCLAIMER\n\nThis tweaker modifies system files (GRUB, fstab, sysctl, systemd units, application configs) and can remove packages. You use it at your own risk. Before applying tweaks, make sure you have a backup of important data and a bootable USB stick in case of boot problems. The author is not responsible for data loss, boot failure or system instability. Backups of modified files are stored in ~/system-tuneup-backups/.",
         "zfs_remove_title": "ZFS package removal",
         "zfs_remove_body": "The tweaker checked: no ZFS pools, no ZFS mounts, no entries in /etc/fstab or /etc/crypttab.\n\nIf you installed ZFS manually and use it outside standard locations, removal will cut off access to your data.\n\nRollback is possible only via «sudo apt install zfsutils-linux», and the previous state of the services will not be restored.\n\nRemove packages zfsutils-linux and zfs-zed?",
         "disabled_reason": "unavailable: %s",
@@ -2664,12 +2772,31 @@ STR = {
         "reason_mint_only": "Linux Mint only",
         "reason_pipewire_inactive": "PipeWire is not in use",
         "reason_no_io_sched": "no alternative schedulers available",
+        "apps_search": "Search:",
+        "apps_refresh": "Refresh",
+        "apps_clear": "Deselect",
+        "apps_remove": "Remove selected",
+        "apps_empty": "Nothing from the list is installed.",
+        "apps_unsupported": "This feature is not available on this distribution.\nPackage removal is only supported on Debian, Ubuntu or Linux Mint based systems.",
+        "apps_no_list": "Package list not found (tweaker_packages.py is missing).",
+        "apps_selected": "Selected: %d packages, ~%s",
+        "apps_selected_none": "Nothing selected",
+        "apps_confirm_title": "Package removal",
+        "apps_confirm_will_remove": "The following will be removed:",
+        "apps_confirm_deps": "Together with them apt wants to remove (dependencies):",
+        "apps_confirm_size": "About to free:",
+        "apps_confirm_system_warn": "WARNING: apt also wants to remove system packages:",
+        "apps_confirm_system_hint": "This may break the system. Continue only if you understand what you are doing.",
+        "apps_confirm_no_rollback": "This cannot be undone. Configs will be deleted.",
+        "apps_confirm_btn": "Remove",
+        "apps_cancel": "Cancel",
+        "apps_done": "Removed %d packages, freed ~%s",
+        "apps_failed": "Failed to remove packages.",
+        "apps_installed": "installed",
+        "apps_careful_mark": "⚠",
     },
 }
-# ═══════════════════════════════════════════════════════════════════════════
 class MainWindow:
-    """Главное окно приложения на Tkinter."""
-
     def __init__(self, root):
         self.root = root
         self.scale = compute_ui_scale(root)
@@ -2697,11 +2824,17 @@ class MainWindow:
         self.msg_queue = queue.Queue()
         self._ram_cache = None
         self._zfs_button = None
-        # значения для новых твиков
         self.max_map_count_value = StringVar(value=MAX_MAP_COUNT_DEFAULT)
         self.dirty_bytes_value = StringVar(value=DIRTY_BYTES_DEFAULT)
         self.dirty_bg_bytes_value = StringVar(value=DIRTY_BG_BYTES_DEFAULT)
         self.tmpfs_size_value = StringVar(value="512M")
+        # Apps tab
+        self.apps_checked = set()
+        self._installed_packages = None
+        self._apps_filter = StringVar(value="")
+        self._apps_canvas = None
+        self._apps_inner = None
+        self._apps_status = None
         self.sudo = SudoManager()
         self.sudo.prompt_password = self._ask_password
         self.sudo.show_error = lambda m: messagebox.showwarning(
@@ -2767,6 +2900,7 @@ class MainWindow:
         self.root.after(300, lambda: self._run_bg(self._services_work))
         self.root.after(600, lambda: self._run_bg(self._applied_work))
         self.root.after(900, lambda: self._run_bg(self._status_work))
+        self.root.after(1200, lambda: self._run_bg(self._apps_load_installed))
 
     # ─── i18n и цвета ───────────────────────────────────────────────────
     def t(self, k):
@@ -3034,6 +3168,14 @@ class MainWindow:
             self._render_services_rows()
         elif kind == "status_text":
             self._render_status(item[1])
+        elif kind == "apps_redraw":
+            self._apps_render()
+        elif kind == "apps_confirm":
+            body, pkgs = item[1]
+            self._apps_show_confirm(body, pkgs)
+        elif kind == "toast":
+            # просто пишем в лог, без всплывающих
+            self.log(item[1][0], item[1][1])
 
     def _append_log(self, msg, tag):
         if self._terminal is None:
@@ -3113,12 +3255,15 @@ class MainWindow:
         self._tab_tune = Frame(self._notebook, bg=c["bg"])
         self._tab_serv = Frame(self._notebook, bg=c["bg"])
         self._tab_stat = Frame(self._notebook, bg=c["bg"])
+        self._tab_apps = Frame(self._notebook, bg=c["bg"])
         self._notebook.add(self._tab_tune, text="  %s  " % self.t("tab_tune"))
         self._notebook.add(self._tab_serv, text="  %s  " % self.t("tab_serv"))
         self._notebook.add(self._tab_stat, text="  %s  " % self.t("tab_stat"))
+        self._notebook.add(self._tab_apps, text="  %s  " % self.t("tab_apps"))
         self._build_tune_tab()
         self._build_serv_tab()
         self._build_stat_tab()
+        self._build_apps_tab()
         term_lbl = Label(self.root, text=self.t("lbl_terminal"),
                          bg=c["bg"], fg=c["gray"], anchor=W,
                          font=("DejaVu Sans", 9))
@@ -3335,6 +3480,11 @@ class MainWindow:
                                  font=("DejaVu Sans", 9),
                                  style="TCombobox")
             combo.pack(side=LEFT)
+            cur = getattr(self.state, "current_max_map_count", "")
+            if cur:
+                Label(top, text="%s %s" % (self.t("thp_cur").split(":")[0] + ":", cur),
+                      bg=c["panel"], fg=c["gray"],
+                      font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(6, 0))
         elif key == "dirty_bytes":
             Label(top, text=self.t("dirty_label"),
                   bg=c["panel"], fg=c["gray"],
@@ -3364,6 +3514,10 @@ class MainWindow:
                 e.configure(state=DISABLED, disabledbackground=c["bg"],
                             disabledforeground=c["gray"])
             e.pack(side=LEFT)
+            if tmpfs_tmp_mounted() or fstab_has_tmp_tmpfs():
+                Label(top, text="(/tmp уже в tmpfs)",
+                      bg=c["panel"], fg=c["green"],
+                      font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(6, 0))
         elif key == "autoupdate":
             Label(top, text=self.t("lbl_schedule"), bg=c["panel"], fg=c["gray"],
                   font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(10, 2))
@@ -3460,8 +3614,7 @@ class MainWindow:
                                   bg=c["panel"], fg=c["fg"],
                                   activebackground=c["panel"],
                                   activeforeground=c["fg"],
-                                  selectcolor=c["panel"],
-                                  anchor=W)
+                                  selectcolor=c["panel"], anchor=W)
                 chk.pack(side=LEFT)
                 dev_short = os.path.basename(m["dev"])
                 mp_str = ", ".join(m["mps"])
@@ -3472,9 +3625,8 @@ class MainWindow:
                 Label(row, text=label_text, bg=c["panel"], fg=c["fg"],
                       anchor=W, font=mono).pack(side=LEFT, padx=(4, 0))
                 badge = Label(row, text="…", bg=c["panel"], fg=c["gray"],
-                              font=("DejaVu Sans", 9, "bold"),
-                              width=16, anchor=E)
-                badge.pack(side=RIGHT, padx=(8, 0))
+                              font=("DejaVu Sans", 9, "bold"), anchor=W)
+                badge.pack(side=LEFT, padx=(12, 0))
                 self.mount_badges[key] = badge
         if self.commit_state:
             top = Frame(self._tune_inner, bg=c["panel"])
@@ -3524,8 +3676,7 @@ class MainWindow:
                                       bg=c["panel"], fg=c["fg"],
                                       activebackground=c["panel"],
                                       activeforeground=c["fg"],
-                                      selectcolor=c["panel"],
-                                      anchor=W)
+                                      selectcolor=c["panel"], anchor=W)
                     chk.pack(side=LEFT)
                     dev_short = os.path.basename(m["dev"])
                     mp_str = mp
@@ -3536,9 +3687,8 @@ class MainWindow:
                     Label(row, text=label_text, bg=c["panel"], fg=c["fg"],
                           anchor=W, font=mono).pack(side=LEFT, padx=(4, 0))
                     badge = Label(row, text="…", bg=c["panel"], fg=c["gray"],
-                                  font=("DejaVu Sans", 9, "bold"),
-                                  width=16, anchor=E)
-                    badge.pack(side=RIGHT, padx=(8, 0))
+                                  font=("DejaVu Sans", 9, "bold"), anchor=W)
+                    badge.pack(side=LEFT, padx=(12, 0))
                     self.commit_badges[mp] = badge
         else:
             top = Frame(self._tune_inner, bg=c["panel"])
@@ -3576,15 +3726,13 @@ class MainWindow:
                                   bg=c["panel"], fg=c["fg"],
                                   activebackground=c["panel"],
                                   activeforeground=c["fg"],
-                                  selectcolor=c["panel"],
-                                  anchor=W)
+                                  selectcolor=c["panel"], anchor=W)
                 chk.pack(side=LEFT)
                 Label(row, text=lib, bg=c["panel"], fg=c["fg"],
                       anchor=W, font=mono).pack(side=LEFT, padx=(4, 0))
                 badge = Label(row, text="…", bg=c["panel"], fg=c["gray"],
-                              font=("DejaVu Sans", 9, "bold"),
-                              width=16, anchor=E)
-                badge.pack(side=RIGHT, padx=(8, 0))
+                              font=("DejaVu Sans", 9, "bold"), anchor=W)
+                badge.pack(side=LEFT, padx=(12, 0))
                 self.steam_badges[lib] = badge
 
     def _build_serv_tab(self):
@@ -3718,6 +3866,221 @@ class MainWindow:
         self._status_view.tag_configure("warn", foreground=c["yellow"])
         self._status_view.tag_configure("muted", foreground=c["gray"])
 
+    # ─── вкладка «Приложения» ───────────────────────────────────────────
+    def _build_apps_tab(self):
+        c = self.colors()
+        wrap = Frame(self._tab_apps, bg=c["bg"])
+        wrap.pack(fill=BOTH, expand=True, padx=6, pady=6)
+        bar = Frame(wrap, bg=c["bg"])
+        bar.pack(fill=X, pady=(0, 4))
+        Button(bar, text=self.t("apps_remove"),
+               command=self._apps_remove_selected,
+               bg=c["orange"], fg=c["accent_fg"],
+               activebackground=c["red"], activeforeground=c["accent_fg"],
+               relief=FLAT, padx=14, pady=6,
+               font=("DejaVu Sans", 10, "bold")).pack(side=LEFT, padx=2)
+        Button(bar, text=self.t("apps_clear"),
+               command=self._apps_clear,
+               bg=c["button"], fg=c["fg"],
+               activebackground=c["button_hover"],
+               relief=FLAT, padx=12, pady=6).pack(side=LEFT, padx=2)
+        Button(bar, text=self.t("apps_refresh"),
+               command=self._apps_refresh,
+               bg=c["button"], fg=c["fg"],
+               activebackground=c["button_hover"],
+               relief=FLAT, padx=12, pady=6).pack(side=LEFT, padx=2)
+        search_bar = Frame(wrap, bg=c["bg"])
+        search_bar.pack(fill=X, pady=(0, 6))
+        Label(search_bar, text=self.t("apps_search"),
+              bg=c["bg"], fg=c["gray"],
+              font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(2, 4))
+        Entry(search_bar, textvariable=self._apps_filter,
+              bg=c["entry"], fg=c["fg"], relief=FLAT,
+              insertbackground=c["fg"],
+              font=("DejaVu Sans", 9)).pack(side=LEFT, fill=X, expand=True)
+        self._apps_filter.trace_add("write", lambda *a: self._apps_render())
+        scroll_frame = Frame(wrap, bg=c["bg"])
+        scroll_frame.pack(fill=BOTH, expand=True)
+        self._apps_canvas = Canvas(scroll_frame, bg=c["panel"],
+                                   highlightthickness=0, bd=0)
+        vsb = ttk.Scrollbar(scroll_frame, orient=VERTICAL,
+                            command=self._apps_canvas.yview)
+        self._apps_canvas.configure(yscrollcommand=vsb.set)
+        self._apps_canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        vsb.pack(side=RIGHT, fill=Y)
+        self._apps_inner = Frame(self._apps_canvas, bg=c["panel"])
+        win_id = self._apps_canvas.create_window((0, 0), window=self._apps_inner,
+                                                 anchor=NW)
+        self._apps_inner.bind(
+            "<Configure>",
+            lambda e: self._apps_canvas.configure(
+                scrollregion=self._apps_canvas.bbox("all")))
+        self._apps_canvas.bind(
+            "<Configure>",
+            lambda e: self._apps_canvas.itemconfig(win_id, width=e.width))
+        self._apps_status = Label(wrap, text=self.t("apps_selected_none"),
+                                  bg=c["bg"], fg=c["gray"], anchor=W,
+                                  font=("DejaVu Sans", 9))
+        self._apps_status.pack(fill=X, pady=(4, 0))
+        self._apps_render()
+
+    def _apps_load_installed(self):
+        self._installed_packages = installed_packages_set()
+        self.msg_queue.put(("apps_redraw", None))
+
+    def _apps_refresh(self):
+        self._installed_packages = None
+        self._run_bg(self._apps_load_installed)
+
+    def _apps_render(self):
+        if self._apps_inner is None:
+            return
+        c = self.colors()
+        for child in self._apps_inner.winfo_children():
+            child.destroy()
+        if not is_debian_based():
+            Label(self._apps_inner, text=self.t("apps_unsupported"),
+                  bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
+                  font=("DejaVu Sans", 10)).pack(fill=X, padx=24, pady=20)
+            self._apps_update_status()
+            return
+        if not REMOVABLE_PACKAGES:
+            Label(self._apps_inner, text=self.t("apps_no_list"),
+                  bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
+                  font=("DejaVu Sans", 10)).pack(fill=X, padx=24, pady=20)
+            self._apps_update_status()
+            return
+        if self._installed_packages is None:
+            Label(self._apps_inner, text="…",
+                  bg=c["panel"], fg=c["gray"], anchor=W,
+                  font=("DejaVu Sans", 10)).pack(fill=X, padx=24, pady=20)
+            return
+        query = self._apps_filter.get().strip().lower()
+        cats = {}
+        for pkg, meta in REMOVABLE_PACKAGES.items():
+            if pkg not in self._installed_packages:
+                continue
+            lang_meta = meta.get(self.lang) or meta.get("en")
+            if not lang_meta:
+                continue
+            label, desc, cat, careful = lang_meta
+            if query and query not in pkg.lower() and query not in label.lower() \
+                    and query not in desc.lower():
+                continue
+            cats.setdefault(cat, []).append((pkg, label, desc, careful))
+        if not cats:
+            Label(self._apps_inner, text=self.t("apps_empty"),
+                  bg=c["panel"], fg=c["gray"], anchor=W,
+                  font=("DejaVu Sans", 10)).pack(fill=X, padx=24, pady=20)
+            self._apps_update_status()
+            return
+        order = APPS_CATEGORY_ORDER[self.lang]
+        seq = [x for x in order if x in cats] + \
+              [x for x in sorted(cats) if x not in order]
+        for cat in seq:
+            Label(self._apps_inner, text="─── %s ───" % cat,
+                  bg=c["panel"], fg=c["yellow"], anchor=W,
+                  font=("DejaVu Sans", 10, "bold")).pack(
+                fill=X, padx=8, pady=(10, 4))
+            for pkg, label, desc, careful in sorted(cats[cat],
+                                                     key=lambda x: x[1].lower()):
+                row = Frame(self._apps_inner, bg=c["panel"])
+                row.pack(fill=X, padx=24, pady=1)
+                var = BooleanVar(value=pkg in self.apps_checked)
+                chk = Checkbutton(row, text="", variable=var,
+                                  bg=c["panel"], fg=c["fg"],
+                                  activebackground=c["panel"],
+                                  activeforeground=c["fg"],
+                                  selectcolor=c["panel"], anchor=W,
+                                  command=lambda p=pkg, v=var: self._apps_toggle(p, v))
+                chk.pack(side=LEFT)
+                text = "%-28s %s" % (pkg, desc)
+                if careful:
+                    text += "  " + self.t("apps_careful_mark")
+                Label(row, text=text, bg=c["panel"], fg=c["fg"],
+                      anchor=W, font=("DejaVu Sans Mono", 9)).pack(side=LEFT, padx=(4, 0))
+        self._bind_wheel_tree(self._apps_inner)
+        self._apps_update_status()
+
+    def _apps_toggle(self, pkg, var):
+        if var.get():
+            self.apps_checked.add(pkg)
+        else:
+            self.apps_checked.discard(pkg)
+        self._apps_update_status()
+
+    def _apps_clear(self):
+        self.apps_checked.clear()
+        self._apps_render()
+
+    def _apps_update_status(self):
+        if self._apps_status is None:
+            return
+        if not self.apps_checked:
+            self._apps_status.config(text=self.t("apps_selected_none"))
+            return
+        count = len(self.apps_checked)
+        size = estimate_packages_size(list(self.apps_checked))
+        self._apps_status.config(text=self.t("apps_selected") % (count, size))
+
+    def _apps_remove_selected(self):
+        if self.is_running:
+            messagebox.showinfo(APP_NAME, self.t("msg_run"), parent=self.root)
+            return
+        pkgs = sorted(self.apps_checked)
+        if not pkgs:
+            messagebox.showinfo(APP_NAME, self.t("msg_noopt"), parent=self.root)
+            return
+        if not self.sudo.ensure():
+            self.log("sudo failed", "error")
+            return
+        self._run_bg(self._apps_dry_run_work, pkgs)
+
+    def _apps_dry_run_work(self, pkgs):
+        explicit, deps, system_hits = apt_dry_run_purge(pkgs)
+        size = estimate_packages_size(explicit + deps)
+        lines = [self.t("apps_confirm_will_remove"),
+                 "  " + ", ".join(explicit)]
+        if deps:
+            lines += ["", self.t("apps_confirm_deps"), "  " + ", ".join(deps)]
+        lines += ["", "%s %s" % (self.t("apps_confirm_size"), size)]
+        if system_hits:
+            lines += ["",
+                      self.t("apps_confirm_system_warn"),
+                      "  " + ", ".join(system_hits),
+                      self.t("apps_confirm_system_hint")]
+        lines += ["", self.t("apps_confirm_no_rollback")]
+        body = "\n".join(lines)
+        self.msg_queue.put(("apps_confirm", (body, pkgs)))
+
+    def _apps_show_confirm(self, body, pkgs):
+        answer = messagebox.askyesno(self.t("apps_confirm_title"), body,
+                                     parent=self.root, default=messagebox.NO)
+        if not answer:
+            return
+        self.is_running = True
+        self._set_running(True)
+        self.msg_queue.put(("progress", 0))
+        self.msg_queue.put(("statusbar", self.t("running")))
+        self._run_bg(self._apps_remove_work, pkgs)
+
+    def _apps_remove_work(self, pkgs):
+        ops = SystemOps(self.sudo, self.state, self.log, self._dry_var.get())
+        try:
+            ok, freed = ops.apps_purge(pkgs)
+            if ok:
+                self.log(self.t("apps_done") % (len(pkgs), freed), "success")
+                self.apps_checked.clear()
+            else:
+                self.log(self.t("apps_failed"), "error")
+        except Exception as e:
+            self.log("Critical error: %s" % e, "error")
+        finally:
+            self.is_running = False
+            self._set_running(False)
+            self._installed_packages = installed_packages_set()
+            self.msg_queue.put(("apps_redraw", None))
+
     # ─── прокрутка колесом ──────────────────────────────────────────────
     def _bind_global_wheel(self):
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
@@ -3730,23 +4093,24 @@ class MainWindow:
             self._bind_wheel_tree(child)
 
     def _on_wheel(self, event):
-        if self._tune_canvas is None:
-            return
         try:
             widget = self.root.winfo_containing(event.x_root, event.y_root)
         except Exception:
             widget = None
+        target_canvas = None
         p = widget
-        in_tune = False
         while p is not None:
+            if p is self._apps_canvas:
+                target_canvas = self._apps_canvas
+                break
             if p is self._tune_canvas or p is self._tune_inner:
-                in_tune = True
+                target_canvas = self._tune_canvas
                 break
             try:
                 p = p.master
             except Exception:
                 p = None
-        if not in_tune:
+        if target_canvas is None:
             return
         d = 0
         num = getattr(event, "num", None)
@@ -3757,7 +4121,7 @@ class MainWindow:
         elif getattr(event, "delta", 0):
             d = -1 if event.delta > 0 else 1
         if d:
-            self._tune_canvas.yview_scroll(d, "units")
+            target_canvas.yview_scroll(d, "units")
 
     # ─── копирование ────────────────────────────────────────────────────
     def _make_copyable(self, w):
@@ -3879,17 +4243,19 @@ class MainWindow:
             try:
                 cls = w.winfo_class()
                 inside_tune = self._inside(w, self._tune_inner)
+                inside_apps = self._inside(w, self._apps_inner)
+                inside_any_panel = inside_tune or inside_apps
                 if cls == "Frame" and w is not self.root:
-                    w.configure(bg=c["panel"] if inside_tune else c["bg"])
+                    w.configure(bg=c["panel"] if inside_any_panel else c["bg"])
                 elif cls == "Label":
-                    w.configure(bg=c["panel"] if inside_tune else c["bg"])
+                    w.configure(bg=c["panel"] if inside_any_panel else c["bg"])
                 elif cls == "Checkbutton":
                     w.configure(
-                        bg=c["panel"] if inside_tune else c["bg"],
+                        bg=c["panel"] if inside_any_panel else c["bg"],
                         fg=c["fg"],
-                        activebackground=c["panel"] if inside_tune else c["bg"],
+                        activebackground=c["panel"] if inside_any_panel else c["bg"],
                         activeforeground=c["fg"],
-                        selectcolor=c["panel"] if inside_tune else c["bg"],
+                        selectcolor=c["panel"] if inside_any_panel else c["bg"],
                     )
                 elif cls == "Button":
                     if w is getattr(self, "_apply_btn", None):
@@ -3921,7 +4287,7 @@ class MainWindow:
                     w.configure(bg=c["terminal"], fg=c["terminal_fg"],
                                 insertbackground=c["fg"])
                 elif cls == "Canvas":
-                    w.configure(bg=c["bg"])
+                    w.configure(bg=c["panel"] if inside_any_panel else c["bg"])
             except Exception:
                 pass
             for child in w.winfo_children():
@@ -4003,6 +4369,9 @@ class MainWindow:
         self._lang_btn = None
         self._about_btn = None
         self._zfs_button = None
+        self._apps_status = None
+        self._apps_canvas = None
+        self._apps_inner = None
         self.opts_state = {k: BooleanVar(value=saved_opts.get(k, False))
                            for k in OPTIONS_META}
         for k in list(self.mount_state.keys()):
@@ -4016,6 +4385,11 @@ class MainWindow:
         self.state.pipewire_active = pipewire_active()
         self.state.nmi_watchdog_active = nmi_watchdog_active()
         self.state.nmi_watchdog_in_grub = nmi_watchdog_in_grub()
+        try:
+            with open("/proc/sys/vm/max_map_count", "r") as f:
+                self.state.current_max_map_count = f.read().strip()
+        except Exception:
+            pass
         self._compute_disabled_reasons()
         self._build_ui()
         self._apply_theme()
@@ -4024,6 +4398,7 @@ class MainWindow:
         self._run_bg(self._services_work)
         self._run_bg(self._applied_work)
         self._run_bg(self._status_work)
+        self._run_bg(self._apps_load_installed)
 
     # ─── детект применённых настроек ────────────────────────────────────
     def _applied_work(self):
@@ -4770,7 +5145,7 @@ class MainWindow:
             rows.append(("  %-30s %-13s %s" % (name, word, desc), tag))
         rows.append(("", "info"))
         rows.append((self.t("st_kernel"), "head"))
-        rows.append(("  %-32s %-11s %-36s %14s"
+        rows.append(("  %-32s %-11s %-30s %-14s"
                      % (self.t("kn_hdr_param"), self.t("kn_hdr_val"),
                         self.t("kn_hdr_desc"), self.t("kn_hdr_status")),
                      "muted"))
@@ -4784,20 +5159,20 @@ class MainWindow:
              A.get("bbr", False)),
         ]
         for p, dsc, ok in kern:
-            if len(dsc) > 36:
-                dsc = dsc[:33] + "…"
+            if len(dsc) > 30:
+                dsc = dsc[:27] + "…"
             status = self.t("yes") if ok else self.t("no")
-            line = "  %-32s %-11s %-36s %14s" % (p, vals[p], dsc, status)
+            line = "  %-32s %-11s %-30s %-14s" % (p, vals[p], dsc, status)
             rows.append((line, "ok" if ok else "no"))
         raw = self._thp_current() or "n/a"
         thp_val = self.t("thp_val_" + raw) if raw in ("always", "madvise", "never") else raw
         disp = "%s (%s)" % (raw, thp_val) if thp_val != raw else raw
         thp_ok = A.get("thp", False)
         thp_dsc = self.t("kern_thp")
-        if len(thp_dsc) > 36:
-            thp_dsc = thp_dsc[:33] + "…"
+        if len(thp_dsc) > 30:
+            thp_dsc = thp_dsc[:27] + "…"
         thp_status = self.t("yes") if thp_ok else self.t("no")
-        rows.append(("  %-32s %-11s %-36s %14s"
+        rows.append(("  %-32s %-11s %-30s %-14s"
                      % ("transparent_hugepage", disp, thp_dsc, thp_status),
                      "ok" if thp_ok else "no"))
         timer = ops.service_enabled("biweekly-upgrade.timer")
