@@ -390,7 +390,10 @@ def find_steam_libraries(user_home):
         for p in glob.glob(pat):
             if os.path.isdir(p) and p not in libs:
                 libs.append(p)
-    return libsdef lines_in(content):
+    return libs
+
+
+def lines_in(content):
     return content.splitlines()
 
 
