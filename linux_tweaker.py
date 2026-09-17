@@ -37,9 +37,6 @@ LOCK_FILE = os.path.join(os.path.expanduser("~"), ".linux-tweaker.lock")
 MAX_MAP_COUNT_VALUES = ["65530", "524288", "1048576", "2147483642"]
 MAX_MAP_COUNT_DEFAULT = "1048576"
 
-DIRTY_BYTES_DEFAULT = "268435456"
-DIRTY_BG_BYTES_DEFAULT = "134217728"
-
 APPS_CATEGORY_ORDER = {
     "ru": ["Офис", "Графика", "Интернет", "Мультимедиа",
            "Игры", "Утилиты", "Прочее"],
@@ -189,9 +186,6 @@ OPTIONS_META = {
     "commit": {
         "ru": ("commit=NN (fstab, только ext3/ext4)", "Реже сбрасывает служебную информацию на диск, меньше износа SSD. Работает ТОЛЬКО на ext3/ext4 — для NTFS, FAT32, exFAT, btrfs, xfs параметр не поддерживается и приведёт к ошибке монтирования (система может упасть в emergency-режим). ВНИМАНИЕ: при сбое питания возможна потеря последних записей. Нужна перезагрузка.", "Диски и файловые системы", "реже запись на ext4"),
         "en": ("commit=NN (fstab, ext3/ext4 only)", "Flushes disk metadata less often, less SSD wear. Works ONLY on ext3/ext4 — NTFS, FAT32, exFAT, btrfs, xfs do not support it and will fail to mount (system may drop into emergency mode). WARNING: power loss may lose last writes. Needs reboot.", "Drives & filesystems", "less ext4 disk writing")},
-    "dirty_bytes": {
-        "ru": ("vm.dirty_bytes (эксперимент)", "Ограничивает объём «грязных» страниц в памяти в байтах вместо процентов. Может убрать фризы при интенсивной записи, но эффект сильно зависит от нагрузки. Не включайте без необходимости.", "Память и swap", "экспериментальная настройка записи"),
-        "en": ("vm.dirty_bytes (experimental)", "Limits the amount of dirty pages in RAM in bytes instead of percentages. May remove freezes during heavy writes, but the effect depends on workload. Do not enable without need.", "Memory & swap", "experimental write tuning")},
     "tmpfs_tmp": {
         "ru": ("/tmp в ОЗУ (tmpfs, эксперимент)", "Монтирует /tmp в оперативной памяти. Меньше записей на диск, но данные исчезают при перезагрузке. НЕ включайте при гибернации, работе с большими временными файлами и малом объёме ОЗУ.", "Диски и файловые системы", "/tmp в оперативной памяти"),
         "en": ("/tmp in RAM (tmpfs, experimental)", "Mounts /tmp in RAM. Fewer disk writes, but data disappears on reboot. Do NOT enable with hibernation, large temp files or low RAM.", "Drives & filesystems", "/tmp in RAM")},
@@ -259,7 +253,6 @@ OPTION_FILES = {
     "max_map_count": ["/etc/sysctl.d/99-gaming-mmap.conf"],
     "ntfs3": ["/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"],
     "commit": ["/etc/fstab"],
-    "dirty_bytes": ["/etc/sysctl.d/99-dirty-bytes.conf"],
     "tmpfs_tmp": ["/etc/fstab"],
     "aliases": ["{home}/.bashrc"],
     "autoupdate": ["/etc/systemd/system/biweekly-upgrade.timer",
@@ -397,10 +390,7 @@ def find_steam_libraries(user_home):
         for p in glob.glob(pat):
             if os.path.isdir(p) and p not in libs:
                 libs.append(p)
-    return libs
-
-
-def lines_in(content):
+    return libsdef lines_in(content):
     return content.splitlines()
 
 
@@ -1507,37 +1497,6 @@ class SystemOps:
         self.log("✓ vm.max_map_count back to 65530", "success")
         return True
 
-    def apply_dirty_bytes(self, params=None):
-        params = params or {}
-        dirty = str(params.get("dirty_bytes_value", DIRTY_BYTES_DEFAULT)).strip()
-        bg = str(params.get("dirty_bg_bytes_value", DIRTY_BG_BYTES_DEFAULT)).strip()
-        try:
-            iv_dirty = int(dirty)
-            iv_bg = int(bg)
-        except ValueError:
-            self.log("Bad dirty_bytes values", "error")
-            return False
-        if iv_dirty <= 0 or iv_bg <= 0 or iv_bg >= iv_dirty:
-            self.log("dirty_bytes must be > dirty_background_bytes > 0", "error")
-            return False
-        if self.dry_run:
-            self.log("[DRY RUN] vm.dirty_bytes=%d bg=%d" % (iv_dirty, iv_bg),
-                     "warning")
-            return True
-        path = "/etc/sysctl.d/99-dirty-bytes.conf"
-        content = ("vm.dirty_background_bytes=%d\nvm.dirty_bytes=%d\n"
-                   % (iv_bg, iv_dirty))
-        if not self.write_file(path, content, chmod="644", mkdir=True):
-            return False
-        self.sudo_run(["sysctl", "-p", path], ignore_error=True)
-        self.log("✓ vm.dirty_bytes=%d, background=%d" % (iv_dirty, iv_bg), "success")
-        return True
-
-    def rollback_dirty_bytes(self, params=None):
-        self._rm("/etc/sysctl.d/99-dirty-bytes.conf")
-        self.log("✓ vm.dirty_bytes removed", "success")
-        return True
-
     def apply_tmpfs_tmp(self, params=None):
         params = params or {}
         size = str(params.get("tmpfs_size_value", "512M")).strip() or "512M"
@@ -1785,6 +1744,25 @@ class SystemOps:
         if ok:
             self.log("✓ fstab commit removed", "success")
         return ok
+
+    def _commit_value_for(self, mp):
+        """Возвращает строку 'commit=NN' для точки монтирования или ''."""
+        try:
+            with open("/etc/fstab", "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception:
+            return ""
+        for line in lines_in(content):
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            f2 = s.split()
+            if len(f2) >= 4 and f2[1] == mp:
+                for opt in f2[3].split(","):
+                    if opt.startswith("commit="):
+                        return opt
+                return ""
+        return ""
 
     def _commit_applied(self):
         try:
@@ -2301,10 +2279,6 @@ OPTIONS_HELP = {
         "ru": "Параметр commit=NN заставляет файловую систему реже сбрасывать накопленные данные на диск: не раз в 5 секунд по умолчанию, а раз в NN секунд. Это уменьшает число операций записи и продлевает жизнь SSD.\n\nВАЖНО: параметр понимают ТОЛЬКО файловые системы семейства ext — ext2, ext3, ext4. Для NTFS, FAT32, exFAT, btrfs, xfs, f2fs и других он неизвестен: в лучшем случае ядро его проигнорирует, в худшем — откажется монтировать раздел, и система при загрузке упадёт в emergency-режим.\n\nПоэтому в этом твикере для commit= показываются только разделы с ext2/ext3/ext4.\n\nВНИМАНИЕ: чем больше интервал, тем выше риск потерять последние записанные данные при внезапном отключении питания. Разумные значения — 60–120 секунд.\n\nИзменения записываются в /etc/fstab и вступают в силу после перезагрузки.",
         "en": "The commit=NN parameter makes the file system flush accumulated data to disk less often: not every 5 seconds by default, but every NN seconds. This reduces write operations and extends SSD life.\n\nIMPORTANT: only file systems of the ext family support this — ext2, ext3, ext4. For NTFS, FAT32, exFAT, btrfs, xfs, f2fs and others the parameter is unknown: at best the kernel silently ignores it, at worst it refuses to mount the partition and the system drops into emergency mode on boot.\n\nTherefore in this tweaker only partitions with ext2/ext3/ext4 are shown for commit=.\n\nWARNING: the longer the interval, the higher the risk of losing the latest written data on sudden power loss. Reasonable values are 60–120 seconds.\n\nChanges are written to /etc/fstab and take effect after a reboot.",
     },
-    "dirty_bytes": {
-        "ru": "ЭКСПЕРИМЕНТАЛЬНЫЙ ТВИК. По умолчанию не включайте.\n\nЯдро Linux не пишет данные на диск сразу. Оно накапливает их в оперативной памяти (это называется «грязные страницы»), а потом сбрасывает на диск пачками. Настройки задаются в процентах от объёма памяти (vm.dirty_ratio и vm.dirty_background_ratio). На машинах с большим объёмом RAM это плохо работает: процент от 32 ГБ — это гигабайты «грязных» данных, сброс которых вызывает фризы.\n\nБайтовые версии (vm.dirty_bytes и vm.dirty_background_bytes) позволяют задать фиксированный объём. Например, сбрасывать при накоплении 128 МБ и жёстко ограничивать на 256 МБ. Это уменьшает пиковые задержки при записи.\n\nВНИМАНИЕ: эффект сильно зависит от нагрузки, типа диска, объёма RAM и файловой системы. На быстрых системах уменьшение может снизить пропускную способность. Включайте только если у вас есть фризы при интенсивной записи и вы готовы экспериментировать.\n\nЗначения по умолчанию: 128 МБ фоновой записи, 256 МБ жёсткого лимита.",
-        "en": "EXPERIMENTAL TWEAK. Do not enable by default.\n\nThe Linux kernel does not write data to disk immediately. It accumulates it in RAM (“dirty pages”), then flushes to disk in batches. The settings are percentages of RAM (vm.dirty_ratio and vm.dirty_background_ratio). On machines with a lot of RAM this works poorly: a percentage of 32 GB is gigabytes of dirty data, and flushing causes freezes.\n\nByte versions (vm.dirty_bytes and vm.dirty_background_bytes) let you set a fixed amount. For example, flush at 128 MB and hard-limit at 256 MB. This reduces peak latency during writes.\n\nWARNING: the effect strongly depends on workload, disk type, RAM and file system. On fast systems the reduction may lower throughput. Enable only if you have freezes during heavy writes and are ready to experiment.\n\nDefault values: 128 MB background, 256 MB hard limit.",
-    },
     "tmpfs_tmp": {
         "ru": "РАСШИРЕННЫЙ ТВИК. Включайте только если понимаете риск.\n\nМонтирует /tmp как tmpfs — то есть в оперативной памяти. Файлы в /tmp исчезают при перезагрузке, диск не получает постоянные записи.\n\nВНИМАНИЕ — несколько важных предупреждений:\n\n1. ГИБЕРНАЦИЯ. tmpfs использует оперативную память и его страницы могут быть выгружены в swap. Если swap-раздел мал или отсутствует, гибернация может сломаться. У некоторых пользователей система перестаёт выходить из ждущего режима.\n\n2. ПОТЕРЯ ДАННЫХ. Всё, что лежит в /tmp, исчезнет после выключения или перезагрузки. Отдельные приложения могут рассчитывать на сохранение временных файлов в течение работы системы — после перезагрузки они их не найдут.\n\n3. РАЗМЕР. Параметр size=512M — это верхний предел, а не резервирование. Если приложение попытается записать больше, оно упадёт с ошибкой «no space left on device».\n\n4. НЕ ПУТАТЬ С /var/tmp. /var/tmp по определению предназначен для данных, сохраняющихся между перезагрузками. Его в tmpfs монтировать нельзя.\n\nОткат: удалить строку из /etc/fstab, перезагрузиться.",
         "en": "ADVANCED TWEAK. Enable only if you understand the risk.\n\nMounts /tmp as tmpfs — that is, in RAM. Files in /tmp disappear on reboot, the disk gets no constant writes.\n\nWARNING — several important notes:\n\n1. HIBERNATION. tmpfs uses RAM and its pages can be swapped out. If the swap partition is small or absent, hibernation may break. Some users find the system no longer resumes from sleep.\n\n2. DATA LOSS. Everything in /tmp disappears after shutdown or reboot. Some applications may expect temporary files to survive within a session — after reboot they will not find them.\n\n3. SIZE. The size=512M parameter is an upper limit, not a reservation. If an application tries to write more, it crashes with «no space left on device».\n\n4. DO NOT CONFUSE WITH /var/tmp. /var/tmp is by definition for data that survives reboots. Mounting it in tmpfs is wrong.\n\nRollback: remove the line from /etc/fstab, reboot.",
@@ -2456,13 +2430,12 @@ STR = {
         "commit_none": "Подходящих разделов (ext2/ext3/ext4) не найдено. Твик commit= недоступен.",
         "commit_value_label": "Значение (сек):",
         "mmc_value_label": "Значение:",
-        "dirty_label": "dirty_bytes:",
-        "dirty_bg_label": "background:",
-        "dirty_now_percent": "сейчас: проценты (dirty_ratio=%s, bg_ratio=%s)",
         "tmpfs_size_label": "Размер:",
         "cur_value": "сейчас: %s",
         "nmi_now_active": "сейчас: активен",
         "nmi_now_off": "сейчас: отключён",
+        "commit_not_set": "—",
+        "commit_default_hint": "по умолчанию: 5 сек",
         "kern_sw": "как часто данные уходят в подкачку",
         "kern_vfs": "сколько кэша файлов держится в памяти",
         "kern_numa": "перемещение памяти между ядрами",
@@ -2586,13 +2559,12 @@ STR = {
         "commit_none": "No suitable partitions (ext2/ext3/ext4) found. commit= tweak is unavailable.",
         "commit_value_label": "Value (sec):",
         "mmc_value_label": "Value:",
-        "dirty_label": "dirty_bytes:",
-        "dirty_bg_label": "background:",
-        "dirty_now_percent": "now: percent (dirty_ratio=%s, bg_ratio=%s)",
         "tmpfs_size_label": "Size:",
         "cur_value": "now: %s",
         "nmi_now_active": "now: active",
         "nmi_now_off": "now: off",
+        "commit_not_set": "—",
+        "commit_default_hint": "default: 5 sec",
         "kern_sw": "how often data goes to swap",
         "kern_vfs": "how much file cache stays in RAM",
         "kern_numa": "memory moving between CPU cores",
@@ -2670,6 +2642,7 @@ class MainWindow:
         self.applied = {}
         self.mount_applied = {}
         self.steam_applied = {}
+        self.commit_applied_per_mp = {}
         self.badges = {}
         self.mount_badges = {}
         self.steam_badges = {}
@@ -2689,8 +2662,6 @@ class MainWindow:
         self._ram_cache = None
         self._zfs_button = None
         self.max_map_count_value = StringVar(value=MAX_MAP_COUNT_DEFAULT)
-        self.dirty_bytes_value = StringVar(value=DIRTY_BYTES_DEFAULT)
-        self.dirty_bg_bytes_value = StringVar(value=DIRTY_BG_BYTES_DEFAULT)
         self.tmpfs_size_value = StringVar(value="512M")
         # Apps tab
         self.apps_checked = set()
@@ -2955,6 +2926,98 @@ class MainWindow:
                 return f.read().strip()
         except Exception:
             return default
+
+    def _swap_current(self):
+        return self._read_sysctl_int("/proc/sys/vm/swappiness", "?")
+
+    def _numa_current(self):
+        v = self._read_sysctl_int("/proc/sys/kernel/numa_balancing", "")
+        if v == "1":
+            return "включено" if self.lang == "ru" else "enabled"
+        if v == "0":
+            return "отключено" if self.lang == "ru" else "disabled"
+        return v or "?"
+
+    def _bbr_current(self):
+        return self._read_sysctl_int(
+            "/proc/sys/net/ipv4/tcp_congestion_control", "?")
+
+    def _journald_current(self):
+        try:
+            if os.path.isdir("/var/log/journal"):
+                return ("диск (persistent)" if self.lang == "ru"
+                        else "disk (persistent)")
+        except Exception:
+            pass
+        try:
+            if os.path.isdir("/run/log/journal"):
+                return "ОЗУ (volatile)" if self.lang == "ru" else "RAM (volatile)"
+        except Exception:
+            pass
+        return "auto"
+
+    def _zswap_current(self):
+        try:
+            with open("/sys/module/zswap/parameters/enabled", "r") as f:
+                en = f.read().strip().lower()
+        except Exception:
+            return "?"
+        if en not in ("y", "1", "yes", "true"):
+            return "отключён" if self.lang == "ru" else "off"
+        comp = "?"
+        try:
+            with open("/sys/module/zswap/parameters/compressor", "r") as f:
+                comp = f.read().strip()
+        except Exception:
+            pass
+        return ("включён (%s)" % comp) if self.lang == "ru" else ("on (%s)" % comp)
+
+    def _zram_current(self):
+        try:
+            with open("/proc/swaps", "r", encoding="utf-8",
+                      errors="replace") as f:
+                for line in f:
+                    if "zram" in line:
+                        return "активен" if self.lang == "ru" else "active"
+        except Exception:
+            pass
+        return "не активен" if self.lang == "ru" else "inactive"
+
+    def _ntfs3_current(self):
+        path = "/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"
+        if not os.path.exists(path):
+            return "?"
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception:
+            return "?"
+        if re.search(r"^\s*blacklist\s+ntfs3\s*$", content, re.M):
+            return "заблокирован" if self.lang == "ru" else "blocked"
+        return "разблокирован" if self.lang == "ru" else "unblocked"
+
+    def _ntsync_current(self):
+        return (("доступен" if self.lang == "ru" else "available")
+                if getattr(self.state, "ntsync", False)
+                else ("недоступен" if self.lang == "ru" else "unavailable"))
+
+    def _commit_is_effective(self, value):
+        """True, если commit=NN даёт эффект (NN != 5)."""
+        if not value:
+            return False
+        m = re.match(r"commit=(\d+)$", value)
+        return bool(m) and m.group(1) != "5"
+
+    def _commit_value_for_ui(self, mp):
+        ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, True)
+        return ops._commit_value_for(mp)
+
+    def _detect_commit_per_mp(self, ops):
+        res = {}
+        for mp in self.commit_state:
+            val = ops._commit_value_for(mp)
+            res[mp] = self._commit_is_effective(val)
+        return res
 
     def _disk_info(self, path):
         try:
@@ -3352,37 +3415,6 @@ class MainWindow:
                 Label(top, text="%s %s" % (self.t("thp_cur").split(":")[0] + ":", cur),
                       bg=c["panel"], fg=c["gray"],
                       font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(6, 0))
-        elif key == "dirty_bytes":
-            Label(top, text=self.t("dirty_label"),
-                  bg=c["panel"], fg=c["gray"],
-                  font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(10, 2))
-            e1 = Entry(top, textvariable=self.dirty_bytes_value, width=10,
-                       bg=c["entry"], fg=c["fg"], relief=FLAT)
-            if disabled:
-                e1.configure(state=DISABLED, disabledbackground=c["bg"],
-                             disabledforeground=c["gray"])
-            e1.pack(side=LEFT)
-            Label(top, text=self.t("dirty_bg_label"),
-                  bg=c["panel"], fg=c["gray"],
-                  font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(8, 2))
-            e2 = Entry(top, textvariable=self.dirty_bg_bytes_value, width=10,
-                       bg=c["entry"], fg=c["fg"], relief=FLAT)
-            if disabled:
-                e2.configure(state=DISABLED, disabledbackground=c["bg"],
-                             disabledforeground=c["gray"])
-            e2.pack(side=LEFT)
-            cur_dirty = self._read_sysctl_int("/proc/sys/vm/dirty_bytes", "0")
-            cur_bg = self._read_sysctl_int("/proc/sys/vm/dirty_background_bytes", "0")
-            if cur_dirty not in ("", "0") or cur_bg not in ("", "0"):
-                dirty_str = "dirty_bytes=%s, bg=%s" % (
-                    cur_dirty or "0", cur_bg or "0")
-            else:
-                ratio = self._read_sysctl_int("/proc/sys/vm/dirty_ratio", "?")
-                bg_ratio = self._read_sysctl_int(
-                    "/proc/sys/vm/dirty_background_ratio", "?")
-                dirty_str = self.t("dirty_now_percent") % (ratio, bg_ratio)
-            Label(top, text=dirty_str, bg=c["panel"], fg=c["gray"],
-                  font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(8, 0))
         elif key == "tmpfs_tmp":
             Label(top, text=self.t("tmpfs_size_label"),
                   bg=c["panel"], fg=c["gray"],
@@ -3411,17 +3443,32 @@ class MainWindow:
                                     bg=c["panel"], fg=c["gray"],
                                     font=("DejaVu Sans", 8))
             self._sched_lbl.pack(side=LEFT, padx=(6, 0))
+        cur_label = None
         if key == "sysctl_cache":
-            cur_vfs = self._read_sysctl_int(
+            cur_label = self.t("cur_value") % self._read_sysctl_int(
                 "/proc/sys/vm/vfs_cache_pressure", "?")
-            Label(top, text=self.t("cur_value") % cur_vfs,
-                  bg=c["panel"], fg=c["gray"],
-                  font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(8, 0))
         elif key == "nmi_watchdog":
-            state_txt = (self.t("nmi_now_active")
+            cur_label = (self.t("nmi_now_active")
                          if getattr(self.state, "nmi_watchdog_active", False)
                          else self.t("nmi_now_off"))
-            Label(top, text=state_txt, bg=c["panel"], fg=c["gray"],
+        elif key == "swap":
+            cur_label = self.t("cur_value") % self._swap_current()
+        elif key == "sysctl_numa":
+            cur_label = self.t("cur_value") % self._numa_current()
+        elif key == "bbr":
+            cur_label = self.t("cur_value") % self._bbr_current()
+        elif key == "journald":
+            cur_label = self.t("cur_value") % self._journald_current()
+        elif key == "zswap":
+            cur_label = self.t("cur_value") % self._zswap_current()
+        elif key == "zram":
+            cur_label = self.t("cur_value") % self._zram_current()
+        elif key == "ntfs3":
+            cur_label = self.t("cur_value") % self._ntfs3_current()
+        elif key == "ntsync":
+            cur_label = self.t("cur_value") % self._ntsync_current()
+        if cur_label:
+            Label(top, text=cur_label, bg=c["panel"], fg=c["gray"],
                   font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(8, 0))
         badge = Label(top, text="…", bg=c["panel"], fg=c["gray"],
                       font=("DejaVu Sans", 9, "bold"))
@@ -3551,6 +3598,9 @@ class MainWindow:
             Entry(top2, textvariable=self.commit_value, width=8,
                   bg=c["entry"], fg=c["fg"], relief=FLAT,
                   insertbackground=c["fg"]).pack(side=LEFT)
+            Label(top2, text=self.t("commit_default_hint"),
+                  bg=c["panel"], fg=c["gray"],
+                  font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(8, 0))
             Label(self._tune_inner,
                   text=self.om("commit")[1],
                   bg=c["panel"], fg=c["gray"], anchor=W, justify=LEFT,
@@ -3571,10 +3621,12 @@ class MainWindow:
                     chk.pack(side=LEFT)
                     dev_short = os.path.basename(m["dev"])
                     mp_str = mp
-                    if len(mp_str) > 30:
-                        mp_str = mp_str[:27] + "…"
-                    label_text = "%-12s %-30s %-7s" % (
-                        dev_short, mp_str, m.get("fstype", ""))
+                    if len(mp_str) > 22:
+                        mp_str = mp_str[:19] + "…"
+                    cur_val = self._commit_value_for_ui(mp) or \
+                        self.t("commit_not_set")
+                    label_text = "%-10s %-22s %-6s %-12s" % (
+                        dev_short, mp_str, m.get("fstype", ""), cur_val)
                     Label(row, text=label_text, bg=c["panel"], fg=c["fg"],
                           anchor=W, font=mono).pack(side=LEFT, padx=(4, 0))
                     badge = Label(row, text="…", bg=c["panel"], fg=c["gray"],
@@ -4300,6 +4352,10 @@ class MainWindow:
             self.msg_queue.put(("mount_applied", self._detect_mount()))
             self.msg_queue.put(("steam_applied", self._detect_steam()))
             self.msg_queue.put(("schedule", self._schedule_text()))
+            ops2 = SystemOps(self.sudo, self.state,
+                             lambda m, t="normal": None, True)
+            self.commit_applied_per_mp = self._detect_commit_per_mp(ops2)
+            self._update_badges()
         except Exception:
             traceback.print_exc()
 
@@ -4386,7 +4442,6 @@ class MainWindow:
         mint = ops.read_file("/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf") or ""
         itco = ops.read_file("/etc/modprobe.d/nmi-watchdog.conf") or ""
         mmc = ops.read_file("/etc/sysctl.d/99-gaming-mmap.conf") or ""
-        dirty = ops.read_file("/etc/sysctl.d/99-dirty-bytes.conf") or ""
 
         def sv(p):
             try:
@@ -4432,7 +4487,6 @@ class MainWindow:
             "max_map_count": self._max_map_count_applied(mmc),
             "ntfs3": bool(re.search(r"^\s*#\s*blacklist\s+ntfs3\s*$", mint, re.M)),
             "commit": ops._commit_applied(),
-            "dirty_bytes": bool(dirty.strip()),
             "tmpfs_tmp": tmpfs_tmp_mounted() or fstab_has_tmp_tmpfs(),
             "aliases": "system-tuneup" in bashrc,
             "autoupdate": ops.service_enabled("biweekly-upgrade.timer") == "enabled",
@@ -4551,7 +4605,8 @@ class MainWindow:
         for k, lbl in self.commit_badges.items():
             if lbl is None or not lbl.winfo_exists():
                 continue
-            self._style_badge(lbl, self.applied.get("commit", False), c)
+            ok = self.commit_applied_per_mp.get(k, False)
+            self._style_badge(lbl, ok, c)
         if self._thp_lbl is not None and self._thp_lbl.winfo_exists():
             cur = self._thp_current() or "?"
             fmt = self.t("thp_cur")
@@ -4633,8 +4688,6 @@ class MainWindow:
                   "commit_value": self.commit_value.get(),
                   "thp_value": self.thp_value.get(),
                   "max_map_count_value": self.max_map_count_value.get(),
-                  "dirty_bytes_value": self.dirty_bytes_value.get(),
-                  "dirty_bg_bytes_value": self.dirty_bg_bytes_value.get(),
                   "tmpfs_size_value": self.tmpfs_size_value.get()}
         dry = self._dry_var.get()
         if ("autoupdate" in selected and not dry
@@ -5014,9 +5067,12 @@ class MainWindow:
             rows.append(("%-42s %-14s %s" % (label, mark, short),
                          "ok" if ok else "no"))
         for mp in self.commit_state:
-            ok = A.get("commit", False)
+            val = self._commit_value_for_ui(mp) or self.t("commit_not_set")
+            ok = self._commit_is_effective(
+                val if val != self.t("commit_not_set") else "")
             mark = self.t("yes") if ok else self.t("no")
-            rows.append(("%-42s %-14s %s" % (self.t("commit_title"), mark, mp),
+            rows.append(("%-42s %-14s %s %s"
+                         % (self.t("commit_title"), mark, mp, val),
                          "ok" if ok else "no"))
         for m in self.mount_items:
             ok = self.mount_applied.get(m["mps"][0], False)
@@ -5082,6 +5138,7 @@ class MainWindow:
         rows.append(("  %-32s %-11s %-30s %-14s"
                      % ("transparent_hugepage", disp, thp_dsc, thp_status),
                      "ok" if thp_ok else "no"))
+        rows.append(("", "info"))
         timer = ops.service_enabled("biweekly-upgrade.timer")
         if timer == "enabled":
             sched = self._schedule_text()
