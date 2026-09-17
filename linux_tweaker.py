@@ -183,9 +183,6 @@ OPTIONS_META = {
     "max_map_count": {
         "ru": ("vm.max_map_count", "Лимит областей памяти у одного процесса. Некоторые игры под Proton падают, если лимит исчерпан. Рекомендуется 1048576. Ускорения не даёт, только совместимость.", "Игры и совместимость", "лимит областей памяти"),
         "en": ("vm.max_map_count", "Limit of memory mappings per process. Some Proton games crash when the limit is exhausted. 1048576 is recommended. No speed gain, compatibility only.", "Gaming & compatibility", "memory mapping limit")},
-    "io_scheduler": {
-        "ru": ("Планировщик I/O (udev)", "Выбирает оптимальный планировщик ввода-вывода для каждого диска автоматически: bfq для HDD, none для NVMe, mq-deadline для SATA SSD. Работает сразу. Пропускает устройства, где нужного планировщика нет.", "Диски и файловые системы", "планировщик ввода-вывода"),
-        "en": ("I/O scheduler (udev)", "Picks the optimal I/O scheduler for each disk automatically: bfq for HDD, none for NVMe, mq-deadline for SATA SSD. Works immediately. Skips devices without the required scheduler.", "Drives & filesystems", "I/O scheduler")},
     "ntfs3": {
         "ru": ("ntfs3 драйвер", "Включает быстрый драйвер NTFS-дисков вместо медленного. ВНИМАНИЕ: только если у вас есть NTFS-диски. Нужна перезагрузка.", "Диски и файловые системы", "быстрый NTFS"),
         "en": ("ntfs3 driver", "Enables the fast NTFS driver instead of the slow one. WARNING: only if you have NTFS disks. Needs reboot.", "Drives & filesystems", "fast NTFS")},
@@ -260,7 +257,6 @@ OPTION_FILES = {
     "reisub": ["/etc/sysctl.d/99-sysrq.conf"],
     "ntsync": ["/etc/modules-load.d/ntsync.conf"],
     "max_map_count": ["/etc/sysctl.d/99-gaming-mmap.conf"],
-    "io_scheduler": ["/etc/udev/rules.d/60-ioschedulers.rules"],
     "ntfs3": ["/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"],
     "commit": ["/etc/fstab"],
     "dirty_bytes": ["/etc/sysctl.d/99-dirty-bytes.conf"],
@@ -540,83 +536,6 @@ def zfs_units_unmasked():
         except Exception:
             continue
     return True
-
-
-# ─── I/O scheduler ──────────────────────────────────────────────────────────
-def get_block_devices():
-    devices = []
-    try:
-        for name in os.listdir("/sys/block"):
-            if name.startswith("loop") or name.startswith("ram") \
-                    or name.startswith("zram") or name.startswith("sr"):
-                continue
-            if not re.match(r"^(sd[a-z]+|hd[a-z]+|vd[a-z]+|nvme\d+n\d+|mmcblk\d+)$",
-                            name):
-                continue
-            devices.append("/dev/" + name)
-    except Exception:
-        pass
-    return devices
-
-
-def io_scheduler_info(dev):
-    base = os.path.basename(dev)
-    sched_path = "/sys/block/%s/queue/scheduler" % base
-    try:
-        with open(sched_path, "r") as f:
-            content = f.read().strip()
-    except Exception:
-        return None, []
-    m = re.search(r"\[(\w+)\]", content)
-    current = m.group(1) if m else ""
-    available = content.replace("[", "").replace("]", "").split()
-    return current, available
-
-
-def is_rotational(dev):
-    base = os.path.basename(dev)
-    path = "/sys/block/%s/queue/rotational" % base
-    try:
-        with open(path, "r") as f:
-            return f.read().strip() == "1"
-    except Exception:
-        return False
-
-
-def is_nvme(dev):
-    return os.path.basename(dev).startswith("nvme")
-
-
-def desired_scheduler(dev):
-    if is_nvme(dev):
-        return "none"
-    if is_rotational(dev):
-        return "bfq"
-    return "mq-deadline"
-
-
-def any_io_scheduler_usable():
-    for dev in get_block_devices():
-        current, available = io_scheduler_info(dev)
-        target = desired_scheduler(dev)
-        if not target:
-            continue
-        if target in available and target != current:
-            return True
-        if target not in available and any(s in available and s != current
-                                           for s in ("bfq", "mq-deadline", "none")):
-            return True
-    return False
-
-
-def current_io_schedulers_summary():
-    """Краткая строка 'sda=mq-deadline, nvme0n1=none' для статуса."""
-    parts = []
-    for dev in get_block_devices():
-        cur, _avail = io_scheduler_info(dev)
-        if cur:
-            parts.append("%s=%s" % (os.path.basename(dev), cur))
-    return ", ".join(parts)
 
 
 # ─── tmpfs /tmp ─────────────────────────────────────────────────────────────
@@ -923,8 +842,6 @@ class SystemState:
         except Exception:
             pass
         return "root"
-
-
 class SystemOps:
     def __init__(self, sudo, state, log, dry_run):
         self.sudo = sudo
@@ -1713,61 +1630,6 @@ class SystemOps:
             self.log("✓ ntfs3 blocked again", "success"); return True
         return False
 
-    # ─── I/O scheduler ──────────────────────────────────────────────────
-    def apply_io_scheduler(self, params=None):
-        if self.dry_run:
-            self.log("[DRY RUN] write udev rule for io scheduler", "warning")
-            return True
-        rules = []
-        seen = set()
-        for dev in get_block_devices():
-            current, available = io_scheduler_info(dev)
-            if not current:
-                continue
-            target = desired_scheduler(dev)
-            if not target or target not in available:
-                if target == "mq-deadline" and "bfq" in available:
-                    target = "bfq"
-                else:
-                    self.log("Skip %s: %s not available (%s)"
-                             % (dev, target, " ".join(available)), "info")
-                    continue
-            base = os.path.basename(dev)
-            if base in seen:
-                continue
-            seen.add(base)
-            if base.startswith("nvme"):
-                rule = ('ACTION=="add|change", KERNEL=="%s", '
-                        'ATTR{queue/scheduler}="%s"' % (base, target))
-            elif is_rotational(dev):
-                rule = ('ACTION=="add|change", KERNEL=="%s", '
-                        'ATTR{queue/rotational}=="1", '
-                        'ATTR{queue/scheduler}="%s"' % (base, target))
-            else:
-                rule = ('ACTION=="add|change", KERNEL=="%s", '
-                        'ATTR{queue/rotational}=="0", '
-                        'ATTR{queue/scheduler}="%s"' % (base, target))
-            rules.append(rule)
-            self.log("  %s → %s" % (base, target), "info")
-        if not rules:
-            self.log("No usable devices for io scheduler rule", "warning")
-            return False
-        path = "/etc/udev/rules.d/60-ioschedulers.rules"
-        content = "\n".join(rules) + "\n"
-        if not self.write_file(path, content, chmod="644", mkdir=True):
-            return False
-        self.sudo_run(["udevadm", "control", "--reload-rules"], ignore_error=True)
-        self.sudo_run(["udevadm", "trigger"], ignore_error=True)
-        self.log("✓ io scheduler rule created", "success")
-        return True
-
-    def rollback_io_scheduler(self, params=None):
-        self._rm("/etc/udev/rules.d/60-ioschedulers.rules")
-        self.sudo_run(["udevadm", "control", "--reload-rules"], ignore_error=True)
-        self.sudo_run(["udevadm", "trigger"], ignore_error=True)
-        self.log("✓ io scheduler rule removed", "success")
-        return True
-
     # ─── fstab: mount-опции и commit ────────────────────────────────────
     def _uuid_of(self, dev):
         try:
@@ -2431,10 +2293,6 @@ OPTIONS_HELP = {
         "ru": "vm.max_map_count — это лимит областей памяти у одного процесса. Каждый раз, когда программа выделяет память через mmap, ядро создаёт «область памяти». Если лимит исчерпан, программа падает с ошибкой «Cannot allocate memory».\n\nНекоторые игры под Proton (Wine/Steam Play) создают очень много областей памяти. Если лимит исчерпан, игра вылетает при запуске. Увеличение лимита решает эту проблему.\n\nРекомендуемое значение — 1048576. Fedora и Arch приняли его как новое значение по умолчанию. Меньшее значение (524288) обычно тоже достаточно. Максимальное (2147483642) используется в SteamOS, но для большинства пользователей оно избыточно.\n\nВАЖНО: этот твик не ускоряет игры и не исправляет обычную нехватку памяти. Он нужен только для совместимости с приложениями, которые создают много mappings.\n\nФайл записывается в /etc/sysctl.d/99-gaming-mmap.conf, применяется сразу.",
         "en": "vm.max_map_count is the limit of memory mappings per process. Every time a program allocates memory via mmap, the kernel creates a “memory area”. If the limit is exhausted, the program crashes with «Cannot allocate memory».\n\nSome Proton games (Wine/Steam Play) create a very large number of memory areas. If the limit is exhausted, the game crashes at startup. Raising the limit solves this problem.\n\nThe recommended value is 1048576. Fedora and Arch adopted it as the new default. A smaller value (524288) is usually enough too. The maximum (2147483642) is used in SteamOS, but for most users it is excessive.\n\nIMPORTANT: this tweak does not speed up games and does not fix ordinary RAM shortage. It is only needed for compatibility with applications that create many mappings.\n\nThe file is written to /etc/sysctl.d/99-gaming-mmap.conf and applies immediately.",
     },
-    "io_scheduler": {
-        "ru": "Планировщик ввода-вывода — это механизм ядра, который решает, в каком порядке обрабатывать запросы к диску. От этого зависит отзывчивость системы: если планировщик «тупой», фоновая запись большого файла может заблокировать открытие браузера.\n\nОсновные планировщики: none (никакой сортировки, лучший для NVMe), mq-deadline (сортирует по «дедлайнам», хорош для SATA SSD), bfq (самый умный, даёт лучшую отзывчивость при смешанной нагрузке, но может снизить пропускную способность).\n\nЭтот твик создаёт udev-правило /etc/udev/rules.d/60-ioschedulers.rules, которое автоматически выбирает планировщик для каждого устройства:\n- HDD (rotational=1) → bfq;\n- SATA SSD → mq-deadline (или bfq, если mq-deadline недоступен);\n- NVMe → none.\n\nТвик проверяет доступные планировщики для каждого устройства. Если нужного планировщика нет в списке доступных — устройство пропускается, ничего не ломается.\n\nПрименяется сразу через udevadm. Откат удаляет правило, при следующей загрузке ядро выберет планировщики по умолчанию.",
-        "en": "The I/O scheduler is a kernel mechanism that decides in which order to process disk requests. It affects system responsiveness: with a “dumb” scheduler, background writing of a large file can block opening a browser.\n\nMain schedulers: none (no sorting, best for NVMe), mq-deadline (sorts by deadlines, good for SATA SSD), bfq (smartest, best responsiveness under mixed load, but may reduce throughput).\n\nThis tweak creates a udev rule /etc/udev/rules.d/60-ioschedulers.rules that automatically picks a scheduler for each device:\n- HDD (rotational=1) → bfq;\n- SATA SSD → mq-deadline (or bfq if mq-deadline is unavailable);\n- NVMe → none.\n\nThe tweak checks available schedulers for each device. If the required scheduler is not in the available list — the device is skipped, nothing breaks.\n\nApplies immediately via udevadm. Rolling back removes the rule; the kernel picks default schedulers on the next boot.",
-    },
     "ntfs3": {
         "ru": "NTFS — это файловая система Windows. Linux умеет читать и писать на неё двумя способами: через старый медленный драйвер ntfs-3g в пользовательском пространстве и через новый быстрый ntfs3 внутри ядра.\n\nLinux Mint по умолчанию блокирует ntfs3 и использует ntfs-3g. Причина историческая: раньше у ntfs3 были проблемы со стабильностью. Сейчас они исправлены, и ntfs3 работает надёжно. Эта опция снимает блокировку, и NTFS-диски начинают работать заметно быстрее.\n\nВНИМАНИЕ: не включайте, если у вас нет NTFS-дисков. Если у вас есть NTFS-диск с важными данными, сделайте резервную копию перед включением.\n\nПосле снятия блокировки уже подключённые диски продолжат работать со старым драйвером, пока вы их не перемонтируете. Нужна перезагрузка или ручное перемонтирование.",
         "en": "NTFS is the Windows file system. Linux can read and write it two ways: through the old slow ntfs-3g driver in userspace, and through the new fast ntfs3 driver inside the kernel.\n\nLinux Mint blocks ntfs3 by default and uses ntfs-3g. The reason is historical: ntfs3 used to have stability issues. Those are fixed now, and ntfs3 works reliably. This option lifts the block, and NTFS disks start working noticeably faster.\n\nWARNING: do not enable it if you have no NTFS disks. If you have an NTFS disk with important data, make a backup before enabling.\n\nAfter the block is lifted, already mounted disks keep using the old driver until you remount them. A reboot or manual remount is required.",
@@ -2600,7 +2458,11 @@ STR = {
         "mmc_value_label": "Значение:",
         "dirty_label": "dirty_bytes:",
         "dirty_bg_label": "background:",
+        "dirty_now_percent": "сейчас: проценты (dirty_ratio=%s, bg_ratio=%s)",
         "tmpfs_size_label": "Размер:",
+        "cur_value": "сейчас: %s",
+        "nmi_now_active": "сейчас: активен",
+        "nmi_now_off": "сейчас: отключён",
         "kern_sw": "как часто данные уходят в подкачку",
         "kern_vfs": "сколько кэша файлов держится в памяти",
         "kern_numa": "перемещение памяти между ядрами",
@@ -2644,7 +2506,6 @@ STR = {
         "reason_no_zram": "нет zram-generator",
         "reason_mint_only": "только для Linux Mint",
         "reason_pipewire_inactive": "PipeWire не используется",
-        "reason_no_io_sched": "нет доступных альтернативных планировщиков",
         "apps_search": "Поиск:",
         "apps_refresh": "Обновить",
         "apps_clear": "Снять выделение",
@@ -2727,7 +2588,11 @@ STR = {
         "mmc_value_label": "Value:",
         "dirty_label": "dirty_bytes:",
         "dirty_bg_label": "background:",
+        "dirty_now_percent": "now: percent (dirty_ratio=%s, bg_ratio=%s)",
         "tmpfs_size_label": "Size:",
+        "cur_value": "now: %s",
+        "nmi_now_active": "now: active",
+        "nmi_now_off": "now: off",
         "kern_sw": "how often data goes to swap",
         "kern_vfs": "how much file cache stays in RAM",
         "kern_numa": "memory moving between CPU cores",
@@ -2771,7 +2636,6 @@ STR = {
         "reason_no_zram": "zram-generator not installed",
         "reason_mint_only": "Linux Mint only",
         "reason_pipewire_inactive": "PipeWire is not in use",
-        "reason_no_io_sched": "no alternative schedulers available",
         "apps_search": "Search:",
         "apps_refresh": "Refresh",
         "apps_clear": "Deselect",
@@ -2956,8 +2820,6 @@ class MainWindow:
             r["ntfs3"] = self.t("reason_mint_only")
         if not getattr(self.state, "pipewire_active", False):
             r["pipewire"] = self.t("reason_pipewire_inactive")
-        if not any_io_scheduler_usable():
-            r["io_scheduler"] = self.t("reason_no_io_sched")
         self.disabled_reasons = r
 
     # ─── вспомогательные ────────────────────────────────────────────────
@@ -3087,6 +2949,13 @@ class MainWindow:
         except Exception:
             return ""
 
+    def _read_sysctl_int(self, path, default=""):
+        try:
+            with open(path, "r") as f:
+                return f.read().strip()
+        except Exception:
+            return default
+
     def _disk_info(self, path):
         try:
             st = os.statvfs(path)
@@ -3174,7 +3043,6 @@ class MainWindow:
             body, pkgs = item[1]
             self._apps_show_confirm(body, pkgs)
         elif kind == "toast":
-            # просто пишем в лог, без всплывающих
             self.log(item[1][0], item[1][1])
 
     def _append_log(self, msg, tag):
@@ -3358,7 +3226,6 @@ class MainWindow:
             lambda e: self._tune_canvas.itemconfig(win_id, width=e.width))
         self._rebuild_tune_list()
         self._bind_wheel_tree(self._tune_inner)
-
     def _rebuild_tune_list(self):
         if self._tune_inner is None:
             return
@@ -3504,6 +3371,18 @@ class MainWindow:
                 e2.configure(state=DISABLED, disabledbackground=c["bg"],
                              disabledforeground=c["gray"])
             e2.pack(side=LEFT)
+            cur_dirty = self._read_sysctl_int("/proc/sys/vm/dirty_bytes", "0")
+            cur_bg = self._read_sysctl_int("/proc/sys/vm/dirty_background_bytes", "0")
+            if cur_dirty not in ("", "0") or cur_bg not in ("", "0"):
+                dirty_str = "dirty_bytes=%s, bg=%s" % (
+                    cur_dirty or "0", cur_bg or "0")
+            else:
+                ratio = self._read_sysctl_int("/proc/sys/vm/dirty_ratio", "?")
+                bg_ratio = self._read_sysctl_int(
+                    "/proc/sys/vm/dirty_background_ratio", "?")
+                dirty_str = self.t("dirty_now_percent") % (ratio, bg_ratio)
+            Label(top, text=dirty_str, bg=c["panel"], fg=c["gray"],
+                  font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(8, 0))
         elif key == "tmpfs_tmp":
             Label(top, text=self.t("tmpfs_size_label"),
                   bg=c["panel"], fg=c["gray"],
@@ -3532,6 +3411,18 @@ class MainWindow:
                                     bg=c["panel"], fg=c["gray"],
                                     font=("DejaVu Sans", 8))
             self._sched_lbl.pack(side=LEFT, padx=(6, 0))
+        if key == "sysctl_cache":
+            cur_vfs = self._read_sysctl_int(
+                "/proc/sys/vm/vfs_cache_pressure", "?")
+            Label(top, text=self.t("cur_value") % cur_vfs,
+                  bg=c["panel"], fg=c["gray"],
+                  font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(8, 0))
+        elif key == "nmi_watchdog":
+            state_txt = (self.t("nmi_now_active")
+                         if getattr(self.state, "nmi_watchdog_active", False)
+                         else self.t("nmi_now_off"))
+            Label(top, text=state_txt, bg=c["panel"], fg=c["gray"],
+                  font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(8, 0))
         badge = Label(top, text="…", bg=c["panel"], fg=c["gray"],
                       font=("DejaVu Sans", 9, "bold"))
         badge.pack(side=LEFT, padx=(12, 0))
@@ -4080,7 +3971,6 @@ class MainWindow:
             self._set_running(False)
             self._installed_packages = installed_packages_set()
             self.msg_queue.put(("apps_redraw", None))
-
     # ─── прокрутка колесом ──────────────────────────────────────────────
     def _bind_global_wheel(self):
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
@@ -4429,7 +4319,16 @@ class MainWindow:
                  "*-*-1,15 18:30:00": ("2 раза в месяц (1 и 15)", "Twice a month (1 & 15)"),
                  "*-*-1 18:30:00": ("Ежемесячно (1 число)", "Monthly (1st)")}
         pair = names.get(cal)
-        return pair[0 if self.lang == "ru" else 1] if pair else cal
+        if pair:
+            label = pair[0 if self.lang == "ru" else 1]
+            m2 = re.search(r"(\d{2}:\d{2}(?::\d{2})?)", cal)
+            if m2:
+                t = m2.group(1)
+                if len(t) == 8:
+                    t = t[:5]
+                label = "%s, %s" % (label, t)
+            return label
+        return cal
 
     def _corectrl_found(self, ops):
         for d in ("/etc/polkit-1/rules.d", "/usr/share/polkit-1/rules.d",
@@ -4465,6 +4364,18 @@ class MainWindow:
             pass
         return False
 
+    def _max_map_count_applied(self, mmc_content):
+        """Применённым считается твик, если создан файл твикера
+        ИЛИ если текущее значение в ядре совпадает с выбранным."""
+        if re.search(r"^vm\.max_map_count=", mmc_content, re.M):
+            return True
+        try:
+            with open("/proc/sys/vm/max_map_count", "r") as f:
+                current = f.read().strip()
+            return current == self.max_map_count_value.get()
+        except Exception:
+            return False
+
     def _detect_applied(self, ops):
         grub = ops.read_file("/etc/default/grub") or ""
         env = ops.read_file("/etc/environment") or ""
@@ -4476,7 +4387,6 @@ class MainWindow:
         itco = ops.read_file("/etc/modprobe.d/nmi-watchdog.conf") or ""
         mmc = ops.read_file("/etc/sysctl.d/99-gaming-mmap.conf") or ""
         dirty = ops.read_file("/etc/sysctl.d/99-dirty-bytes.conf") or ""
-        iosched = ops.read_file("/etc/udev/rules.d/60-ioschedulers.rules") or ""
 
         def sv(p):
             try:
@@ -4519,8 +4429,7 @@ class MainWindow:
                       or ops.path_exists("/etc/sysctl.d/99-sysrq.conf"),
             "ntsync": self.state.ntsync
                       or ops.path_exists("/etc/modules-load.d/ntsync.conf"),
-            "max_map_count": bool(re.search(r"^vm\.max_map_count=", mmc, re.M)),
-            "io_scheduler": bool(iosched.strip()),
+            "max_map_count": self._max_map_count_applied(mmc),
             "ntfs3": bool(re.search(r"^\s*#\s*blacklist\s+ntfs3\s*$", mint, re.M)),
             "commit": ops._commit_applied(),
             "dirty_bytes": bool(dirty.strip()),
@@ -4703,7 +4612,6 @@ class MainWindow:
             self._run_bg(self._applied_work)
             self._run_bg(self._status_work)
             self._run_bg(self._services_work)
-
     # ─── apply / rollback ───────────────────────────────────────────────
     def apply_selected(self):
         if self.is_running:
@@ -5165,8 +5073,7 @@ class MainWindow:
             line = "  %-32s %-11s %-30s %-14s" % (p, vals[p], dsc, status)
             rows.append((line, "ok" if ok else "no"))
         raw = self._thp_current() or "n/a"
-        thp_val = self.t("thp_val_" + raw) if raw in ("always", "madvise", "never") else raw
-        disp = "%s (%s)" % (raw, thp_val) if thp_val != raw else raw
+        disp = raw
         thp_ok = A.get("thp", False)
         thp_dsc = self.t("kern_thp")
         if len(thp_dsc) > 30:
@@ -5176,7 +5083,13 @@ class MainWindow:
                      % ("transparent_hugepage", disp, thp_dsc, thp_status),
                      "ok" if thp_ok else "no"))
         timer = ops.service_enabled("biweekly-upgrade.timer")
-        rows.append(("%s: %s" % (self.t("st_timer"), self._fmt_state(timer)),
+        if timer == "enabled":
+            sched = self._schedule_text()
+            timer_txt = sched if sched and sched != self.t("sched_none") \
+                else self.t("st_enabled")
+        else:
+            timer_txt = self._fmt_state(timer)
+        rows.append(("%s: %s" % (self.t("st_timer"), timer_txt),
                      "ok" if timer == "enabled" else "muted"))
         self.msg_queue.put(("status_text", rows))
 
@@ -5385,4 +5298,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main()          
