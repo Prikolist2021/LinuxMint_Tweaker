@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Linux Tweaker v0.4
+Linux Tweaker v0.5
 Графическая оболочка тюнинга Linux Mint / Ubuntu / Debian на Tkinter.
 RU/EN, светлая/тёмная тема, детект применённых настроек,
 откат, бэкапы, mount-опции, симлинки compatdata для Steam,
@@ -11,12 +11,14 @@ RU/EN, светлая/тёмная тема, детект применённых
 """
 import sys, os, re, subprocess, time, shutil, glob, pwd, grp, threading, traceback
 import queue
+import fcntl
+from datetime import datetime
 from tkinter import (Tk, Toplevel, Frame, Label, Button, Checkbutton, Entry,
-                     Text, Canvas, Menu, StringVar, BooleanVar, DoubleVar,
-                     IntVar, END, NORMAL, DISABLED, LEFT, RIGHT, TOP, BOTTOM,
+                     Text, Canvas, Menu, StringVar, BooleanVar,
+                     END, NORMAL, DISABLED, LEFT, RIGHT, TOP, BOTTOM,
                      X, Y, BOTH, NW, W, E, N, S, HORIZONTAL, VERTICAL, SUNKEN,
                      RAISED, FLAT, GROOVE, RIDGE, CENTER, messagebox,
-                     simpledialog, filedialog)
+                     simpledialog)
 from tkinter import ttk, scrolledtext
 
 try:
@@ -25,8 +27,8 @@ except ImportError:
     REMOVABLE_PACKAGES = {}
 
 APP_NAME = "Linux Tweaker"
-APP_VERSION = "0.4"
-APP_BUILD_DATE = "17.09.2026"
+APP_VERSION = "0.5"
+APP_BUILD_DATE = "18.09.2026"
 GITHUB_URL = "https://github.com/Prikolist2021/LinuxMint_Tweaker"
 LICENSE_NAME = "MIT"
 
@@ -36,6 +38,13 @@ LOCK_FILE = os.path.join(os.path.expanduser("~"), ".linux-tweaker.lock")
 
 MAX_MAP_COUNT_VALUES = ["65530", "524288", "1048576", "2147483642"]
 MAX_MAP_COUNT_DEFAULT = "1048576"
+
+SUDO_TIMEOUT_DEFAULT = 180
+SUDO_TIMEOUT_APT = 900
+SUDO_TIMEOUT_GRUB = 300
+SUDO_TIMEOUT_INITRAMFS = 600
+
+BACKUP_KEEP_LAST = 5
 
 APPS_CATEGORY_ORDER = {
     "ru": ["Офис", "Графика", "Интернет", "Мультимедиа",
@@ -59,32 +68,41 @@ def compute_ui_scale(root):
     return max(0.75, min(sx, sy, 1.0))
 
 
+_lock_fh = None
+
+
 def acquire_lock():
-    if os.path.exists(LOCK_FILE):
-        try:
-            with open(LOCK_FILE, "r") as f:
-                old_pid = int(f.read().strip())
-            os.kill(old_pid, 0)
-            return False
-        except (ValueError, ProcessLookupError, PermissionError):
-            pass
-        except Exception:
-            pass
+    global _lock_fh
     try:
-        with open(LOCK_FILE, "w") as f:
-            f.write(str(os.getpid()))
+        _lock_fh = open(LOCK_FILE, "w")
+        fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_fh.write(str(os.getpid()))
+        _lock_fh.flush()
+        return True
+    except (OSError, IOError):
+        if _lock_fh is not None:
+            try:
+                _lock_fh.close()
+            except Exception:
+                pass
+            _lock_fh = None
+        return False
     except Exception:
-        pass
-    return True
+        return True
 
 
 def release_lock():
+    global _lock_fh
     try:
+        if _lock_fh is not None:
+            fcntl.flock(_lock_fh, fcntl.LOCK_UN)
+            _lock_fh.close()
+            _lock_fh = None
         if os.path.exists(LOCK_FILE):
-            with open(LOCK_FILE, "r") as f:
-                pid = int(f.read().strip())
-            if pid == os.getpid():
+            try:
                 os.remove(LOCK_FILE)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -145,8 +163,8 @@ OPTIONS_META = {
         "ru": ("RADV_PERFTEST=sam", "Даёт процессору доступ ко всей видеопамяти сразу. Небольшой прирост FPS. Нужен перезаход.", "Видеокарта и графика", "доступ ко всей видеопамяти"),
         "en": ("RADV_PERFTEST=sam", "Gives the CPU access to all VRAM at once. Small FPS gain. Requires re-login.", "GPU & graphics", "full VRAM access")},
     "mesa": {
-        "ru": ("MESA_SHADER_CACHE=4G", "Увеличивает кэш шейдеров, игры меньше подтормаживают в первые минуты. Нужен перезаход.", "Видеокарта и графика", "кэш шейдеров"),
-        "en": ("MESA_SHADER_CACHE=4G", "Enlarges the shader cache so games stutter less at start. Requires re-login.", "GPU & graphics", "shader cache")},
+        "ru": ("MESA_SHADER_CACHE_MAX_SIZE=4G", "Увеличивает кэш шейдеров, игры меньше подтормаживают в первые минуты. Нужен перезаход.", "Видеокарта и графика", "кэш шейдеров"),
+        "en": ("MESA_SHADER_CACHE_MAX_SIZE=4G", "Enlarges the shader cache so games stutter less at start. Requires re-login.", "GPU & graphics", "shader cache")},
     "pipewire": {
         "ru": ("PipeWire", "Убирает треск и щелчки звука, увеличив буферы звукового сервера. Нужен перезаход в сеанс.", "Звук", "чистый звук"),
         "en": ("PipeWire", "Removes sound crackling by enlarging sound-server buffers. Requires re-login.", "Sound", "clean sound")},
@@ -261,6 +279,8 @@ OPTION_FILES = {
 
 
 def decode_bytes(v):
+    if v is None:
+        return ""
     return v.decode("utf-8", errors="replace") if isinstance(v, bytes) else str(v)
 
 
@@ -307,7 +327,6 @@ def detect_lang():
 
 
 def is_debian_based():
-    """True, если дистрибутив на базе Debian / Ubuntu / Mint."""
     try:
         if os.path.exists("/etc/debian_version"):
             return True
@@ -350,6 +369,8 @@ def parse_mounts():
                 if len(parts) < 4:
                     continue
                 dev, mp, fstype, opts = parts[0], parts[1], parts[2], parts[3]
+                mp = mp.replace("\\040", " ").replace("\\011", "\t") \
+                       .replace("\\012", "\n").replace("\\134", "\\")
                 if not dev.startswith("/dev/"):
                     continue
                 if fstype not in ("ext2", "ext3", "ext4", "xfs", "btrfs",
@@ -394,6 +415,8 @@ def find_steam_libraries(user_home):
 
 
 def lines_in(content):
+    if content is None:
+        return []
     return content.splitlines()
 
 
@@ -401,7 +424,22 @@ def fs_supports_commit(fstype):
     return (fstype or "").lower() in COMMIT_OK_FS
 
 
-# ─── PipeWire ───────────────────────────────────────────────────────────────
+def get_block_devices():
+    devices = []
+    try:
+        for name in os.listdir("/sys/block"):
+            if name.startswith("loop") or name.startswith("ram") \
+                    or name.startswith("zram") or name.startswith("sr"):
+                continue
+            if not re.match(r"^(sd[a-z]+|hd[a-z]+|vd[a-z]+|nvme\d+n\d+|mmcblk\d+)$",
+                            name):
+                continue
+            devices.append("/dev/" + name)
+    except Exception:
+        pass
+    return devices
+
+
 def pipewire_active():
     try:
         r = subprocess.run(["pgrep", "-x", "pipewire"],
@@ -428,7 +466,6 @@ def pipewire_active():
     return False
 
 
-# ─── NMI watchdog ───────────────────────────────────────────────────────────
 def nmi_watchdog_active():
     try:
         with open("/proc/sys/kernel/nmi_watchdog", "r") as f:
@@ -441,17 +478,20 @@ def nmi_watchdog_in_grub():
     try:
         with open("/etc/default/grub", "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
-        for line in content.splitlines():
-            m = re.match(r"^\s*GRUB_CMDLINE_LINUX_DEFAULT=(.*)$", line)
-            if m:
-                raw = m.group(1).strip().strip('"').strip("'")
-                return "nmi_watchdog=0" in raw.split()
     except Exception:
-        pass
+        return False
+    for line in content.splitlines():
+        s = line.strip()
+        if s.startswith("#"):
+            continue
+        m = re.match(r"^\s*GRUB_CMDLINE_LINUX(?:_DEFAULT)?=(.*)$", line)
+        if m:
+            raw = m.group(1).strip().strip('"').strip("'")
+            if "nmi_watchdog=0" in raw.split():
+                return True
     return False
 
 
-# ─── ZFS ────────────────────────────────────────────────────────────────────
 ZFS_UNITS = [
     "zfs-import-cache.service",
     "zfs-load-module.service",
@@ -531,7 +571,6 @@ def zfs_units_unmasked():
     return True
 
 
-# ─── tmpfs /tmp ─────────────────────────────────────────────────────────────
 def tmpfs_tmp_mounted():
     try:
         with open("/proc/mounts", "r", encoding="utf-8", errors="replace") as f:
@@ -559,12 +598,10 @@ def fstab_has_tmp_tmpfs():
     return False
 
 
-# ─── пакеты приложений ──────────────────────────────────────────────────────
 def installed_packages_set():
-    """Один вызов dpkg-query -W, возвращает set установленных пакетов."""
     try:
         r = subprocess.run(["dpkg-query", "-W", "-f=${Package}\t${Status}\n"],
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, timeout=60)
         installed = set()
         for line in r.stdout.splitlines():
             parts = line.split("\t", 1)
@@ -588,9 +625,11 @@ def format_size(bytes_val):
 
 
 def estimate_packages_size(pkgs):
+    if not pkgs:
+        return "0 B"
     try:
         r = subprocess.run(["dpkg-query", "-W", "-f=${Installed-Size}\n"] + pkgs,
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, timeout=30)
         total_kb = 0
         for line in r.stdout.splitlines():
             try:
@@ -603,18 +642,23 @@ def estimate_packages_size(pkgs):
 
 
 def apt_dry_run_purge(pkgs):
-    """Возвращает (explicit, deps, system_hits). Через apt-get -s purge."""
+    if not pkgs:
+        return ([], [], [], True)
+    env = dict(os.environ)
+    env["LC_ALL"] = "C"
+    env["LANG"] = "C"
     try:
         r = subprocess.run(["apt-get", "-s", "purge", "-y"] + list(pkgs),
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=60, env=env)
+        if r.returncode != 0:
+            return (list(pkgs), [], [], False)
         output = decode_bytes(r.stdout) + "\n" + decode_bytes(r.stderr)
     except Exception:
-        return (list(pkgs), [], [])
+        return (list(pkgs), [], [], False)
     removed = []
     in_block = False
     for line in output.splitlines():
-        if "The following packages will be REMOVED" in line \
-                or "Будут УДАЛЕНЫ" in line:
+        if "The following packages will be REMOVED" in line:
             in_block = True
             continue
         if in_block:
@@ -624,17 +668,21 @@ def apt_dry_run_purge(pkgs):
                 token = token.strip().strip(",")
                 if token and not token.startswith("("):
                     removed.append(token)
-    explicit = [p for p in pkgs if p in removed]
-    deps = [p for p in removed if p not in explicit]
-    system_hits = [p for p in removed
+    removed_norm = [p.split(":")[0] for p in removed]
+    explicit = [p for p in pkgs if p in removed_norm]
+    deps = [p for p in removed_norm if p not in explicit]
+    system_hits = [p for p in removed_norm
                    if any(p.startswith(m) for m in SYSTEM_PACKAGE_MASKS)]
-    return (explicit, deps, system_hits)
+    return (explicit, deps, system_hits, True)
 class SudoManager:
     def __init__(self):
         self.prompt_password = None
         self.show_error = None
         self.authenticated = False
         self._keepalive = False
+        self._keepalive_lock = threading.Lock()
+        if os.geteuid() == 0:
+            self.authenticated = True
 
     def _cached(self):
         if os.geteuid() == 0:
@@ -679,19 +727,25 @@ class SudoManager:
             return True
         return self.authenticate()
 
-    def run(self, args, input=None):
+    def run(self, args, input=None, timeout=None, env=None):
+        if timeout is None:
+            timeout = SUDO_TIMEOUT_DEFAULT
+        run_env = env if env is not None else None
         if os.geteuid() == 0:
-            return subprocess.run(list(args), input=input,
-                                  capture_output=True, timeout=180)
+            return subprocess.run(list(args), input=input, env=run_env,
+                                  capture_output=True, timeout=timeout)
         if not self._cached():
             raise PermissionError("Sudo session expired. Press Apply again.")
         return subprocess.run(["sudo", "-n"] + list(args), input=input,
-                              capture_output=True, timeout=180)
+                              env=run_env, capture_output=True, timeout=timeout)
 
     def _start_keepalive(self):
-        if self._keepalive:
+        if os.geteuid() == 0:
             return
-        self._keepalive = True
+        with self._keepalive_lock:
+            if self._keepalive:
+                return
+            self._keepalive = True
 
         def loop():
             while True:
@@ -702,7 +756,8 @@ class SudoManager:
                     subprocess.run(["sudo", "-n", "-v"], capture_output=True, timeout=5)
                 except Exception:
                     pass
-            self._keepalive = False
+            with self._keepalive_lock:
+                self._keepalive = False
             self.authenticated = False
         threading.Thread(target=loop, daemon=True).start()
 
@@ -727,6 +782,7 @@ class SystemState:
         self.nmi_watchdog_active = False
         self.nmi_watchdog_in_grub = False
         self.current_max_map_count = "1048576"
+        self.has_ntfs_partitions = False
 
     def detect(self):
         try:
@@ -771,20 +827,7 @@ class SystemState:
                 self.has_raid = True
         except Exception:
             pass
-        try:
-            res = subprocess.run(["swapon", "--show=TYPE", "--noheadings"],
-                                 capture_output=True, text=True, timeout=5)
-            out = res.stdout.strip()
-            if out:
-                self.has_swap = True
-                if "zram" in out:
-                    self.swap_type = "zram"
-                elif "partition" in out:
-                    self.swap_type = "partition"
-                else:
-                    self.swap_type = "file"
-        except Exception:
-            pass
+        self._detect_swap()
         self.ntsync = os.path.exists("/dev/ntsync")
         d = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
         s = os.environ.get("DESKTOP_SESSION", "").lower()
@@ -813,6 +856,36 @@ class SystemState:
                 self.current_max_map_count = f.read().strip()
         except Exception:
             pass
+        self.has_ntfs_partitions = self._detect_ntfs_partitions()
+
+    def _detect_swap(self):
+        self.has_swap = False
+        self.swap_type = ""
+        try:
+            res = subprocess.run(["swapon", "--show=TYPE", "--noheadings"],
+                                 capture_output=True, text=True, timeout=5)
+            out = res.stdout.strip()
+            if out:
+                self.has_swap = True
+                if "zram" in out:
+                    self.swap_type = "zram"
+                elif "partition" in out:
+                    self.swap_type = "partition"
+                else:
+                    self.swap_type = "file"
+        except Exception:
+            pass
+
+    def _detect_ntfs_partitions(self):
+        try:
+            res = subprocess.run(["lsblk", "-no", "FSTYPE"], capture_output=True,
+                                 text=True, timeout=5)
+            for line in res.stdout.splitlines():
+                if line.strip() in ("ntfs", "ntfs3"):
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _real_user(self):
         for var in ("SUDO_USER", "PKEXEC_USER"):
@@ -847,38 +920,76 @@ class SystemOps:
         self.backup_dir = os.path.join(state.user_home, "system-tuneup-backups")
 
     # ─── базовые файловые операции ──────────────────────────────────────
+    def _safe_backup_name(self, path):
+        safe = path.lstrip("/").replace("/", "_")
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return "%s.%s.bak" % (safe, ts)
+
+    def _prune_backups(self, path):
+        """Оставляет только последние BACKUP_KEEP_LAST бэкапов для данного пути."""
+        try:
+            safe = path.lstrip("/").replace("/", "_")
+            pattern = os.path.join(self.backup_dir, safe + ".*.bak")
+            files = sorted(glob.glob(pattern),
+                           key=lambda p: os.path.getmtime(p),
+                           reverse=True)
+            for old in files[BACKUP_KEEP_LAST:]:
+                try:
+                    os.remove(old)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def backup_file(self, path):
+        """Возвращает True, если бэкап создан или файла нет (нечего бэкапить).
+        False — если файл есть, но бэкап создать не удалось."""
         if self.dry_run:
-            return
+            return True
         try:
             if not self.path_exists(path):
-                return
+                return True
             content = self.read_file(path)
             if content is None:
-                return
+                self.log("[WARN] cannot read %s for backup" % path, "warning")
+                return False
             os.makedirs(self.backup_dir, exist_ok=True)
-            safe = path.lstrip("/").replace("/", "_")
-            bp = os.path.join(self.backup_dir, safe + ".bak")
+            try:
+                os.chmod(self.backup_dir, 0o700)
+            except Exception:
+                pass
+            bp = os.path.join(self.backup_dir, self._safe_backup_name(path))
             with open(bp, "w", encoding="utf-8") as f:
                 f.write(content)
+            try:
+                os.chmod(bp, 0o600)
+            except Exception:
+                pass
             if self.state.user_name and self.state.user_name != "root":
                 try:
                     pw = pwd.getpwnam(self.state.user_name)
                     os.chown(bp, pw.pw_uid, pw.pw_gid)
                 except Exception:
                     pass
+            self._prune_backups(path)
             self.log("[BACKUP] %s" % os.path.basename(bp), "info")
+            return True
         except Exception as e:
             self.log("[WARN] backup %s: %s" % (path, e), "warning")
+            return False
 
-    def sudo_run(self, args, input=None, ok_msg=None, err_msg=None, ignore_error=False):
+    def sudo_run(self, args, input=None, ok_msg=None, err_msg=None,
+                 ignore_error=False, timeout=None, env=None):
         if self.dry_run:
             self.log("[DRY RUN] " + " ".join(args), "warning")
             return True
         try:
-            res = self.sudo.run(args, input=input)
+            res = self.sudo.run(args, input=input, timeout=timeout, env=env)
         except PermissionError as e:
             self.log(str(e), "error")
+            return False
+        except subprocess.TimeoutExpired:
+            self.log("Command timed out: " + " ".join(args), "error")
             return False
         except Exception as e:
             self.log("Command error: %s" % e, "error")
@@ -920,31 +1031,68 @@ class SystemOps:
         except Exception:
             return None
 
-    def write_file(self, path, content, chmod="644", owner=None, mkdir=False, backup=True):
+    def atomic_write(self, path, content, chmod="644", owner=None, mkdir=False):
+        """Пишет во временный файл и атомарно перемещает на место."""
         if self.dry_run:
-            self.log("[DRY RUN] write: %s" % path, "warning")
+            self.log("[DRY RUN] atomic write: %s" % path, "warning")
             return True
         if mkdir:
             d = os.path.dirname(path)
             if d:
                 self.sudo_run(["mkdir", "-p", d], ignore_error=True)
-        if backup:
-            self.backup_file(path)
+        tmp = path + ".tmp-tweaker"
         try:
-            res = self.sudo.run(["tee", path], input=content.encode())
-        except PermissionError as e:
-            self.log(str(e), "error")
-            return False
+            try:
+                res = self.sudo.run(["tee", tmp], input=content.encode())
+            except PermissionError as e:
+                self.log(str(e), "error")
+                return False
+            except Exception as e:
+                self.log("Write error %s: %s" % (tmp, e), "error")
+                return False
+            if res.returncode != 0:
+                self.log("Cannot write %s" % tmp, "error")
+                self.sudo_run(["rm", "-f", tmp], ignore_error=True)
+                return False
+            if chmod:
+                self.sudo_run(["chmod", chmod, tmp], ignore_error=True)
+            if owner:
+                self.sudo_run(["chown", owner, tmp], ignore_error=True)
+            if not self.sudo_run(["mv", "-f", tmp, path],
+                                 err_msg="Cannot move %s -> %s" % (tmp, path)):
+                self.sudo_run(["rm", "-f", tmp], ignore_error=True)
+                return False
+            return True
         except Exception as e:
-            self.log("Write error %s: %s" % (path, e), "error")
+            self.log("atomic_write %s: %s" % (path, e), "error")
+            self.sudo_run(["rm", "-f", tmp], ignore_error=True)
             return False
+
+    def write_file(self, path, content, chmod="644", owner=None, mkdir=False, backup=True):
+        if not backup:
+            return self.atomic_write(path, content, chmod=chmod, owner=owner,
+                                     mkdir=mkdir)
+        ok_backup = self.backup_file(path)
+        if not ok_backup:
+            self.log("Backup failed for %s, write aborted" % path, "error")
+            return False
+        return self.atomic_write(path, content, chmod=chmod, owner=owner,
+                                 mkdir=mkdir)
+
+    def verify_fstab(self):
+        """Проверяет /etc/fstab через findmnt --verify. Возвращает True/False."""
+        if self.dry_run:
+            return True
+        try:
+            res = self.sudo.run(["findmnt", "--verify", "--verbose"],
+                                timeout=SUDO_TIMEOUT_DEFAULT)
+        except Exception as e:
+            self.log("findmnt --verify error: %s" % e, "warning")
+            return True
         if res.returncode != 0:
-            self.log("Cannot write %s" % path, "error")
+            err = decode_bytes(res.stdout).strip() + " " + decode_bytes(res.stderr).strip()
+            self.log("fstab verify FAILED: %s" % err.strip(), "error")
             return False
-        if chmod:
-            self.sudo_run(["chmod", chmod, path], ignore_error=True)
-        if owner:
-            self.sudo_run(["chown", owner, path], ignore_error=True)
         return True
 
     def ensure_line(self, path, line, pattern, chmod="644", mkdir=False):
@@ -978,9 +1126,8 @@ class SystemOps:
         if not changed:
             self.log("Already configured: %s" % path, "info")
             return True
-        self.backup_file(path)
         return self.write_file(path, "\n".join(new_lines) + "\n",
-                               chmod=chmod, mkdir=mkdir, backup=False)
+                               chmod=chmod, mkdir=mkdir, backup=True)
 
     # ─── systemd ────────────────────────────────────────────────────────
     def unit_exists(self, name):
@@ -1022,7 +1169,12 @@ class SystemOps:
         return os.path.exists("/usr/bin/cinnamon-spice-updater")
 
     # ─── GRUB ───────────────────────────────────────────────────────────
+    @staticmethod
+    def _grub_key(param):
+        return param.split("=")[0]
+
     def add_grub_params(self, params):
+        """Добавляет параметры в GRUB. Заменяет старые значения по тому же ключу."""
         if self.dry_run:
             self.log("[DRY RUN] GRUB add: " + " ".join(params), "warning")
             return True
@@ -1031,20 +1183,20 @@ class SystemOps:
         if content is None:
             self.log("Cannot read %s" % path, "error")
             return False
+        keys = {self._grub_key(p) for p in params}
         lines, found, changed = [], False, False
         for line in lines_in(content):
             m = re.match(r"^\s*GRUB_CMDLINE_LINUX_DEFAULT=(.*)$", line)
             if m:
                 found = True
                 raw = m.group(1).strip().strip('"').strip("'")
-                parts = [p for p in raw.split() if p]
-                orig = parts.copy()
-                parts += [x for x in params if x not in parts]
-                if parts != orig:
-                    lines.append('GRUB_CMDLINE_LINUX_DEFAULT="' + " ".join(parts) + '"')
+                old_parts = [p for p in raw.split() if p]
+                kept = [p for p in old_parts if self._grub_key(p) not in keys]
+                new_parts = kept + list(params)
+                new_line = 'GRUB_CMDLINE_LINUX_DEFAULT="' + " ".join(new_parts) + '"'
+                if old_parts != new_parts:
                     changed = True
-                else:
-                    lines.append(line)
+                lines.append(new_line)
             else:
                 lines.append(line)
         if not found:
@@ -1053,12 +1205,11 @@ class SystemOps:
         if not changed:
             self.log("GRUB already has params", "info")
             return True
-        self.backup_file(path)
-        if self.write_file(path, "\n".join(lines) + "\n", backup=False):
-            self.grub_changed = True
-            self.log("GRUB: params added", "success")
-            return True
-        return False
+        if not self.write_file(path, "\n".join(lines) + "\n", backup=True):
+            return False
+        self.grub_changed = True
+        self.log("GRUB: params added", "success")
+        return True
 
     def _grub_set_param(self, token):
         if self.dry_run:
@@ -1069,32 +1220,36 @@ class SystemOps:
         if content is None:
             self.log("Cannot read %s" % path, "error")
             return False
-        key = token.split("=")[0]
-        lines, changed = [], False
+        key = self._grub_key(token)
+        lines, found, changed = [], False, False
         for line in lines_in(content):
             m = re.match(r"^\s*GRUB_CMDLINE_LINUX_DEFAULT=(.*)$", line)
             if m:
+                found = True
                 raw = m.group(1).strip().strip('"').strip("'")
-                parts = [p for p in raw.split() if p and not p.startswith(key + "=")]
-                if token not in parts:
-                    parts.append(token)
-                newl = 'GRUB_CMDLINE_LINUX_DEFAULT="' + " ".join(parts) + '"'
-                if newl != line.strip():
+                old_parts = [p for p in raw.split() if p]
+                kept = [p for p in old_parts if self._grub_key(p) != key]
+                new_parts = kept + [token]
+                new_line = 'GRUB_CMDLINE_LINUX_DEFAULT="' + " ".join(new_parts) + '"'
+                if old_parts != new_parts:
                     changed = True
-                lines.append(newl)
+                lines.append(new_line)
             else:
                 lines.append(line)
+        if not found:
+            lines.append('GRUB_CMDLINE_LINUX_DEFAULT="' + token + '"')
+            changed = True
         if not changed:
             self.log("GRUB already has %s" % token, "info")
             return True
-        self.backup_file(path)
-        if self.write_file(path, "\n".join(lines) + "\n", backup=False):
-            self.grub_changed = True
-            self.log("GRUB: %s set" % token, "success")
-            return True
-        return False
+        if not self.write_file(path, "\n".join(lines) + "\n", backup=True):
+            return False
+        self.grub_changed = True
+        self.log("GRUB: %s set" % token, "success")
+        return True
 
     def _remove_grub_params(self, params):
+        """Удаляет параметры по ключу (не только по точному совпадению)."""
         if self.dry_run:
             self.log("[DRY RUN] GRUB remove: " + " ".join(params), "warning")
             return True
@@ -1103,31 +1258,35 @@ class SystemOps:
         if not content:
             self.log("GRUB not found", "warning")
             return False
+        keys = {self._grub_key(p) for p in params}
         new_lines, changed = [], False
         for line in lines_in(content):
             m = re.match(r"^\s*GRUB_CMDLINE_LINUX_DEFAULT=(.*)$", line)
             if m:
                 raw = m.group(1).strip().strip('"').strip("'")
-                parts = [p for p in raw.split() if p and p not in params]
-                new_lines.append('GRUB_CMDLINE_LINUX_DEFAULT="' + " ".join(parts) + '"')
-                changed = True
+                old_parts = [p for p in raw.split() if p]
+                new_parts = [p for p in old_parts if self._grub_key(p) not in keys]
+                new_lines.append('GRUB_CMDLINE_LINUX_DEFAULT="' +
+                                 " ".join(new_parts) + '"')
+                if old_parts != new_parts:
+                    changed = True
             else:
                 new_lines.append(line)
         if not changed:
             self.log("GRUB params not found", "info")
             return True
-        self.backup_file(path)
-        if self.write_file(path, "\n".join(new_lines) + "\n", backup=False):
-            self.grub_changed = True
-            self.log("✓ GRUB params removed", "success")
-            return True
-        return False
+        if not self.write_file(path, "\n".join(new_lines) + "\n", backup=True):
+            return False
+        self.grub_changed = True
+        self.log("✓ GRUB params removed", "success")
+        return True
 
     def finalize_grub(self):
         if not self.grub_changed:
             return
         if self.dry_run:
             self.log("[DRY RUN] update-grub", "warning")
+            self.grub_changed = False
             return
         ug = shutil.which("update-grub")
         if not ug and os.path.exists("/usr/sbin/update-grub"):
@@ -1136,10 +1295,12 @@ class SystemOps:
         if not gm and os.path.exists("/usr/sbin/grub-mkconfig"):
             gm = "/usr/sbin/grub-mkconfig"
         if ug:
-            self.sudo_run([ug], ok_msg="GRUB updated", err_msg="update-grub failed")
+            self.sudo_run([ug], ok_msg="GRUB updated", err_msg="update-grub failed",
+                          timeout=SUDO_TIMEOUT_GRUB)
         elif gm:
             self.sudo_run([gm, "-o", "/boot/grub/grub.cfg"],
-                          ok_msg="GRUB updated", err_msg="grub-mkconfig failed")
+                          ok_msg="GRUB updated", err_msg="grub-mkconfig failed",
+                          timeout=SUDO_TIMEOUT_GRUB)
         else:
             self.log("update-grub / grub-mkconfig not found", "warning")
         self.grub_changed = False
@@ -1172,10 +1333,11 @@ class SystemOps:
                 inserted = True
         if not inserted:
             out = ["[Journal]", "Storage=volatile", "RuntimeMaxUse=50M"] + out
-        self.backup_file(path)
-        if not self.write_file(path, "\n".join(out) + "\n", backup=False):
+        if not self.write_file(path, "\n".join(out) + "\n", backup=True):
             return False
-        self.sudo_run(["systemctl", "restart", "systemd-journald"], ignore_error=True)
+        if not self.sudo_run(["systemctl", "restart", "systemd-journald"],
+                             ignore_error=True):
+            self.log("journald written but restart failed", "warning")
         self.sudo_run(["journalctl", "--vacuum-size=200M", "--vacuum-time=1months"],
                       ignore_error=True)
         self.log("✓ journald → volatile (50M)", "success"); return True
@@ -1185,7 +1347,7 @@ class SystemOps:
 
     def apply_raid(self, params=None):
         if self.state.has_raid:
-            self.log("RAID detected, skipping", "warning"); return True
+            self.log("RAID detected, skipping", "warning"); return None
         return self.add_grub_params(["raid=noautodetect"])
 
     def apply_nmi_watchdog(self, params=None):
@@ -1193,9 +1355,9 @@ class SystemOps:
 
     def apply_itco_wdt(self, params=None):
         if not getattr(self.state, "is_intel", False):
-            self.log("Not an Intel system, skipping", "warning"); return False
+            self.log("Not an Intel system, skipping", "warning"); return None
         if not getattr(self.state, "has_itco_module", False):
-            self.log("iTCO_wdt module not available, skipping", "warning"); return False
+            self.log("iTCO_wdt module not available, skipping", "warning"); return None
         path = "/etc/modprobe.d/nmi-watchdog.conf"
         content = ("blacklist iTCO_wdt\n"
                    "blacklist iTCO_vendor_support\n"
@@ -1253,12 +1415,19 @@ class SystemOps:
         if self.dry_run:
             self.log("[DRY RUN] apt purge zfs-zed zfsutils-linux", "warning")
             return True
-        if not self.sudo_run(["apt", "purge", "-y", "zfs-zed", "zfsutils-linux"],
-                             err_msg="apt purge ZFS failed"):
+        env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+        if not self.sudo_run(["apt-get", "purge", "-y", "zfs-zed", "zfsutils-linux"],
+                             err_msg="apt purge ZFS failed",
+                             timeout=SUDO_TIMEOUT_APT, env=env):
             return False
-        self.sudo_run(["apt", "autoremove", "-y"], ignore_error=True)
-        self.sudo_run(["update-initramfs", "-u", "-k", "all"], ignore_error=True)
-        self.sudo_run(["update-grub"], ignore_error=True)
+        self.sudo_run(["apt-get", "autoremove", "-y"], ignore_error=True,
+                      timeout=SUDO_TIMEOUT_APT, env=env)
+        if not self.sudo_run(["update-initramfs", "-u", "-k", "all"],
+                             ignore_error=True, timeout=SUDO_TIMEOUT_INITRAMFS):
+            self.log("update-initramfs failed after ZFS removal", "warning")
+        if not self.sudo_run(["update-grub"], ignore_error=True,
+                             timeout=SUDO_TIMEOUT_GRUB):
+            self.log("update-grub failed after ZFS removal", "warning")
         self.log("✓ ZFS packages removed", "success")
         return True
 
@@ -1323,7 +1492,7 @@ class SystemOps:
 
     def apply_vrr(self, params=None):
         if self.state.gpu not in ("AMD", "Unknown"):
-            self.log("VRR is AMD-only", "warning"); return True
+            self.log("VRR is AMD-only", "warning"); return None
         if self.dry_run:
             self.log("[DRY RUN] VRR config", "warning"); return True
         content = ('Section "Device"\n    Identifier "AMD"\n    Driver "amdgpu"\n'
@@ -1344,7 +1513,7 @@ class SystemOps:
     def apply_pipewire(self, params=None):
         if not self.state.pipewire_active:
             self.log("PipeWire not active, skipping", "warning")
-            return True
+            return None
         d = os.path.join(self.state.user_home, ".config", "pipewire", "pipewire.conf.d")
         path = os.path.join(d, "10-sound.conf")
         if self.dry_run:
@@ -1373,14 +1542,25 @@ class SystemOps:
             return False
         self.sudo_run(["modprobe", "tcp_bbr"], ignore_error=True)
         if not os.path.exists("/sys/module/tcp_bbr"):
-            self.log("tcp_bbr not available in this kernel", "warning")
+            self.log("tcp_bbr module not available in this kernel", "warning")
+            return False
         self.sudo_run(["sysctl", "-p", path], ignore_error=True)
+        try:
+            r = subprocess.run(["sysctl", "-n", "net.ipv4.tcp_congestion_control"],
+                               capture_output=True, text=True, timeout=3)
+            cur = r.stdout.strip() if r.returncode == 0 else ""
+        except Exception:
+            cur = ""
+        if cur != "bbr":
+            self.log("BBR written but not active (current: %s)" % (cur or "?"),
+                     "warning")
+            return False
         self.log("✓ TCP BBR enabled", "success"); return True
 
     def apply_swap(self, params=None):
         params = params or {}
         if not self.state.has_swap:
-            self.log("No swap found, skipping", "warning"); return True
+            self.log("No swap found, skipping", "warning"); return None
         val = params.get("swap_value", "").strip()
         if not val:
             val = "150" if self.state.swap_type == "zram" else "10"
@@ -1396,14 +1576,25 @@ class SystemOps:
         ex = self.read_file(path)
         if ex and re.search(r"^vm\.swappiness=%d$" % iv, ex, re.M):
             self.log("swappiness already %d" % iv, "info"); return True
-        if not self.write_file(path, "vm.swappiness=%d\n" % iv, chmod="644", mkdir=True):
+        if not self.write_file(path, "vm.swappiness=%d\n" % iv,
+                               chmod="644", mkdir=True):
             return False
         self.sudo_run(["sysctl", "-p", path], ignore_error=True)
+        try:
+            r = subprocess.run(["sysctl", "-n", "vm.swappiness"],
+                               capture_output=True, text=True, timeout=3)
+            cur = r.stdout.strip() if r.returncode == 0 else ""
+        except Exception:
+            cur = ""
+        if cur != str(iv):
+            self.log("swappiness written but not active (current: %s)" % (cur or "?"),
+                     "warning")
+            return False
         self.log("✓ swappiness=%d" % iv, "success"); return True
 
     def apply_zram(self, params=None):
         if not zram_generator_present():
-            self.log("zram-generator not installed", "warning"); return False
+            self.log("zram-generator not installed", "warning"); return None
         path = "/etc/systemd/zram-generator.conf"
         content = "[zram0]\nzram-size = ram-size / 2\ncompression-algorithm = zstd\n"
         if self.write_file(path, content, chmod="644", mkdir=True):
@@ -1414,7 +1605,7 @@ class SystemOps:
     def apply_zswap(self, params=None):
         if not self.state.has_swap:
             self.log("No swap found, zswap skipped", "warning")
-            return True
+            return None
         pl = ["zswap.enabled=1", "zswap.compressor=zstd"]
         if os.path.exists("/sys/module/z3fold"):
             pl.append("zswap.zpool=z3fold")
@@ -1439,11 +1630,21 @@ class SystemOps:
                 out.append(l)
         if not replaced:
             out.append("%s=%s" % (key, val))
-        self.backup_file(path)
         if not self.write_file(path, "\n".join(out) + "\n", chmod="644",
-                               mkdir=True, backup=False):
+                               mkdir=True, backup=True):
             return False
         self.sudo_run(["sysctl", "-p", path], ignore_error=True)
+        try:
+            r = subprocess.run(["sysctl", "-n", key],
+                               capture_output=True, text=True, timeout=3)
+            cur = r.stdout.strip() if r.returncode == 0 else ""
+        except Exception:
+            cur = ""
+        if cur != str(val):
+            self.log("%s written but not active (current: %s); "
+                     "another sysctl.d file may override it" % (key, cur or "?"),
+                     "warning")
+            return False
         self.log("✓ %s=%s" % (key, val), "success"); return True
 
     def _sysctl_del(self, key, default):
@@ -1457,8 +1658,8 @@ class SystemOps:
         if len(out) == len(old):
             self.log("%s not found in %s" % (key, path), "info")
         else:
-            self.backup_file(path)
-            self.write_file(path, "\n".join(out) + "\n", backup=False)
+            if not self.write_file(path, "\n".join(out) + "\n", backup=True):
+                return False
         self.sudo_run(["sysctl", "-w", "%s=%s" % (key, default)], ignore_error=True)
         self.log("✓ %s reverted to %s" % (key, default), "success"); return True
 
@@ -1471,11 +1672,21 @@ class SystemOps:
     def apply_reisub(self, params=None):
         path = "/etc/sysctl.d/99-sysrq.conf"
         content = "kernel.sysrq=244\n"
-        if self.write_file(path, content, chmod="644", mkdir=True):
-            self.sudo_run(["sysctl", "-p", path], ignore_error=True)
-            self.log("✓ Magic SysRq (REISUB) enabled", "success")
-            return True
-        return False
+        if not self.write_file(path, content, chmod="644", mkdir=True):
+            return False
+        self.sudo_run(["sysctl", "-p", path], ignore_error=True)
+        try:
+            r = subprocess.run(["sysctl", "-n", "kernel.sysrq"],
+                               capture_output=True, text=True, timeout=3)
+            cur = r.stdout.strip() if r.returncode == 0 else ""
+        except Exception:
+            cur = ""
+        if cur != "244":
+            self.log("kernel.sysrq written but not active (current: %s)"
+                     % (cur or "?"), "warning")
+            return False
+        self.log("✓ Magic SysRq (REISUB) enabled", "success")
+        return True
 
     def apply_max_map_count(self, params=None):
         params = params or {}
@@ -1491,6 +1702,15 @@ class SystemOps:
         if not self.write_file(path, content, chmod="644", mkdir=True):
             return False
         self.sudo_run(["sysctl", "-p", path], ignore_error=True)
+        try:
+            with open("/proc/sys/vm/max_map_count", "r") as f:
+                cur = f.read().strip()
+        except Exception:
+            cur = ""
+        if cur != val:
+            self.log("max_map_count written but not active (current: %s)"
+                     % (cur or "?"), "warning")
+            return False
         self.log("✓ vm.max_map_count=%s" % val, "success")
         return True
 
@@ -1514,12 +1734,29 @@ class SystemOps:
         if not content:
             self.log("Cannot read /etc/fstab", "error")
             return False
-        if re.search(r"^\s*tmpfs\s+/tmp\s+tmpfs\s", content, re.M):
-            self.log("/tmp tmpfs already in fstab", "info")
+        rx = re.compile(r"^\s*tmpfs\s+/tmp\s+tmpfs\s")
+        old_lines = lines_in(content)
+        new_lines, replaced, changed = [], False, False
+        for line in old_lines:
+            if rx.match(line):
+                new_line = "tmpfs\t/tmp\ttmpfs\tdefaults,mode=1777,size=%s\t0 0" % size
+                if line.strip() != new_line:
+                    changed = True
+                new_lines.append(new_line)
+                replaced = True
+            else:
+                new_lines.append(line)
+        if not replaced:
+            new_lines.append("tmpfs\t/tmp\ttmpfs\tdefaults,mode=1777,size=%s\t0 0" % size)
+            changed = True
+        if not changed:
+            self.log("/tmp tmpfs already configured with size %s" % size, "info")
             return True
-        line = "tmpfs\t/tmp\ttmpfs\tdefaults,mode=1777,size=%s\t0 0\n" % size
-        self.backup_file(path)
-        if not self.write_file(path, content.rstrip() + "\n" + line, backup=False):
+        if not self.write_file(path, "\n".join(new_lines) + "\n", backup=True):
+            return False
+        if not self.verify_fstab():
+            self.log("fstab verification failed — /tmp tmpfs may be unsafe",
+                     "error")
             return False
         self.sudo_run(["systemctl", "daemon-reload"], ignore_error=True)
         self.log("✓ /tmp in tmpfs configured (needs reboot)", "success")
@@ -1537,8 +1774,10 @@ class SystemOps:
         if len(new) == len(old):
             self.log("/tmp tmpfs not found in fstab", "info")
             return True
-        self.backup_file(path)
-        if not self.write_file(path, "\n".join(new) + "\n", backup=False):
+        if not self.write_file(path, "\n".join(new) + "\n", backup=True):
+            return False
+        if not self.verify_fstab():
+            self.log("fstab verification failed after rollback", "error")
             return False
         self.sudo_run(["systemctl", "daemon-reload"], ignore_error=True)
         self.log("✓ /tmp tmpfs removed (reboot to apply)", "success")
@@ -1552,16 +1791,24 @@ class SystemOps:
         if not self.write_file("/etc/modules-load.d/ntsync.conf", "ntsync\n",
                                chmod="644", mkdir=True):
             return False
-        self.sudo_run(["modprobe", "ntsync"], ignore_error=True)
+        if not self.sudo_run(["modprobe", "ntsync"], ignore_error=True):
+            self.log("ntsync module not loaded (needs kernel 6.14+)", "warning")
+            return False
+        if not os.path.exists("/dev/ntsync"):
+            self.log("ntsync loaded but /dev/ntsync not present", "warning")
+            return False
         self.log("✓ ntsync autoloaded", "success"); return True
 
     def apply_ntfs3(self, params=None):
+        if not getattr(self.state, "has_ntfs_partitions", False):
+            self.log("No NTFS partitions found, skipping", "warning")
+            return None
         if self.dry_run:
             self.log("[DRY RUN] ntfs3 unlock", "warning"); return True
         path = "/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"
         if not self.path_exists(path):
             self.log("mint-blacklist-ntfs3.conf not found", "warning")
-            return True
+            return None
         content = self.read_file(path)
         if content is None:
             self.log("Cannot read %s" % path, "error"); return False
@@ -1572,11 +1819,10 @@ class SystemOps:
         if re.search(r"^\s*blacklist\s+ntfs3\s*$", content, re.M):
             new = re.sub(r"^\s*blacklist\s+ntfs3\s*$", "# blacklist ntfs3",
                          content, flags=re.M)
-            self.backup_file(path)
-            if self.write_file(path, new, backup=False):
+            if self.write_file(path, new, backup=True):
                 self.log("✓ ntfs3 unlocked", "success"); return True
             return False
-        self.log("blacklist ntfs3 not found", "warning"); return True
+        self.log("blacklist ntfs3 not found", "warning"); return None
 
     def rollback_ntfs3(self, params=None):
         path = "/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"
@@ -1587,8 +1833,7 @@ class SystemOps:
             self.log("ntfs3 already blocked", "info"); return True
         new = re.sub(r"^\s*#\s*blacklist\s+ntfs3\s*$", "blacklist ntfs3",
                      content, flags=re.M)
-        self.backup_file(path)
-        if self.write_file(path, new, backup=False):
+        if self.write_file(path, new, backup=True):
             self.log("✓ ntfs3 blocked again", "success"); return True
         return False
 
@@ -1626,6 +1871,7 @@ class SystemOps:
         return ""
 
     def _mount_opts_edit(self, mp, add=True):
+        """Правит только noatime/nodiratime. commit= не трогает."""
         path = "/etc/fstab"
         content = self.read_file(path)
         if not content:
@@ -1636,17 +1882,26 @@ class SystemOps:
         idx, parts = self._fstab_find(lines, mp, uuid)
         if idx is None:
             self.log("%s not found in fstab — skipped" % mp, "warning")
-            return False
-        opts = [o for o in parts[3].split(",") if not o.startswith("commit=")]
+            return None
+        opts = parts[3].split(",")
         if add:
             if "noatime" not in opts:
                 opts.append("noatime")
+            else:
+                self.log("fstab %s already has noatime" % mp, "info")
+                return True
         else:
-            opts = [o for o in opts if o not in ("noatime", "nodiratime")]
+            filtered = [o for o in opts if o not in ("noatime", "nodiratime")]
+            if filtered == opts:
+                self.log("fstab %s has no noatime" % mp, "info")
+                return True
+            opts = filtered
         parts[3] = ",".join(opts)
         lines[idx] = "\t".join(parts)
-        self.backup_file(path)
-        if not self.write_file(path, "\n".join(lines) + "\n", backup=False):
+        if not self.write_file(path, "\n".join(lines) + "\n", backup=True):
+            return False
+        if not self.verify_fstab():
+            self.log("fstab verification failed after editing %s" % mp, "error")
             return False
         if add:
             self.log("✓ fstab %s: +noatime" % mp, "success")
@@ -1660,7 +1915,7 @@ class SystemOps:
         if add and not fs_supports_commit(fstype):
             self.log("Skipped %s (%s): commit= is only valid for ext2/3/4"
                      % (mp, fstype or "unknown"), "warning")
-            return False
+            return None
         content = self.read_file(path)
         if not content:
             self.log("Cannot read /etc/fstab", "error"); return False
@@ -1670,14 +1925,19 @@ class SystemOps:
         idx, parts = self._fstab_find(lines, mp, uuid)
         if idx is None:
             self.log("%s not found in fstab — skipped" % mp, "warning")
-            return False
+            return None
         opts = [o for o in parts[3].split(",") if not o.startswith("commit=")]
         if add:
             opts.append("commit=%s" % val)
         parts[3] = ",".join(opts)
         lines[idx] = "\t".join(parts)
-        self.backup_file(path)
-        return self.write_file(path, "\n".join(lines) + "\n", backup=False)
+        if not self.write_file(path, "\n".join(lines) + "\n", backup=True):
+            return False
+        if not self.verify_fstab():
+            self.log("fstab verification failed after commit edit on %s" % mp,
+                     "error")
+            return False
+        return True
 
     def apply_mount_opts(self, mps):
         if self.dry_run:
@@ -1686,7 +1946,9 @@ class SystemOps:
             return True
         ok = True
         for mp in mps:
-            ok = self._mount_opts_edit(mp, True) and ok
+            r = self._mount_opts_edit(mp, True)
+            if r is False:
+                ok = False
         return ok
 
     def rollback_mount_opts(self, mps):
@@ -1696,7 +1958,9 @@ class SystemOps:
             return True
         ok = True
         for mp in mps:
-            ok = self._mount_opts_edit(mp, False) and ok
+            r = self._mount_opts_edit(mp, False)
+            if r is False:
+                ok = False
         return ok
 
     def apply_commit(self, params=None):
@@ -1713,7 +1977,7 @@ class SystemOps:
         targets = list(self.commit_targets)
         if not targets:
             self.log("commit=: no ext2/3/4 partitions selected", "warning")
-            return True
+            return None
         if self.dry_run:
             for mp in targets:
                 self.log("[DRY RUN] fstab %s commit=%s" % (mp, val), "warning")
@@ -1726,9 +1990,10 @@ class SystemOps:
                 self.log("Skipped %s (%s): commit= unsupported here"
                          % (mp, fstype or "unknown"), "warning")
                 continue
-            if self._mount_commit_edit(mp, val, True):
+            r = self._mount_commit_edit(mp, val, True)
+            if r is True:
                 applied_any = True
-            else:
+            elif r is False:
                 ok = False
         if applied_any and ok:
             self.log("✓ fstab commit=%s applied" % val, "success")
@@ -1742,14 +2007,14 @@ class SystemOps:
             return True
         ok = True
         for mp in targets:
-            if not self._mount_commit_edit(mp, "", False):
+            r = self._mount_commit_edit(mp, "", False)
+            if r is False:
                 ok = False
         if ok:
             self.log("✓ fstab commit removed", "success")
         return ok
 
     def _commit_value_for(self, mp):
-        """Возвращает строку 'commit=NN' для точки монтирования или ''."""
         try:
             with open("/etc/fstab", "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
@@ -1865,15 +2130,28 @@ class SystemOps:
         np_ = "|".join(names)
         alias_rx = re.compile(r"^\s*alias\s+(" + np_ + r")=")
         func_rx = re.compile(r"^\s*(" + np_ + r")\s*\(\)\s*\{")
-        cleaned, skip_fn = [], False
+        cleaned, skip_fn, warned = [], False, False
         for line in without:
             if alias_rx.match(line):
+                if not warned:
+                    self.log("Existing user aliases with same names found "
+                             "— left untouched outside tuneup block", "warning")
+                    warned = True
+                cleaned.append(line)
                 continue
             if func_rx.match(line):
+                if not warned:
+                    self.log("Existing user functions with same names found "
+                             "— left untouched outside tuneup block", "warning")
+                    warned = True
                 if "}" in line:
+                    cleaned.append(line)
                     continue
-                skip_fn = True; continue
+                cleaned.append(line)
+                skip_fn = True
+                continue
             if skip_fn:
+                cleaned.append(line)
                 if line.strip().startswith("}"):
                     skip_fn = False
                 continue
@@ -1919,8 +2197,7 @@ class SystemOps:
         new = "\n".join(cleaned + [""] + block) + "\n"
         if new == content:
             self.log("Commands already added", "info"); return True
-        self.backup_file(bashrc)
-        if not self.write_file(bashrc, new, backup=False):
+        if not self.write_file(bashrc, new, backup=True):
             return False
         if self.state.user_name and self.state.user_name != "root":
             self.sudo_run(["chown", "%s:%s" % (self.state.user_name, self.state.user_name),
@@ -1944,12 +2221,15 @@ class SystemOps:
             for u in self.APT_DAILY_UNITS:
                 self.log("[DRY RUN] mask %s" % u, "warning")
             return True
+        masked_any = False
         for u in self.APT_DAILY_UNITS:
             if not self.unit_exists(u):
                 continue
             self.sudo_run(["systemctl", "disable", "--now", u], ignore_error=True)
-            self.sudo_run(["systemctl", "mask", u], ignore_error=True)
-        self.log("✓ apt-daily / unattended-upgrades masked", "success")
+            if self.sudo_run(["systemctl", "mask", u], ignore_error=True):
+                masked_any = True
+        if masked_any:
+            self.log("✓ apt-daily / unattended-upgrades masked", "success")
         return True
 
     def _unmask_apt_daily(self):
@@ -1961,8 +2241,9 @@ class SystemOps:
             if not self.unit_exists(u):
                 continue
             self.sudo_run(["systemctl", "unmask", u], ignore_error=True)
+            self.sudo_run(["systemctl", "enable", u], ignore_error=True)
         self.sudo_run(["systemctl", "daemon-reload"], ignore_error=True)
-        self.log("✓ apt-daily / unattended-upgrades unmasked", "success")
+        self.log("✓ apt-daily / unattended-upgrades unmasked and enabled", "success")
         return True
 
     def apply_autoupdate(self, params=None):
@@ -1984,25 +2265,31 @@ class SystemOps:
         exists = self.path_exists(tmr) or self.path_exists(svc)
         if sched in ("Отключено", "Disabled"):
             if not exists:
-                self.log("Auto-update timer not found", "info"); return True
+                self.log("Auto-update timer not found", "info")
+                self._unmask_apt_daily()
+                return True
             if self.dry_run:
                 self.log("[DRY RUN] remove timer", "warning"); return True
             self.sudo_run(["systemctl", "disable", "--now", "biweekly-upgrade.timer"],
                           ignore_error=True)
             self.sudo_run(["rm", "-f", svc, tmr], ignore_error=True)
             self.sudo_run(["systemctl", "daemon-reload"], ignore_error=True)
+            self._unmask_apt_daily()
             self.log("Auto-update timer removed", "success"); return True
         if sched not in table:
             self.log("Unknown schedule: %s" % sched, "error"); return False
         onc, desc = table[sched]
         spices = self._spices()
-        cmd = "apt update && apt full-upgrade -y"
+        cmd = "DEBIAN_FRONTEND=noninteractive apt-get update && " \
+              "DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y"
         if self.state.has_flatpak:
             cmd += " && flatpak update -y"
         if spices:
             cmd += " && cinnamon-spice-updater --update-all"
         svc_c = ("[Unit]\nDescription=System upgrade (%s)\n\n[Service]\nType=oneshot\n"
-                 "ExecStartPre=/bin/sleep 600\nExecStart=/usr/bin/bash -c \"%s\"\n"
+                 "ExecStartPre=/bin/sleep 600\n"
+                 "Environment=DEBIAN_FRONTEND=noninteractive\n"
+                 "ExecStart=/usr/bin/bash -c \"%s\"\n"
                  "User=root\n" % (desc, cmd))
         tmr_c = ("[Unit]\nDescription=System upgrade timer (%s)\n\n[Timer]\n"
                  "OnCalendar=%s\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
@@ -2019,11 +2306,11 @@ class SystemOps:
             return True
         if self.dry_run:
             self.log("[DRY RUN] create timer: %s" % desc, "warning"); return True
+        if not self.write_file(svc, svc_c, chmod="644", backup=True):
+            return False
+        if not self.write_file(tmr, tmr_c, chmod="644", backup=True):
+            return False
         self._mask_apt_daily()
-        if not self.write_file(svc, svc_c, chmod="644"):
-            return False
-        if not self.write_file(tmr, tmr_c, chmod="644"):
-            return False
         self.sudo_run(["systemctl", "daemon-reload"], ignore_error=True)
         self.sudo_run(["systemctl", "enable", "--now", "biweekly-upgrade.timer"],
                       ok_msg="✓ timer created: %s" % desc,
@@ -2055,8 +2342,7 @@ class SystemOps:
         new = [l for l in old if not rx.match(l.strip())]
         if len(new) == len(old):
             self.log("Line not found in %s" % path, "info"); return True
-        self.backup_file(path)
-        return self.write_file(path, "\n".join(new) + "\n", backup=False)
+        return self.write_file(path, "\n".join(new) + "\n", backup=True)
 
     def rollback_journald(self, params=None):
         path = "/etc/systemd/journald.conf"
@@ -2064,7 +2350,7 @@ class SystemOps:
         if self.path_exists(bak):
             c = self.read_file(bak)
             if c:
-                self.write_file(path, c, backup=False)
+                self.write_file(path, c, backup=True)
                 self.sudo_run(["systemctl", "restart", "systemd-journald"],
                               ignore_error=True)
                 self.log("✓ journald restored from backup", "success"); return True
@@ -2090,7 +2376,23 @@ class SystemOps:
         return self._remove_grub_params(["nvidia-drm.modeset=1"])
 
     def rollback_vrr(self, params=None):
-        self._rm("/etc/X11/xorg.conf.d/20-amdgpu.conf")
+        """Если файл существовал до твикера — восстановит из свежего бэкапа."""
+        path = "/etc/X11/xorg.conf.d/20-amdgpu.conf"
+        if not self.path_exists(path):
+            self.log("VRR config not found, nothing to rollback", "info")
+            return True
+        safe = path.lstrip("/").replace("/", "_")
+        pattern = os.path.join(self.backup_dir, safe + ".*.bak")
+        candidates = sorted(glob.glob(pattern),
+                            key=lambda p: os.path.getmtime(p),
+                            reverse=True)
+        if candidates:
+            c = self.read_file(candidates[0])
+            if c:
+                if self.write_file(path, c, backup=True):
+                    self.log("✓ VRR config restored from backup", "success")
+                    return True
+        self._rm(path)
         self.log("✓ VRR config removed", "success"); return True
 
     def rollback_radv(self, params=None):
@@ -2108,8 +2410,12 @@ class SystemOps:
 
     def rollback_bbr(self, params=None):
         self._rm("/etc/sysctl.d/99-bbr.conf")
-        self.sudo_run(["sysctl", "-w", "net.ipv4.tcp_congestion_control=cubic"],
+        self.sudo_run(["sysctl", "-w",
+                       "net.ipv4.tcp_congestion_control=cubic"],
                       ignore_error=True)
+        self.sudo_run(["sysctl", "-w", "net.core.default_qdisc=pfifo_fast"],
+                      ignore_error=True)
+        self.log("✓ BBR and fq reverted", "success")
         return True
 
     def rollback_swap(self, params=None):
@@ -2164,22 +2470,26 @@ class SystemOps:
                 lines.append(line)
         if len(lines) == len(lines_in(content)):
             self.log("Command block not found", "info"); return True
-        self.backup_file(bashrc)
-        if self.write_file(bashrc, "\n".join(lines) + "\n", backup=False):
-            self.log("✓ commands removed from .bashrc", "success"); return True
-        return False
+        if not self.write_file(bashrc, "\n".join(lines) + "\n", backup=True):
+            return False
+        if self.state.user_name and self.state.user_name != "root":
+            self.sudo_run(["chown", "%s:%s" % (self.state.user_name, self.state.user_name),
+                           bashrc], ignore_error=True)
+        self.log("✓ commands removed from .bashrc", "success"); return True
 
     # ─── удаление приложений ────────────────────────────────────────────
     def apps_purge(self, pkgs):
-        """Выполняет purge выбранных пакетов + autoremove. Возвращает (ok, freed_str)."""
         if self.dry_run:
             self.log("[DRY RUN] apt purge " + " ".join(pkgs), "warning")
             return True, "?"
         freed = estimate_packages_size(pkgs)
+        env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
         if not self.sudo_run(["apt-get", "purge", "-y"] + list(pkgs),
-                             err_msg="apt purge failed"):
+                             err_msg="apt purge failed",
+                             timeout=SUDO_TIMEOUT_APT, env=env):
             return False, "?"
-        self.sudo_run(["apt-get", "autoremove", "-y"], ignore_error=True)
+        self.sudo_run(["apt-get", "autoremove", "-y"], ignore_error=True,
+                      timeout=SUDO_TIMEOUT_APT, env=env)
         return True, freed
 OPTIONS_HELP = {
     "journald": {
@@ -2439,6 +2749,7 @@ STR = {
         "nmi_now_off": "сейчас: отключён",
         "commit_not_set": "—",
         "commit_default_hint": "по умолчанию: 5 сек",
+        "tmpfs_already": "(/tmp уже в tmpfs)",
         "kern_sw": "как часто данные уходят в подкачку",
         "kern_vfs": "сколько кэша файлов держится в памяти",
         "kern_numa": "перемещение памяти между ядрами",
@@ -2470,6 +2781,7 @@ STR = {
         "msg_close": "Прервать выполнение и закрыть?",
         "msg_running_title": "Уже запущено",
         "msg_running_text": "Linux Tweaker уже запущен.",
+        "result_ok": "Готово: %d применено, %d пропущено, %d ошибок",
         "reason_raid": "у вас есть RAID",
         "reason_itco_not_intel": "не Intel-чипсет",
         "reason_itco_no_module": "модуль iTCO_wdt не поддерживается ядром",
@@ -2482,6 +2794,7 @@ STR = {
         "reason_no_zram": "нет zram-generator",
         "reason_mint_only": "только для Linux Mint",
         "reason_pipewire_inactive": "PipeWire не используется",
+        "reason_no_ntfs": "нет NTFS-разделов",
         "apps_search": "Поиск:",
         "apps_refresh": "Обновить",
         "apps_clear": "Снять выделение",
@@ -2501,6 +2814,7 @@ STR = {
         "apps_confirm_btn": "Удалить",
         "apps_cancel": "Отмена",
         "apps_done": "Удалено %d пакетов, освобождено ~%s",
+        "apps_done_dry": "[Сухой прогон] Будет удалено %d пакетов",
         "apps_failed": "Не удалось удалить пакеты.",
         "apps_installed": "установлен",
         "apps_careful_mark": "⚠",
@@ -2568,6 +2882,7 @@ STR = {
         "nmi_now_off": "now: off",
         "commit_not_set": "—",
         "commit_default_hint": "default: 5 sec",
+        "tmpfs_already": "(/tmp already in tmpfs)",
         "kern_sw": "how often data goes to swap",
         "kern_vfs": "how much file cache stays in RAM",
         "kern_numa": "memory moving between CPU cores",
@@ -2599,6 +2914,7 @@ STR = {
         "msg_close": "Interrupt the job and close?",
         "msg_running_title": "Already running",
         "msg_running_text": "Linux Tweaker is already running.",
+        "result_ok": "Done: %d applied, %d skipped, %d failed",
         "reason_raid": "RAID detected",
         "reason_itco_not_intel": "not an Intel system",
         "reason_itco_no_module": "iTCO_wdt module not available",
@@ -2611,6 +2927,7 @@ STR = {
         "reason_no_zram": "zram-generator not installed",
         "reason_mint_only": "Linux Mint only",
         "reason_pipewire_inactive": "PipeWire is not in use",
+        "reason_no_ntfs": "no NTFS partitions",
         "apps_search": "Search:",
         "apps_refresh": "Refresh",
         "apps_clear": "Deselect",
@@ -2630,6 +2947,7 @@ STR = {
         "apps_confirm_btn": "Remove",
         "apps_cancel": "Cancel",
         "apps_done": "Removed %d packages, freed ~%s",
+        "apps_done_dry": "[Dry run] Would remove %d packages",
         "apps_failed": "Failed to remove packages.",
         "apps_installed": "installed",
         "apps_careful_mark": "⚠",
@@ -2666,7 +2984,6 @@ class MainWindow:
         self._zfs_button = None
         self.max_map_count_value = StringVar(value=MAX_MAP_COUNT_DEFAULT)
         self.tmpfs_size_value = StringVar(value="512M")
-        # Apps tab
         self.apps_checked = set()
         self._installed_packages = None
         self._apps_filter = StringVar(value="")
@@ -2723,9 +3040,14 @@ class MainWindow:
         self._sched_lbl = None
         self._thp_lbl = None
         self._apply_btn = None
+        self._rollback_btn = None
+        self._selall_btn = None
+        self._selnone_btn = None
         self._theme_btn = None
         self._lang_btn = None
         self._about_btn = None
+        self._result_lbl = None
+        self._result_hide_id = None
         self._dry_var = BooleanVar(value="--dry-run" in sys.argv)
         self._compute_disabled_reasons()
         self._build_ui()
@@ -2740,7 +3062,6 @@ class MainWindow:
         self.root.after(900, lambda: self._run_bg(self._status_work))
         self.root.after(1200, lambda: self._run_bg(self._apps_load_installed))
 
-    # ─── i18n и цвета ───────────────────────────────────────────────────
     def t(self, k):
         if k not in STR[self.lang]:
             return k
@@ -2765,7 +3086,6 @@ class MainWindow:
         return ("Disabled", "Daily", "Weekly (Saturday)",
                 "Twice a month (1 & 15)", "Monthly (1st)")
 
-    # ─── причины недоступности ─────────────────────────────────────────
     def _compute_disabled_reasons(self):
         r = {}
         if self.state.has_raid:
@@ -2792,11 +3112,12 @@ class MainWindow:
             r["zram"] = self.t("reason_no_zram")
         if not os.path.exists("/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"):
             r["ntfs3"] = self.t("reason_mint_only")
+        elif not getattr(self.state, "has_ntfs_partitions", False):
+            r["ntfs3"] = self.t("reason_no_ntfs")
         if not getattr(self.state, "pipewire_active", False):
             r["pipewire"] = self.t("reason_pipewire_inactive")
         self.disabled_reasons = r
 
-    # ─── вспомогательные ────────────────────────────────────────────────
     def _lib_on_ntfs(self, lib):
         best, dev, fstype = "", "", ""
         for it in parse_mounts():
@@ -2895,6 +3216,7 @@ class MainWindow:
                                  capture_output=True, text=True,
                                  timeout=5, env=self._host_env())
             if res.returncode != 0:
+                self._ram_cache = ""
                 return ""
             typ, speed = "", ""
             for ln in res.stdout.splitlines():
@@ -2912,6 +3234,7 @@ class MainWindow:
             self._ram_cache = ", ".join([x for x in (typ, speed) if x])
             return self._ram_cache
         except Exception:
+            self._ram_cache = ""
             return ""
 
     def _thp_current(self):
@@ -3005,11 +3328,14 @@ class MainWindow:
                 else ("недоступен" if self.lang == "ru" else "unavailable"))
 
     def _commit_is_effective(self, value):
-        """True, если commit=NN даёт эффект (NN != 5)."""
+        """True, если commit=NN даёт эффект (NN != 5 и NN != 0)."""
         if not value:
             return False
         m = re.match(r"commit=(\d+)$", value)
-        return bool(m) and m.group(1) != "5"
+        if not m:
+            return False
+        v = m.group(1)
+        return v not in ("0", "5")
 
     def _commit_value_for_ui(self, mp):
         ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, True)
@@ -3046,7 +3372,6 @@ class MainWindow:
         h = self.root.winfo_screenheight()
         return w, h, 0.0
 
-    # ─── лог и очередь ──────────────────────────────────────────────────
     def log(self, msg, tag="normal"):
         self.msg_queue.put(("log", msg, tag))
 
@@ -3095,6 +3420,9 @@ class MainWindow:
         elif kind == "steam_applied":
             self.steam_applied = item[1]
             self._update_badges()
+        elif kind == "commit_applied":
+            self.commit_applied_per_mp = item[1]
+            self._update_badges()
         elif kind == "schedule":
             if self._sched_lbl is not None:
                 self._sched_lbl.config(text=self.t("sched_cur") % item[1])
@@ -3108,6 +3436,8 @@ class MainWindow:
         elif kind == "apps_confirm":
             body, pkgs = item[1]
             self._apps_show_confirm(body, pkgs)
+        elif kind == "result":
+            self._show_result(item[1], item[2], item[3])
         elif kind == "toast":
             self.log(item[1][0], item[1][1])
 
@@ -3120,7 +3450,32 @@ class MainWindow:
         self._terminal.see(END)
         self._terminal.configure(state=DISABLED)
 
-    # ─── UI ─────────────────────────────────────────────────────────────
+    def _show_result(self, ok, skip, fail):
+        if self._result_lbl is None or not self._result_lbl.winfo_exists():
+            return
+        c = self.colors()
+        if fail == 0 and ok > 0:
+            mark = "✓"
+            col = c["green"]
+        elif fail == 0 and ok == 0:
+            mark = "•"
+            col = c["gray"]
+        elif fail < ok:
+            mark = "⚠"
+            col = c["yellow"]
+        else:
+            mark = "✗"
+            col = c["red"]
+        text = "%s  %d ok / %d skip / %d fail" % (mark, ok, skip, fail)
+        self._result_lbl.config(text=text, fg=col)
+        if self._result_hide_id is not None:
+            try:
+                self.root.after_cancel(self._result_hide_id)
+            except Exception:
+                pass
+        self._result_hide_id = self.root.after(
+            5000, lambda: self._result_lbl.config(text=""))
+
     def _shrink_fonts(self, w):
         try:
             f = w.cget("font")
@@ -3245,15 +3600,27 @@ class MainWindow:
                                  relief=FLAT, padx=14, pady=6,
                                  font=("DejaVu Sans", 10, "bold"))
         self._apply_btn.pack(side=LEFT, padx=2)
-        Button(bar, text=self.t("btn_rollback"), command=self.rollback_selected,
-               bg=c["button"], fg=c["fg"], activebackground=c["button_hover"],
-               relief=FLAT, padx=12, pady=6).pack(side=LEFT, padx=2)
-        Button(bar, text=self.t("btn_selall"), command=self.select_all_options,
-               bg=c["button"], fg=c["fg"], activebackground=c["button_hover"],
-               relief=FLAT, padx=12, pady=6).pack(side=LEFT, padx=2)
-        Button(bar, text=self.t("btn_selnone"), command=self.reset_options,
-               bg=c["button"], fg=c["fg"], activebackground=c["button_hover"],
-               relief=FLAT, padx=12, pady=6).pack(side=LEFT, padx=2)
+        self._rollback_btn = Button(bar, text=self.t("btn_rollback"),
+                                    command=self.rollback_selected,
+                                    bg=c["button"], fg=c["fg"],
+                                    activebackground=c["button_hover"],
+                                    relief=FLAT, padx=12, pady=6)
+        self._rollback_btn.pack(side=LEFT, padx=2)
+        self._selall_btn = Button(bar, text=self.t("btn_selall"),
+                                  command=self.select_all_options,
+                                  bg=c["button"], fg=c["fg"],
+                                  activebackground=c["button_hover"],
+                                  relief=FLAT, padx=12, pady=6)
+        self._selall_btn.pack(side=LEFT, padx=2)
+        self._selnone_btn = Button(bar, text=self.t("btn_selnone"),
+                                   command=self.reset_options,
+                                   bg=c["button"], fg=c["fg"],
+                                   activebackground=c["button_hover"],
+                                   relief=FLAT, padx=12, pady=6)
+        self._selnone_btn.pack(side=LEFT, padx=2)
+        self._result_lbl = Label(bar, text="", bg=c["bg"], fg=c["gray"],
+                                 font=("DejaVu Sans", 10, "bold"))
+        self._result_lbl.pack(side=LEFT, padx=(16, 0))
         search_bar = Frame(wrap, bg=c["bg"])
         search_bar.pack(fill=X, pady=(0, 6))
         Label(search_bar, text=self.t("lbl_search"),
@@ -3415,7 +3782,7 @@ class MainWindow:
             combo.pack(side=LEFT)
             cur = getattr(self.state, "current_max_map_count", "")
             if cur:
-                Label(top, text="%s %s" % (self.t("thp_cur").split(":")[0] + ":", cur),
+                Label(top, text=self.t("cur_value") % cur,
                       bg=c["panel"], fg=c["gray"],
                       font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(6, 0))
         elif key == "tmpfs_tmp":
@@ -3429,7 +3796,7 @@ class MainWindow:
                             disabledforeground=c["gray"])
             e.pack(side=LEFT)
             if tmpfs_tmp_mounted() or fstab_has_tmp_tmpfs():
-                Label(top, text="(/tmp уже в tmpfs)",
+                Label(top, text=self.t("tmpfs_already"),
                       bg=c["panel"], fg=c["green"],
                       font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(6, 0))
         elif key == "autoupdate":
@@ -3812,7 +4179,6 @@ class MainWindow:
         self._status_view.tag_configure("warn", foreground=c["yellow"])
         self._status_view.tag_configure("muted", foreground=c["gray"])
 
-    # ─── вкладка «Приложения» ───────────────────────────────────────────
     def _build_apps_tab(self):
         c = self.colors()
         wrap = Frame(self._tab_apps, bg=c["bg"])
@@ -3977,13 +4343,16 @@ class MainWindow:
         if not pkgs:
             messagebox.showinfo(APP_NAME, self.t("msg_noopt"), parent=self.root)
             return
-        if not self.sudo.ensure():
+        if not self._dry_var.get() and not self.sudo.ensure():
             self.log("sudo failed", "error")
             return
         self._run_bg(self._apps_dry_run_work, pkgs)
 
     def _apps_dry_run_work(self, pkgs):
-        explicit, deps, system_hits = apt_dry_run_purge(pkgs)
+        explicit, deps, system_hits, ok = apt_dry_run_purge(pkgs)
+        if not ok:
+            self.log("apt simulation failed — cannot confirm removal list",
+                     "error")
         size = estimate_packages_size(explicit + deps)
         lines = [self.t("apps_confirm_will_remove"),
                  "  " + ", ".join(explicit)]
@@ -4015,8 +4384,11 @@ class MainWindow:
         try:
             ok, freed = ops.apps_purge(pkgs)
             if ok:
-                self.log(self.t("apps_done") % (len(pkgs), freed), "success")
-                self.apps_checked.clear()
+                if self._dry_var.get():
+                    self.log(self.t("apps_done_dry") % len(pkgs), "success")
+                else:
+                    self.log(self.t("apps_done") % (len(pkgs), freed), "success")
+                    self.apps_checked.clear()
             else:
                 self.log(self.t("apps_failed"), "error")
         except Exception as e:
@@ -4024,9 +4396,9 @@ class MainWindow:
         finally:
             self.is_running = False
             self._set_running(False)
-            self._installed_packages = installed_packages_set()
+            if not self._dry_var.get():
+                self._installed_packages = installed_packages_set()
             self.msg_queue.put(("apps_redraw", None))
-    # ─── прокрутка колесом ──────────────────────────────────────────────
     def _bind_global_wheel(self):
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.root.bind_all(seq, self._on_wheel, add="+")
@@ -4068,7 +4440,6 @@ class MainWindow:
         if d:
             target_canvas.yview_scroll(d, "units")
 
-    # ─── копирование ────────────────────────────────────────────────────
     def _make_copyable(self, w):
         menu = Menu(self.root, tearoff=0)
         menu.add_command(label=self.t("menu_copy"),
@@ -4101,13 +4472,25 @@ class MainWindow:
         self.root.clipboard_append(sel)
 
     def _copy_all(self, w):
+        try:
+            text = w.get("1.0", "end-1c")
+        except Exception:
+            try:
+                text = w.get()
+            except Exception:
+                return
         self.root.clipboard_clear()
-        self.root.clipboard_append(w.get("1.0", "end-1c"))
+        self.root.clipboard_append(text)
 
     def _select_all(self, w):
-        w.tag_add("sel", "1.0", "end-1c")
+        try:
+            w.tag_add("sel", "1.0", "end-1c")
+        except Exception:
+            try:
+                w.selection_range(0, "end")
+            except Exception:
+                pass
 
-    # ─── тема ───────────────────────────────────────────────────────────
     def _apply_theme(self):
         c = self.colors()
         style = ttk.Style()
@@ -4275,6 +4658,8 @@ class MainWindow:
         return False
 
     def _toggle_theme(self):
+        if self.is_running:
+            return
         self.theme = "dark" if self.theme == "light" else "light"
         if self._theme_btn is not None:
             self._theme_btn.configure(
@@ -4283,6 +4668,8 @@ class MainWindow:
         self._repaint_all()
 
     def _toggle_lang(self):
+        if self.is_running:
+            return
         current = self.schedule_value.get()
         ru_vals = ("Отключено", "Ежедневно", "Еженедельно (суббота)",
                    "2 раза в месяц (1 и 15)", "Ежемесячно (1 число)")
@@ -4310,10 +4697,14 @@ class MainWindow:
         self._sched_lbl = None
         self._thp_lbl = None
         self._apply_btn = None
+        self._rollback_btn = None
+        self._selall_btn = None
+        self._selnone_btn = None
         self._theme_btn = None
         self._lang_btn = None
         self._about_btn = None
         self._zfs_button = None
+        self._result_lbl = None
         self._apps_status = None
         self._apps_canvas = None
         self._apps_inner = None
@@ -4338,14 +4729,12 @@ class MainWindow:
         self._compute_disabled_reasons()
         self._build_ui()
         self._apply_theme()
-        self._bind_global_wheel()
         self._update_badges()
         self._run_bg(self._services_work)
         self._run_bg(self._applied_work)
         self._run_bg(self._status_work)
         self._run_bg(self._apps_load_installed)
 
-    # ─── детект применённых настроек ────────────────────────────────────
     def _applied_work(self):
         ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None, True)
         ops.mount_items = self.mount_items
@@ -4355,10 +4744,8 @@ class MainWindow:
             self.msg_queue.put(("mount_applied", self._detect_mount()))
             self.msg_queue.put(("steam_applied", self._detect_steam()))
             self.msg_queue.put(("schedule", self._schedule_text()))
-            ops2 = SystemOps(self.sudo, self.state,
-                             lambda m, t="normal": None, True)
-            self.commit_applied_per_mp = self._detect_commit_per_mp(ops2)
-            self._update_badges()
+            self.msg_queue.put(("commit_applied",
+                                self._detect_commit_per_mp(ops)))
         except Exception:
             traceback.print_exc()
 
@@ -4373,13 +4760,14 @@ class MainWindow:
         if not m:
             return self.t("sched_none")
         cal = m.group(1).strip()
+        lang = self.lang
         names = {"*-*-* 18:30:00": ("Ежедневно", "Daily"),
                  "Sat 18:30:00": ("Еженедельно (суббота)", "Weekly (Saturday)"),
                  "*-*-1,15 18:30:00": ("2 раза в месяц (1 и 15)", "Twice a month (1 & 15)"),
                  "*-*-1 18:30:00": ("Ежемесячно (1 число)", "Monthly (1st)")}
         pair = names.get(cal)
         if pair:
-            label = pair[0 if self.lang == "ru" else 1]
+            label = pair[0 if lang == "ru" else 1]
             m2 = re.search(r"(\d{2}:\d{2}(?::\d{2})?)", cal)
             if m2:
                 t = m2.group(1)
@@ -4424,9 +4812,8 @@ class MainWindow:
         return False
 
     def _max_map_count_applied(self, mmc_content):
-        """Применённым считается твик, если создан файл твикера
-        ИЛИ если текущее значение в ядре совпадает с выбранным."""
-        if re.search(r"^vm\.max_map_count=", mmc_content, re.M):
+        m = re.search(r"^vm\.max_map_count=(\d+)\s*$", mmc_content, re.M)
+        if m and m.group(1) == self.max_map_count_value.get():
             return True
         try:
             with open("/proc/sys/vm/max_map_count", "r") as f:
@@ -4434,6 +4821,20 @@ class MainWindow:
             return current == self.max_map_count_value.get()
         except Exception:
             return False
+
+    def _grub_has_token(self, grub, token):
+        """Проверяет наличие token в GRUB_CMDLINE_LINUX(_DEFAULT), игнорируя комментарии."""
+        for line in grub.splitlines():
+            s = line.strip()
+            if s.startswith("#"):
+                continue
+            m = re.match(r"^\s*GRUB_CMDLINE_LINUX(?:_DEFAULT)?=(.*)$", line)
+            if not m:
+                continue
+            raw = m.group(1).strip().strip('"').strip("'")
+            if token in raw.split():
+                return True
+        return False
 
     def _detect_applied(self, ops):
         grub = ops.read_file("/etc/default/grub") or ""
@@ -4454,31 +4855,42 @@ class MainWindow:
             except Exception:
                 return ""
         m_sw = re.search(r"^\s*vm\.swappiness\s*=\s*(\d+)\s*$", swp, re.M)
-        cur = sv("vm.swappiness")
+        cur_sw = sv("vm.swappiness")
+        want_sw = self.swap_value.get().strip()
+        sw_ok = False
+        if m_sw and m_sw.group(1) == want_sw:
+            sw_ok = True
+        elif cur_sw == want_sw:
+            sw_ok = True
         pw = os.path.join(self.state.user_home, ".config", "pipewire",
                           "pipewire.conf.d", "10-sound.conf")
+        j_ok = (re.search(r"^\s*Storage\s*=\s*volatile\s*$", j, re.M)
+                and re.search(r"^\s*RuntimeMaxUse\s*=\s*50M\s*$", j, re.M))
+        thp_want = self.thp_value.get()
+        thp_ok = (self._thp_current() == thp_want) or \
+                 self._grub_has_token(grub, "transparent_hugepage=%s" % thp_want)
         return {
-            "journald": bool(re.search(r"^\s*Storage\s*=\s*volatile\s*$", j, re.M)),
-            "audit": "audit=0" in grub,
-            "raid": "raid=noautodetect" in grub,
-            "nmi_watchdog": "nmi_watchdog=0" in grub,
+            "journald": bool(j_ok),
+            "audit": self._grub_has_token(grub, "audit=0"),
+            "raid": self._grub_has_token(grub, "raid=noautodetect"),
+            "nmi_watchdog": self._grub_has_token(grub, "nmi_watchdog=0"),
             "itco_wdt": "blacklist iTCO_wdt" in itco,
             "zfs_services": zfs_units_masked() if self.state.zfs_installed else False,
             "corectrl": self._corectrl_found(ops),
-            "ppfeaturemask": "amdgpu.ppfeaturemask" in grub,
-            "nvidia_modeset": "nvidia-drm.modeset=1" in grub,
+            "ppfeaturemask": self._grub_has_token(grub, "amdgpu.ppfeaturemask=0xffffffff")
+                             or "amdgpu.ppfeaturemask" in grub,
+            "nvidia_modeset": self._grub_has_token(grub, "nvidia-drm.modeset=1"),
             "vrr": ops.path_exists("/etc/X11/xorg.conf.d/20-amdgpu.conf"),
             "radv": "RADV_PERFTEST=sam" in env,
             "mesa": "MESA_SHADER_CACHE_MAX_SIZE=4G" in env,
             "pipewire": ops.path_exists(pw),
             "bbr": sv("net.ipv4.tcp_congestion_control") == "bbr",
-            "swap": (m_sw and m_sw.group(1) in ("10", "150")) or cur in ("10", "150"),
+            "swap": sw_ok,
             "zram": ops.path_exists("/etc/systemd/zram-generator.conf")
                     and zram_generator_present(),
-            "zswap": "zswap.enabled=1" in grub and self.state.has_swap,
-            "thp": (self._thp_current() == self.thp_value.get())
-                    or bool(re.search(r"transparent_hugepage=%s\b"
-                                      % self.thp_value.get(), grub)),
+            "zswap": self._grub_has_token(grub, "zswap.enabled=1")
+                     and self.state.has_swap,
+            "thp": thp_ok,
             "sysctl_cache": bool(re.search(r"^vm\.vfs_cache_pressure=50$", sysc, re.M))
                             or sv("vm.vfs_cache_pressure") == "50",
             "sysctl_numa": bool(re.search(r"^kernel\.numa_balancing=0$", sysc, re.M))
@@ -4523,7 +4935,6 @@ class MainWindow:
         return {lib: os.path.islink(os.path.join(lib, "compatdata"))
                 for lib in self.steam_items}
 
-    # ─── список служб ───────────────────────────────────────────────────
     def _services_work(self):
         ops = SystemOps(self.sudo, self.state, lambda m, t="normal": None,
                         self._dry_var.get())
@@ -4590,7 +5001,6 @@ class MainWindow:
             self._services_tree.selection_remove(self._services_tree.selection())
             self._show_service_help(name)
 
-    # ─── бейджи ─────────────────────────────────────────────────────────
     def _update_badges(self):
         c = self.colors()
         for k, lbl in self.badges.items():
@@ -4620,8 +5030,10 @@ class MainWindow:
         lbl.config(text=self.t("applied_yes") if ok else self.t("applied_no"),
                    bg=c["panel"], fg=c["green"] if ok else c["gray"])
 
-    # ─── ZFS ────────────────────────────────────────────────────────────
     def _zfs_remove_packages(self):
+        if self.is_running:
+            messagebox.showinfo(APP_NAME, self.t("msg_run"), parent=self.root)
+            return
         if self.state.zfs_used:
             messagebox.showwarning(
                 APP_NAME,
@@ -4644,7 +5056,7 @@ class MainWindow:
             parent=self.root, default=messagebox.NO)
         if not answer:
             return
-        if not self.sudo.ensure():
+        if not self._dry_var.get() and not self.sudo.ensure():
             self.log("sudo failed", "error")
             return
         self.is_running = True
@@ -4670,7 +5082,6 @@ class MainWindow:
             self._run_bg(self._applied_work)
             self._run_bg(self._status_work)
             self._run_bg(self._services_work)
-    # ─── apply / rollback ───────────────────────────────────────────────
     def apply_selected(self):
         if self.is_running:
             messagebox.showinfo(APP_NAME, self.t("msg_run"), parent=self.root)
@@ -4702,6 +5113,8 @@ class MainWindow:
         self._ram_cache = None
         self.is_running = True
         self._set_running(True)
+        if self._result_lbl is not None:
+            self._result_lbl.config(text="")
         self.msg_queue.put(("progress", 0))
         self.msg_queue.put(("statusbar", self.t("running")))
         self._run_bg(self._apply_work, selected, mount_sel, steam_sel,
@@ -4714,9 +5127,10 @@ class MainWindow:
         total = len(selected) + (1 if mount_sel else 0) + (1 if steam_sel else 0) \
             + (1 if commit_sel else 0)
         if total == 0:
-            self._finish_run()
+            self._finish_run(0, 0, 0)
             return
         done = 0
+        ok_count = skip_count = fail_count = 0
         self.log("=" * 60, "highlight")
         self.log("APPLY START" if self.lang == "en" else "ЗАПУСК ТЮНИНГА",
                  "highlight")
@@ -4724,25 +5138,51 @@ class MainWindow:
             for k in selected:
                 label = self.om(k)[0]
                 self.log("→ %s" % label, "info")
+                result = None
                 try:
-                    getattr(ops, "apply_%s" % k)(params)
+                    result = getattr(ops, "apply_%s" % k)(params)
                 except Exception as e:
                     self.log("Error in %s: %s" % (k, e), "error")
+                    result = False
+                if result is False:
+                    fail_count += 1
+                elif result is None:
+                    skip_count += 1
+                else:
+                    ok_count += 1
                 done += 1
                 self.msg_queue.put(("progress", int(done / total * 90)))
             if mount_sel:
                 self.log("→ %s" % self.t("mount_title"), "info")
-                ops.apply_mount_opts(mount_sel)
+                r = ops.apply_mount_opts(mount_sel)
+                if r is False:
+                    fail_count += 1
+                elif r is None:
+                    skip_count += 1
+                else:
+                    ok_count += 1
                 done += 1
                 self.msg_queue.put(("progress", int(done / total * 90)))
             if commit_sel:
                 self.log("→ %s" % self.t("commit_title"), "info")
-                ops.apply_commit(params)
+                r = ops.apply_commit(params)
+                if r is False:
+                    fail_count += 1
+                elif r is None:
+                    skip_count += 1
+                else:
+                    ok_count += 1
                 done += 1
                 self.msg_queue.put(("progress", int(done / total * 90)))
             if steam_sel:
                 self.log("→ %s" % self.t("steam_title"), "info")
-                ops.apply_steam_links(steam_sel)
+                r = ops.apply_steam_links(steam_sel)
+                if r is False:
+                    fail_count += 1
+                elif r is None:
+                    skip_count += 1
+                else:
+                    ok_count += 1
                 done += 1
                 self.msg_queue.put(("progress", int(done / total * 90)))
             if not dry:
@@ -4752,8 +5192,9 @@ class MainWindow:
             self.log("Done", "success")
         except Exception as e:
             self.log("Critical error: %s" % e, "error")
+            fail_count += 1
         finally:
-            self._finish_run()
+            self._finish_run(ok_count, skip_count, fail_count)
 
     def rollback_selected(self):
         if self.is_running:
@@ -4776,6 +5217,8 @@ class MainWindow:
         self._ram_cache = None
         self.is_running = True
         self._set_running(True)
+        if self._result_lbl is not None:
+            self._result_lbl.config(text="")
         self.msg_queue.put(("progress", 0))
         self.msg_queue.put(("statusbar", self.t("running")))
         self._run_bg(self._rollback_work, selected, mount_sel, steam_sel,
@@ -4788,9 +5231,10 @@ class MainWindow:
         total = len(selected) + (1 if mount_sel else 0) + (1 if steam_sel else 0) \
             + (1 if commit_sel else 0)
         if total == 0:
-            self._finish_run()
+            self._finish_run(0, 0, 0)
             return
         done = 0
+        ok_count = skip_count = fail_count = 0
         self.log("=" * 60, "highlight")
         self.log("ROLLBACK START" if self.lang == "en" else "ЗАПУСК ОТКАТА",
                  "highlight")
@@ -4798,22 +5242,48 @@ class MainWindow:
             for k in selected:
                 label = self.om(k)[0]
                 self.log("→ %s" % label, "info")
+                result = None
                 try:
-                    getattr(ops, "rollback_%s" % k)()
+                    result = getattr(ops, "rollback_%s" % k)()
                 except Exception as e:
                     self.log("Error in %s: %s" % (k, e), "error")
+                    result = False
+                if result is False:
+                    fail_count += 1
+                elif result is None:
+                    skip_count += 1
+                else:
+                    ok_count += 1
                 done += 1
                 self.msg_queue.put(("progress", int(done / total * 90)))
             if mount_sel:
-                ops.rollback_mount_opts(mount_sel)
+                r = ops.rollback_mount_opts(mount_sel)
+                if r is False:
+                    fail_count += 1
+                elif r is None:
+                    skip_count += 1
+                else:
+                    ok_count += 1
                 done += 1
                 self.msg_queue.put(("progress", int(done / total * 90)))
             if commit_sel:
-                ops.rollback_commit({})
+                r = ops.rollback_commit({})
+                if r is False:
+                    fail_count += 1
+                elif r is None:
+                    skip_count += 1
+                else:
+                    ok_count += 1
                 done += 1
                 self.msg_queue.put(("progress", int(done / total * 90)))
             if steam_sel:
-                ops.rollback_steam_links(steam_sel)
+                r = ops.rollback_steam_links(steam_sel)
+                if r is False:
+                    fail_count += 1
+                elif r is None:
+                    skip_count += 1
+                else:
+                    ok_count += 1
                 done += 1
                 self.msg_queue.put(("progress", int(done / total * 90)))
             if not dry:
@@ -4823,21 +5293,25 @@ class MainWindow:
             self.log("Rollback done", "success")
         except Exception as e:
             self.log("Critical error: %s" % e, "error")
+            fail_count += 1
         finally:
-            self._finish_run()
+            self._finish_run(ok_count, skip_count, fail_count)
 
-    def _finish_run(self):
+    def _finish_run(self, ok_count, skip_count, fail_count):
         self.is_running = False
         self._set_running(False)
+        self.msg_queue.put(("result", ok_count, skip_count, fail_count))
         self._run_bg(self._applied_work)
         self._run_bg(self._status_work)
         self._run_bg(self._services_work)
 
     def _set_running(self, running):
-        if self._apply_btn is not None and self._apply_btn.winfo_exists():
-            self._apply_btn.config(state=DISABLED if running else NORMAL)
+        for btn_attr in ("_apply_btn", "_rollback_btn",
+                         "_selall_btn", "_selnone_btn"):
+            btn = getattr(self, btn_attr, None)
+            if btn is not None and btn.winfo_exists():
+                btn.config(state=DISABLED if running else NORMAL)
 
-    # ─── выбор всего / ничего ──────────────────────────────────────────
     def select_all_options(self):
         for k, var in self.opts_state.items():
             if k in self.disabled_reasons:
@@ -4917,7 +5391,8 @@ class MainWindow:
                 ops.log("[DRY RUN] enable %s" % name, "warning")
                 continue
             ok = ops.sudo_run(["systemctl", "unmask", name], ignore_error=True)
-            ok2 = ops.sudo_run(["systemctl", "enable", name], ignore_error=True)
+            ok2 = ops.sudo_run(["systemctl", "enable", "--now", name],
+                               ignore_error=True)
             if ok or ok2:
                 ops.log("✓ %s enabled" % name, "success")
             else:
@@ -4945,7 +5420,7 @@ class MainWindow:
                 continue
             ok = ops.sudo_run(["systemctl", "disable", "--now", name],
                               ignore_error=True)
-            if name.startswith("avahi"):
+            if name.startswith("avahi") or name.startswith("bluetooth"):
                 ok = ops.sudo_run(["systemctl", "mask", name],
                                   ignore_error=True) or ok
             if ok:
@@ -4955,7 +5430,6 @@ class MainWindow:
         self._run_bg(self._services_work)
         self._run_bg(self._status_work)
 
-    # ─── статус ─────────────────────────────────────────────────────────
     def _status_work(self):
         try:
             self._status_inner()
@@ -5156,11 +5630,19 @@ class MainWindow:
     def _render_status(self, rows):
         if self._status_view is None:
             return
+        try:
+            scroll_pos = self._status_view.yview()[0]
+        except Exception:
+            scroll_pos = 0.0
         self._status_view.configure(state=NORMAL)
         self._status_view.delete("1.0", END)
         for text, tag in rows:
             self._status_view.insert(END, text + "\n", tag)
         self._status_view.configure(state=DISABLED)
+        try:
+            self._status_view.yview_moveto(scroll_pos)
+        except Exception:
+            pass
 
     def _fmt_state(self, value):
         mapping = {
@@ -5173,7 +5655,6 @@ class MainWindow:
         }
         return mapping.get(value, value)
 
-    # ─── диалоги ────────────────────────────────────────────────────────
     def _show_option_help(self, key):
         try:
             txt = OPTIONS_HELP.get(key, {}).get(self.lang, "")
@@ -5296,18 +5777,19 @@ class MainWindow:
     def _open_option_file(self, key):
         cands = [p.format(home=self.state.user_home)
                  for p in OPTION_FILES.get(key, [])]
+        if not cands:
+            return
         target = next((p for p in cands if os.path.exists(p)), None)
-        if target is None and cands:
+        if target is None:
             if not self.sudo._cached():
                 if not self.sudo.ensure():
                     return
             target = next((p for p in cands
                            if subprocess.run(["sudo", "-n", "test", "-e", p],
-                                             capture_output=True).returncode == 0),
+                                             capture_output=True,
+                                             timeout=5).returncode == 0),
                           None)
         if target is None:
-            if not cands:
-                return
             messagebox.showinfo(self.t("viewer"),
                                 self.t("msg_nofile") + "\n" + "\n".join(cands),
                                 parent=self.root)
