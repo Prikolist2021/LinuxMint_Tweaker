@@ -1095,6 +1095,51 @@ class SystemOps:
             return False
         return True
 
+    def write_user_file(self, path, content, backup=True):
+        """Пишет файл в домашнюю папку пользователя без sudo."""
+        if self.dry_run:
+            self.log("[DRY RUN] user write: %s" % path, "warning")
+            return True
+        try:
+            d = os.path.dirname(path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            if backup and os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        old = f.read()
+                    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    bp = path + "." + ts + ".bak"
+                    with open(bp, "w", encoding="utf-8") as f:
+                        f.write(old)
+                    self.log("[BACKUP] %s" % os.path.basename(bp), "info")
+                except Exception as e:
+                    self.log("[WARN] backup %s: %s" % (path, e), "warning")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            try:
+                os.chmod(path, 0o644)
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            self.log("User write error %s: %s" % (path, e), "error")
+            return False
+
+    def remove_user_file(self, path):
+        """Удаляет файл в домашней папке без sudo."""
+        if self.dry_run:
+            self.log("[DRY RUN] user rm %s" % path, "warning")
+            return True
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+                self.log("✓ removed %s" % path, "success")
+            return True
+        except Exception as e:
+            self.log("User remove error %s: %s" % (path, e), "error")
+            return False
+  
     def ensure_line(self, path, line, pattern, chmod="644", mkdir=False):
         if self.dry_run:
             self.log("[DRY RUN] %s: %s" % (path, line), "warning")
@@ -1516,24 +1561,13 @@ class SystemOps:
             return None
         d = os.path.join(self.state.user_home, ".config", "pipewire", "pipewire.conf.d")
         path = os.path.join(d, "10-sound.conf")
-        if self.dry_run:
-            self.log("[DRY RUN] PipeWire config: %s" % path, "warning"); return True
         content = ("context.properties = {\n    default.clock.min-quantum = 512\n"
                    "    default.clock.quantum = 4096\n"
                    "    default.clock.max-quantum = 8192\n}\n")
-        try:
-            os.makedirs(d, exist_ok=True)
-        except Exception as e:
-            self.log("Cannot create %s: %s" % (d, e), "error")
+        if not self.write_user_file(path, content, backup=True):
             return False
-        if not self.write_file(path, content, chmod="644"):
-            return False
-        if self.state.user_name and self.state.user_name != "root":
-            self.sudo_run(["chown", "-R",
-                           "%s:%s" % (self.state.user_name, self.state.user_name),
-                           os.path.join(self.state.user_home, ".config", "pipewire")],
-                          ignore_error=True)
-        self.log("✓ PipeWire configured", "success"); return True
+        self.log("✓ PipeWire configured", "success")
+        return True
 
     def apply_bbr(self, params=None):
         path = "/etc/sysctl.d/99-bbr.conf"
@@ -2404,9 +2438,11 @@ class SystemOps:
         self.log("✓ MESA cache removed", "success"); return True
 
     def rollback_pipewire(self, params=None):
-        self._rm(os.path.join(self.state.user_home, ".config", "pipewire",
-                              "pipewire.conf.d", "10-sound.conf"))
-        self.log("✓ PipeWire config removed", "success"); return True
+        path = os.path.join(self.state.user_home, ".config", "pipewire",
+                            "pipewire.conf.d", "10-sound.conf")
+        self.remove_user_file(path)
+        self.log("✓ PipeWire config removed", "success")
+        return True
 
     def rollback_bbr(self, params=None):
         self._rm("/etc/sysctl.d/99-bbr.conf")
