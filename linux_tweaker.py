@@ -5143,7 +5143,9 @@ class MainWindow:
         if ("autoupdate" in selected and not dry
                 and params["update_schedule"] not in ("Отключено", "Disabled")):
             messagebox.showinfo(APP_NAME, self.t("autoupdate_warn"), parent=self.root)
-        if not dry and not self.sudo.ensure():
+        needs_sudo = bool(mount_sel or commit_sel or steam_sel
+                          or any(k != "pipewire" for k in selected))
+        if not dry and needs_sudo and not self.sudo.ensure():
             self.log("sudo failed", "error")
             return
         self._ram_cache = None
@@ -5247,7 +5249,9 @@ class MainWindow:
             messagebox.showwarning(APP_NAME, self.t("msg_noopt"), parent=self.root)
             return
         dry = self._dry_var.get()
-        if not dry and not self.sudo.ensure():
+        needs_sudo = bool(mount_sel or commit_sel or steam_sel
+                          or any(k != "pipewire" for k in selected))
+        if not dry and needs_sudo and not self.sudo.ensure():
             self.log("sudo failed", "error")
             return
         self._ram_cache = None
