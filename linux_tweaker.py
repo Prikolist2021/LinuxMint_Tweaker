@@ -4545,6 +4545,17 @@ class MainWindow:
         if direct_read_worked or sudo_worked:
             return False
         return None
+    def _max_map_count_applied(self, mmc_content):
+        m = re.search(r"^vm\.max_map_count=(\d+)\s*$",
+                      mmc_content, re.M)
+        if m and m.group(1) == self.max_map_count_value.get():
+            return True
+        try:
+            with open("/proc/sys/vm/max_map_count", "r") as f:
+                current = f.read().strip()
+            return current == self.max_map_count_value.get()
+        except Exception:
+            return False
 
     def _grub_has_token(self, grub, token):
         for line in grub.splitlines():
