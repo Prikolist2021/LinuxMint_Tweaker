@@ -40,6 +40,9 @@ cp linux_tweaker.py build-appimage/src/
 if [ -d linux_tweaker ]; then
     cp -r linux_tweaker build-appimage/src/
 fi
+if [ -f tweaker_packages.py ]; then
+    cp tweaker_packages.py build-appimage/src/
+fi
 
 # Если рядом есть иконка — копируем её в сборку (и в корень, и в src/)
 if [ -f linux-tweaker.png ]; then
@@ -81,6 +84,7 @@ pyinstaller \
     --name linux-tweaker \
     --hidden-import tkinter \
     --hidden-import _tkinter \
+    --hidden-import tweaker_packages \
     --collect-all tkinter \
     $ADD_DATA_ICON \
     --clean \
