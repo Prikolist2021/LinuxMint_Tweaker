@@ -4420,6 +4420,51 @@ class MainWindow:
 
     # ─── Детект: corectrl, max_map_count, grub, applied ─────────────────
 
+    def _applied_work(self):
+        ops = SystemOps(self.sudo, self.state,
+                        lambda m, t="normal": None, True)
+        ops.mount_items = self.mount_items
+        ops.commit_targets = [mp for mp in self.commit_state]
+        try:
+            self.msg_queue.put(("applied", self._detect_applied(ops)))
+            self.msg_queue.put(("mount_applied", self._detect_mount()))
+            self.msg_queue.put(("steam_applied", self._detect_steam()))
+            self.msg_queue.put(("schedule", self._schedule_text()))
+            self.msg_queue.put(("commit_applied",
+                                self._detect_commit_per_mp(ops)))
+        except Exception:
+            traceback.print_exc()
+
+    def _schedule_text(self):
+        path = "/etc/systemd/system/biweekly-upgrade.timer"
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception:
+            return self.t("sched_none")
+        m = re.search(r"^\s*OnCalendar\s*=\s*(.+)$", content, re.M)
+        if not m:
+            return self.t("sched_none")
+        cal = m.group(1).strip()
+        names = {"*-*-* 18:30:00": ("Ежедневно", "Daily"),
+                 "Sat 18:30:00": ("Еженедельно (суббота)",
+                                  "Weekly (Saturday)"),
+                 "*-*-1,15 18:30:00": ("2 раза в месяц (1 и 15)",
+                                       "Twice a month (1 & 15)"),
+                 "*-*-1 18:30:00": ("Ежемесячно (1 число)",
+                                    "Monthly (1st)")}
+        pair = names.get(cal)
+        if pair:
+            label = pair[0 if self.lang == "ru" else 1]
+            m2 = re.search(r"(\d{2}:\d{2}(?::\d{2})?)", cal)
+            if m2:
+                t = m2.group(1)
+                if len(t) == 8:
+                    t = t[:5]
+                label = "%s, %s" % (label, t)
+            return label
+        return cal
+
     def _check_corectrl_status(self):
         """Кнопка «проверить» для CoreCtrl: запрашивает sudo,
         читает файл правила, обновляет бейдж."""
