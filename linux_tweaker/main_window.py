@@ -2151,12 +2151,28 @@ class MainWindow:
         return cal
 
     def _corectrl_found(self, ops):
+        """Ищет правило Polkit для CoreCtrl. Читает напрямую (без sudo),
+        потому что /etc/polkit-1/rules.d/ обычно доступен на чтение всем."""
+        # 1. Прямые пути — читаем напрямую, без sudo
+        direct_paths = (
+            "/etc/polkit-1/rules.d/90-corectrl.rules",
+            "/usr/share/polkit-1/rules.d/90-corectrl.rules",
+            "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla",
+        )
+        for p in direct_paths:
+            try:
+                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    if "org.corectrl" in f.read():
+                        return True
+            except Exception:
+                continue
+        # 2. Fallback: перебор файлов в rules.d по имени и содержимому
         for d in ("/etc/polkit-1/rules.d", "/usr/share/polkit-1/rules.d",
                   "/etc/polkit-1/localauthority/50-local.d"):
             try:
                 names = os.listdir(d)
             except Exception:
-                names = []
+                continue
             for fn in names:
                 if "corectrl" in fn.lower():
                     return True
@@ -2167,12 +2183,6 @@ class MainWindow:
                             return True
                 except Exception:
                     continue
-        for p in ("/etc/polkit-1/rules.d/90-corectrl.rules",
-                  "/usr/share/polkit-1/rules.d/90-corectrl.rules",
-                  "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla"):
-            cc = ops.read_file(p)
-            if cc and "org.corectrl" in cc:
-                return True
         return False
 
     def _max_map_count_applied(self, mmc_content):
