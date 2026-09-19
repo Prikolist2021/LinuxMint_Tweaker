@@ -2170,14 +2170,20 @@ class MainWindow:
         return cal
 
     def _corectrl_found(self, ops):
-        """Ищет правило Polkit для CoreCtrl. Читает напрямую (без sudo),
-        потому что /etc/polkit-1/rules.d/ обычно доступен на чтение всем."""
-        # 1. Прямые пути — читаем напрямую, без sudo
+        """Ищет правило Polkit для CoreCtrl.
+
+        Каталог /etc/polkit-1/rules.d/ обычно имеет права 750 (root:polkitd),
+        поэтому обычный пользователь его не читает. Используем три уровня:
+        1) прямое чтение (работает, если права позволяют),
+        2) sudo -n cat (работает после первой sudo-аутентификации),
+        3) sudo -n ls + cat (полный перебор с sudo).
+        """
         direct_paths = (
             "/etc/polkit-1/rules.d/90-corectrl.rules",
             "/usr/share/polkit-1/rules.d/90-corectrl.rules",
             "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla",
         )
+        # 1. Прямое чтение (если права позволяют)
         for p in direct_paths:
             try:
                 with open(p, "r", encoding="utf-8", errors="replace") as f:
@@ -2185,23 +2191,40 @@ class MainWindow:
                         return True
             except Exception:
                 continue
-        # 2. Fallback: перебор файлов в rules.d по имени и содержимому
-        for d in ("/etc/polkit-1/rules.d", "/usr/share/polkit-1/rules.d",
-                  "/etc/polkit-1/localauthority/50-local.d"):
+        # 2. Через sudo -n cat (если sudo-сессия активна)
+        for p in direct_paths:
             try:
-                names = os.listdir(d)
+                r = subprocess.run(["sudo", "-n", "cat", p],
+                                   capture_output=True, text=True,
+                                   timeout=3)
+                if r.returncode == 0 and "org.corectrl" in r.stdout:
+                    return True
             except Exception:
                 continue
-            for fn in names:
-                if "corectrl" in fn.lower():
-                    return True
-                try:
-                    with open(os.path.join(d, fn), "r",
-                              encoding="utf-8", errors="replace") as f:
-                        if "org.corectrl" in f.read():
-                            return True
-                except Exception:
+        # 3. Перебор каталогов через sudo -n ls + cat
+        for d in ("/etc/polkit-1/rules.d",
+                  "/usr/share/polkit-1/rules.d",
+                  "/etc/polkit-1/localauthority/50-local.d"):
+            try:
+                r = subprocess.run(["sudo", "-n", "ls", d],
+                                   capture_output=True, text=True,
+                                   timeout=3)
+                if r.returncode != 0:
                     continue
+                for fn in r.stdout.splitlines():
+                    fn = fn.strip()
+                    if not fn or fn.startswith("total"):
+                        continue
+                    if "corectrl" in fn.lower():
+                        return True
+                    full = os.path.join(d, fn)
+                    r2 = subprocess.run(["sudo", "-n", "cat", full],
+                                        capture_output=True, text=True,
+                                        timeout=3)
+                    if r2.returncode == 0 and "org.corectrl" in r2.stdout:
+                        return True
+            except Exception:
+                continue
         return False
 
     def _max_map_count_applied(self, mmc_content):
