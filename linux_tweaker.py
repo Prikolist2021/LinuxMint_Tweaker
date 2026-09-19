@@ -3057,24 +3057,24 @@ class SystemOps:
             for mp in mps:
                 self.log("[DRY RUN] fstab %s +noatime" % mp, "warning")
             return True
-        ok = True
-        for mp in mps:
-            r = self._mount_opts_edit(mp, True)
-            if r is False:
-                ok = False
-        return ok
+        res = [self._mount_opts_edit(mp, True) for mp in mps]
+        if all(r is None for r in res):
+            return None
+        if any(r is False for r in res):
+            return False
+        return True
 
     def rollback_mount_opts(self, mps):
         if self.dry_run:
             for mp in mps:
                 self.log("[DRY RUN] fstab %s -noatime" % mp, "warning")
             return True
-        ok = True
-        for mp in mps:
-            r = self._mount_opts_edit(mp, False)
-            if r is False:
-                ok = False
-        return ok
+        res = [self._mount_opts_edit(mp, False) for mp in mps]
+        if all(r is None for r in res):
+            return None
+        if any(r is False for r in res):
+            return False
+        return True
 
     # ─── fstab: правка commit= ──────────────────────────────────────────
 
@@ -3144,9 +3144,13 @@ class SystemOps:
                 applied_any = True
             elif r is False:
                 ok = False
-        if applied_any and ok:
-            self.log("✓ fstab commit=%s applied" % val, "success")
-        return ok
+        if not applied_any:
+            self.log("commit=: all targets skipped", "warning")
+            return None
+        if not ok:
+            return False
+        self.log("✓ fstab commit=%s applied" % val, "success")
+        return True
 
     def rollback_commit(self, params=None):
         if self.dry_run:
@@ -3155,14 +3159,13 @@ class SystemOps:
         targets = list(self.commit_targets)
         if not targets:
             return True
-        ok = True
-        for mp in targets:
-            r = self._mount_commit_edit(mp, "", False)
-            if r is False:
-                ok = False
-        if ok:
-            self.log("✓ fstab commit removed", "success")
-        return ok
+        res = [self._mount_commit_edit(mp, "", False) for mp in targets]
+        if all(r is None for r in res):
+            return None
+        if any(r is False for r in res):
+            return False
+        self.log("✓ fstab commit removed", "success")
+        return True
 
     def _commit_value_for(self, mp):
         """Возвращает строку 'commit=NN' для точки монтирования или ''."""
@@ -3615,8 +3618,12 @@ class SystemOps:
                     self.log("✓ VRR config restored from backup",
                              "success")
                     return True
-        self._rm(path)
-        self.log("✓ VRR config removed", "success")
+        content = self.read_file(path) or ""
+        if re.search(r'Option\s+"VariableRefresh"', content, re.I):
+            self._rm(path)
+            self.log("✓ VRR config removed", "success")
+        else:
+            self.log("VRR config not ours, left untouched", "info")
         return True
 
     def rollback_radv(self, params=None):
@@ -3650,14 +3657,20 @@ class SystemOps:
 
     def rollback_swap(self, params=None):
         self._rm("/etc/sysctl.d/99-gaming-swap.conf")
-        self.sudo_run(["sysctl", "-w", "vm.swappiness=60"],
-                      ignore_error=True)
-        self.log("✓ swappiness back to 60", "success")
+        self.log("✓ swappiness: file removed; live value reverts "
+                 "to stock after reboot", "success")
         return True
 
     def rollback_zram(self, params=None):
-        self._rm("/etc/systemd/zram-generator.conf")
-        self.sudo_run(["systemctl", "daemon-reload"], ignore_error=True)
+        path = "/etc/systemd/zram-generator.conf"
+        content = self.read_file(path) or ""
+        if re.search(r"zram-size\s*=\s*ram-size", content):
+            self._rm(path)
+            self.sudo_run(["systemctl", "daemon-reload"],
+                          ignore_error=True)
+            self.log("✓ zram config removed", "success")
+        else:
+            self.log("zram config not ours, left untouched", "info")
         return True
 
     def rollback_zswap(self, params=None):
@@ -3775,8 +3788,9 @@ class MainWindow:
         self.tmpfs_size_value = StringVar(value="512M")
         self.shutdown_timeout_value = StringVar(
             value=SHUTDOWN_TIMEOUT_DEFAULT)
+        self.pipewire_preset_key = PIPEWIRE_PRESET_DEFAULT
         self.pipewire_preset_value = StringVar(
-            value=PIPEWIRE_PRESET_DEFAULT)
+            value=self._pipewire_preset_label(PIPEWIRE_PRESET_DEFAULT))
 
         self.apps_checked = set()
         self._installed_packages = None
@@ -4349,6 +4363,7 @@ class MainWindow:
                 self._progress["value"] = item[1]
         elif kind == "running":
             self.is_running = item[1]
+            self._set_running(item[1])
         elif kind == "applied":
             self.applied = item[1]
             self._update_badges()
@@ -4538,16 +4553,20 @@ class MainWindow:
         return None
 
     def _max_map_count_applied(self, mmc_content):
-        m = re.search(r"^vm\.max_map_count=(\d+)\s*$",
-                      mmc_content, re.M)
-        if m and m.group(1) == self.max_map_count_value.get():
-            return True
-        try:
-            with open("/proc/sys/vm/max_map_count", "r") as f:
-                current = f.read().strip()
-            return current == self.max_map_count_value.get()
-        except Exception:
+        return bool(re.search(r"^vm\.max_map_count=\d+\s*$",
+                              mmc_content, re.M))
+    def _vrr_applied(self, ops):
+        content = ops.read_file(
+            "/etc/X11/xorg.conf.d/20-amdgpu.conf") or ""
+        return bool(re.search(r'Option\s+"VariableRefresh"\s+"true"',
+                              content, re.I))
+
+    def _zram_applied(self, ops):
+        if not zram_generator_present():
             return False
+        content = ops.read_file(
+            "/etc/systemd/zram-generator.conf") or ""
+        return bool(re.search(r"^\s*\[zram", content, re.M))
 
     def _grub_has_token(self, grub, token):
         for line in grub.splitlines():
@@ -4560,6 +4579,19 @@ class MainWindow:
                 continue
             raw = m.group(1).strip().strip('"').strip("'")
             if token in raw.split():
+                return True
+        return False
+    def _grub_has_prefix(self, grub, prefix):
+        for line in grub.splitlines():
+            s = line.strip()
+            if s.startswith("#"):
+                continue
+            m = re.match(
+                r"^\s*GRUB_CMDLINE_LINUX(?:_DEFAULT)?=(.*)$", line)
+            if not m:
+                continue
+            raw = m.group(1).strip().strip('"').strip("'")
+            if any(t.startswith(prefix) for t in raw.split()):
                 return True
         return False
 
@@ -4585,24 +4617,14 @@ class MainWindow:
             except Exception:
                 return ""
 
-        m_sw = re.search(r"^\s*vm\.swappiness\s*=\s*(\d+)\s*$",
-                         swp, re.M)
-        cur_sw = sv("vm.swappiness")
-        want_sw = self.swap_value.get().strip()
-        sw_ok = False
-        if m_sw and m_sw.group(1) == want_sw:
-            sw_ok = True
-        elif cur_sw == want_sw:
-            sw_ok = True
+        sw_ok = bool(re.search(r"^\s*vm\.swappiness\s*=\s*\d+\s*$",
+                               swp, re.M))
         pw = os.path.join(self.state.user_home, ".config", "pipewire",
                           "pipewire.conf.d", "10-sound.conf")
         j_ok = (re.search(r"^\s*Storage\s*=\s*volatile\s*$", j, re.M)
                 and re.search(r"^\s*RuntimeMaxUse\s*=\s*50M\s*$",
                               j, re.M))
-        thp_want = self.thp_value.get()
-        thp_ok = ((self._thp_current() == thp_want)
-                  or self._grub_has_token(
-                      grub, "transparent_hugepage=%s" % thp_want))
+        thp_ok = self._grub_has_prefix(grub, "transparent_hugepage=")
         pipewire_preset = self._pipewire_preset_current()
         return {
             "journald": bool(j_ok),
@@ -4620,16 +4642,13 @@ class MainWindow:
                 or "amdgpu.ppfeaturemask" in grub),
             "nvidia_modeset": self._grub_has_token(
                 grub, "nvidia-drm.modeset=1"),
-            "vrr": ops.path_exists(
-                "/etc/X11/xorg.conf.d/20-amdgpu.conf"),
+            "vrr": self._vrr_applied(ops),
             "radv": "RADV_PERFTEST=sam" in env,
             "mesa": "MESA_SHADER_CACHE_MAX_SIZE=4G" in env,
             "pipewire": bool(pipewire_preset),
             "bbr": sv("net.ipv4.tcp_congestion_control") == "bbr",
             "swap": sw_ok,
-            "zram": (ops.path_exists(
-                "/etc/systemd/zram-generator.conf")
-                and zram_generator_present()),
+            "zram": self._zram_applied(ops),
             "zswap": (self._grub_has_token(grub, "zswap.enabled=1")
                       and self.state.has_swap),
             "thp": thp_ok,
@@ -5367,6 +5386,10 @@ class MainWindow:
                 relief=FLAT, padx=10, pady=4,
                 font=("DejaVu Sans", 9))
             self._zfs_button.pack(anchor=W, padx=(24, 0), pady=(4, 0))
+    def _pipewire_preset_label(self, key):
+        p = PIPEWIRE_PRESETS[key]
+        return "%s — %s" % (p["label_%s" % self.lang],
+                            p["desc_%s" % self.lang])
 
     def _pipewire_preset_strings(self):
         """Возвращает список строк для dropdown PipeWire."""
@@ -5379,14 +5402,10 @@ class MainWindow:
         return result
 
     def _pipewire_preset_on_select(self):
-        """После выбора в dropdown — обрезаем строку до названия и
-        сохраняем ключ."""
         cur = self.pipewire_preset_value.get()
         for key in ("default", "gaming", "recording"):
-            p = PIPEWIRE_PRESETS[key]
-            label = p["label_%s" % self.lang]
-            if cur.startswith(label + " —"):
-                self.pipewire_preset_value.set(key)
+            if cur == self._pipewire_preset_label(key):
+                self.pipewire_preset_key = key
                 return
 
     def _build_disk_extras(self):
@@ -5761,8 +5780,7 @@ class MainWindow:
         except Exception as e:
             self.log("Critical error: %s" % e, "error")
         finally:
-            self.is_running = False
-            self._set_running(False)
+            self.msg_queue.put(("running", False))
             if not self._dry_var.get():
                 self._installed_packages = installed_packages_set()
             self.msg_queue.put(("apps_redraw", None))
@@ -6083,6 +6101,8 @@ class MainWindow:
         else:
             self.schedule_value.set(
                 dict(zip(ru_vals, en_vals)).get(current, current))
+        self.pipewire_preset_value.set(
+            self._pipewire_preset_label(self.pipewire_preset_key))
         self._rebuild_ui()
 
     def _rebuild_ui(self):
@@ -6402,8 +6422,7 @@ class MainWindow:
         finally:
             self.state.zfs_installed = zfs_packages_installed()
             self.state.zfs_used = zfs_in_use()
-            self.is_running = False
-            self._set_running(False)
+            self.msg_queue.put(("running", False))
             self._run_bg("applied", self._applied_work)
             self._run_bg("status", self._status_work)
             self._run_bg("services", self._services_work)
@@ -6440,8 +6459,7 @@ class MainWindow:
             "max_map_count_value": self.max_map_count_value.get(),
             "tmpfs_size_value": self.tmpfs_size_value.get(),
             "shutdown_timeout_value": self.shutdown_timeout_value.get(),
-            "pipewire_preset": self.pipewire_preset_value.get()
-                or PIPEWIRE_PRESET_DEFAULT,
+            "pipewire_preset": self.pipewire_preset_key,
         }
         dry = self._dry_var.get()
         if ("autoupdate" in selected and not dry
@@ -6661,10 +6679,8 @@ class MainWindow:
             fail_count += 1
         finally:
             self._finish_run(ok_count, skip_count, fail_count)
-
     def _finish_run(self, ok_count, skip_count, fail_count):
-        self.is_running = False
-        self._set_running(False)
+        self.msg_queue.put(("running", False))
         self.msg_queue.put(("result", ok_count, skip_count, fail_count))
         try:
             self.state.detect()
@@ -7062,6 +7078,7 @@ class MainWindow:
             A = self._detect_applied(ops)
             self.msg_queue.put(("applied", A))
         except Exception:
+            traceback.print_exc()
             A = self.applied
 
         rows = []
