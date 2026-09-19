@@ -2054,8 +2054,11 @@ class MainWindow:
         saved_mounts = {k: v.get() for k, v in self.mount_state.items()}
         saved_steam = {k: v.get() for k, v in self.steam_state.items()}
         saved_commit = {k: v.get() for k, v in self.commit_state.items()}
-        for child in self.root.winfo_children():
-            child.destroy()
+        try:
+            for child in self.root.winfo_children():
+                child.destroy()
+        except Exception:
+            pass
         self.badges = {}
         self.mount_badges = {}
         self.steam_badges = {}
@@ -2075,6 +2078,13 @@ class MainWindow:
         self._apps_status = None
         self._apps_canvas = None
         self._apps_inner = None
+        self._tune_canvas = None
+        self._tune_inner = None
+        self._services_tree = None
+        self._status_view = None
+        self._terminal = None
+        self._progress = None
+        self._status_lbl = None
         self.opts_state = {k: BooleanVar(value=saved_opts.get(k, False))
                            for k in OPTIONS_META}
         for k in list(self.mount_state.keys()):
@@ -2083,20 +2093,29 @@ class MainWindow:
             self.steam_state[k] = BooleanVar(value=saved_steam.get(k, False))
         for k in list(self.commit_state.keys()):
             self.commit_state[k] = BooleanVar(value=saved_commit.get(k, False))
-        self.state.zfs_installed = zfs_packages_installed()
-        self.state.zfs_used = zfs_in_use()
-        self.state.pipewire_active = pipewire_active()
-        self.state.nmi_watchdog_active = nmi_watchdog_active()
-        self.state.nmi_watchdog_in_grub = nmi_watchdog_in_grub()
         try:
+            self.state.zfs_installed = zfs_packages_installed()
+            self.state.zfs_used = zfs_in_use()
+            self.state.pipewire_active = pipewire_active()
+            self.state.nmi_watchdog_active = nmi_watchdog_active()
+            self.state.nmi_watchdog_in_grub = nmi_watchdog_in_grub()
             with open("/proc/sys/vm/max_map_count", "r") as f:
                 self.state.current_max_map_count = f.read().strip()
         except Exception:
             pass
-        self._compute_disabled_reasons()
-        self._build_ui()
-        self._apply_theme()
-        self._update_badges()
+        try:
+            self._compute_disabled_reasons()
+            self._build_ui()
+            self._apply_theme()
+            self._update_badges()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror(
+                APP_NAME,
+                "UI rebuild failed: %s" % e,
+                parent=self.root)
+            return
         self._run_bg("services", self._services_work)
         self._run_bg("applied", self._applied_work)
         self._run_bg("status", self._status_work)
