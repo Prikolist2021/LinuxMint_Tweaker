@@ -6867,11 +6867,11 @@ class MainWindow:
             rows.append((line, "info"))
         return rows
 
+    def _status_tweaks(self, A):
         rows = [("", "info"), (self.t("st_tweaks"), "head")]
         for k in OPTIONS_META:
             label, _d, _c, short = self.om(k)
             val = A.get(k, None)
-
             if val is True:
                 mark = self.t("yes")
                 tag = "ok"
@@ -6881,7 +6881,6 @@ class MainWindow:
             else:
                 mark = self.t("unknown")
                 tag = "warn"
-
             extra = ""
             if k == "shutdown_timeout" and val is True:
                 cur = self._shutdown_timeout_current()
