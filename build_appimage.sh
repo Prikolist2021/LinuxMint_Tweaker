@@ -6,21 +6,13 @@ cd "$(dirname "$0")"
 # ─── Проверка структуры ─────────────────────────────────────────────────────
 
 if [ ! -f linux_tweaker.py ]; then
-    echo "Ошибка: рядом должен быть файл linux_tweaker.py (launcher)" >&2
+    echo "Ошибка: рядом должен быть файл linux_tweaker.py" >&2
     exit 1
 fi
 
-if [ ! -d linux_tweaker ]; then
-    echo "Ошибка: рядом должна быть папка linux_tweaker/ с модулями." >&2
-    exit 1
+if [ ! -f tweaker_packages.py ]; then
+    echo "Предупреждение: файл tweaker_packages.py не найден — вкладка «Приложения» будет пустой." >&2
 fi
-
-for f in __init__.py __main__.py data.py helpers.py ops.py main_window.py; do
-    if [ ! -f "linux_tweaker/$f" ]; then
-        echo "Ошибка: в папке linux_tweaker/ нет файла $f" >&2
-        exit 1
-    fi
-done
 
 # ─── Проверка Docker ────────────────────────────────────────────────────────
 
@@ -37,14 +29,11 @@ rm -rf build-appimage
 mkdir -p build-appimage/src
 
 cp linux_tweaker.py build-appimage/src/
-if [ -d linux_tweaker ]; then
-    cp -r linux_tweaker build-appimage/src/
-fi
 if [ -f tweaker_packages.py ]; then
     cp tweaker_packages.py build-appimage/src/
 fi
 
-# Если рядом есть иконка — копируем её в сборку (и в корень, и в src/)
+# Если рядом есть иконка — копируем её в сборку (в корень и в src/)
 if [ -f linux-tweaker.png ]; then
     cp linux-tweaker.png build-appimage/linux-tweaker.png
     cp linux-tweaker.png build-appimage/src/linux-tweaker.png
@@ -71,7 +60,7 @@ apt-get install -y --no-install-recommends \
 python3 -m pip install --upgrade pip
 python3 -m pip install pyinstaller
 
-# ─── PyInstaller: собираем пакет ────────────────────────────────────────────
+# ─── PyInstaller: собираем единый файл ──────────────────────────────────────
 if [ -f src/linux-tweaker.png ]; then
     ADD_DATA_ICON="--add-data src/linux-tweaker.png:."
 else
