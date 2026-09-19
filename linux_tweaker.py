@@ -4488,63 +4488,55 @@ class MainWindow:
 
     def _corectrl_found(self, ops):
         """Ищет правило Polkit для CoreCtrl.
-
         Возвращает:
         - True  — правило найдено (файл прочитан и содержит org.corectrl);
-        - False — правило точно отсутствует (файл прочитан, но пуст/не тот,
-                  либо sudo без пароля подтвердил, что файла нет);
-        - None  — не смогли проверить (нет прав на чтение и sudo просит
-                  пароль — кнопка «проверить» этот случай разрешает).
+        - False — правило точно отсутствует (ВСЕ пути проверены достоверно);
+        - None  — не смогли проверить (часть путей недоступна без пароля).
         """
         direct_paths = (
             "/etc/polkit-1/rules.d/90-corectrl.rules",
             "/usr/share/polkit-1/rules.d/90-corectrl.rules",
             "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla",
         )
-
-        # 1. Прямое чтение — самый надёжный источник истины.
-        #    FileNotFoundError при прямом чтении = файла точно нет
-        #    (это тоже достоверный ответ).
-        #    PermissionError = недостоверный (не смогли прочитать).
-        direct_read_worked = False
+        # 1. Прямое чтение без sudo.
+        #    FileNotFoundError = файла точно нет (достоверно).
+        #    PermissionError = файл есть, но недоступен (НЕдостоверно).
+        direct_decisive = True
         for p in direct_paths:
             try:
                 with open(p, "r", encoding="utf-8",
                           errors="replace") as f:
-                    content = f.read()
-                direct_read_worked = True
-                if "org.corectrl" in content:
-                    return True
+                    if "org.corectrl" in f.read():
+                        return True
             except FileNotFoundError:
-                direct_read_worked = True
+                continue
             except PermissionError:
-                pass
+                direct_decisive = False
             except Exception:
-                pass
-
-        # 2. Пробуем sudo -n (без пароля).
-        #    Если sudo отработал (rc=0 или "No such file") — доверяем
-        #    результату. Если sudo просит пароль — результат недостоверен.
-        sudo_worked = False
+                direct_decisive = False
+        # 2. sudo -n (сработает только при живой sudo-сессии).
+        sudo_decisive = True
         for p in direct_paths:
             try:
                 r = subprocess.run(["sudo", "-n", "cat", p],
                                    capture_output=True, text=True,
                                    timeout=3)
                 if r.returncode == 0:
-                    sudo_worked = True
                     if "org.corectrl" in r.stdout:
                         return True
                 elif "No such file" in (r.stderr or ""):
-                    sudo_worked = True
+                    continue
+                else:
+                    # просит пароль / нет tty — результат недостоверен
+                    sudo_decisive = False
             except Exception:
-                continue
-
-        # 3. Если хотя бы один из способов дал достоверный ответ,
-        #    значит правило отсутствует.
-        if direct_read_worked or sudo_worked:
+                sudo_decisive = False
+        # 3. Вывод: «точно нет» только если хотя бы один способ
+        #    достоверно проверил ВСЕ пути.
+        if direct_decisive or sudo_decisive:
             return False
         return None
+
     def _max_map_count_applied(self, mmc_content):
         m = re.search(r"^vm\.max_map_count=(\d+)\s*$",
                       mmc_content, re.M)
