@@ -1327,6 +1327,18 @@ class MainWindow:
         badge.pack(side=LEFT, padx=(12, 0))
         self.badges[key] = badge
 
+        # Для corectrl — кнопка «проверить» (спросит sudo и прочитает файл)
+        if key == "corectrl":
+            rb = Button(top, text=self.t("btn_check_status"),
+                        command=self._check_corectrl_status,
+                        bg=c["button"], fg=c["orange"],
+                        activebackground=c["button_hover"],
+                        activeforeground=c["orange"],
+                        relief=FLAT, padx=6, pady=0,
+                        font=("DejaVu Sans", 8))
+            rb._keep_fg = c["orange"]
+            rb.pack(side=LEFT, padx=(4, 0))
+
         # Кнопки «файл» и «?»
         fb = Button(top, text=self.t("btn_file"),
                     command=lambda k=key: self._open_option_file(k),
