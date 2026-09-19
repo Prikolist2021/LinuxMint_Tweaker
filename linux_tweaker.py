@@ -676,6 +676,7 @@ STR = {
         "gb": "ГБ", "free_w": "свободно", "swap_file": "файл",
         "swap_part": "раздел",
         "yes": "ПРИМЕНЕНО", "no": "НЕ ПРИМЕНЕНО",
+        "unknown": "НЕИЗВЕСТНО",
         "sched_cur": "Текущее: %s", "sched_none": "не настроено",
         "mount_title": "Диски: параметры монтирования",
         "mount_desc": "Добавит опцию noatime в /etc/fstab (меньше служебных обращений к диску, полезно для SSD и NTFS; noatime покрывает и каталоги). Вступает в силу после перезагрузки.",
@@ -823,6 +824,7 @@ STR = {
         "gb": "GB", "free_w": "free", "swap_file": "file",
         "swap_part": "partition",
         "yes": "APPLIED", "no": "NOT APPLIED",
+        "unknown": "UNKNOWN",
         "sched_cur": "Current: %s", "sched_none": "not configured",
         "mount_title": "Disks: mount options",
         "mount_desc": "Adds the noatime option to /etc/fstab entries (less disk wear; noatime already covers directories). Takes effect after reboot.",
@@ -4441,87 +4443,61 @@ class MainWindow:
 
     def _corectrl_found(self, ops):
         """Ищет правило Polkit для CoreCtrl.
+
         Возвращает:
-        - True  — правило найдено;
-        - False — правило точно отсутствует (файл прочитан и пуст/не тот);
-        - None  — не смогли проверить (нет прав или файл не найден).
+        - True  — правило найдено (файл прочитан и содержит org.corectrl);
+        - False — правило точно отсутствует (файл прочитан, но пуст/не тот,
+                  либо sudo без пароля подтвердил, что файла нет);
+        - None  — не смогли проверить (нет прав на чтение и sudo просит
+                  пароль — кнопка «проверить» этот случай разрешает).
         """
         direct_paths = (
             "/etc/polkit-1/rules.d/90-corectrl.rules",
             "/usr/share/polkit-1/rules.d/90-corectrl.rules",
             "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla",
         )
-        
-        # Флаг, показывающий, что мы вообще имеем доступ к системе для проверки
-        access_granted = False
-        
-        # 1. Прямое чтение (без sudo)
+
+        # 1. Прямое чтение — самый надёжный источник истины.
+        #    FileNotFoundError при прямом чтении = файла точно нет
+        #    (это тоже достоверный ответ).
+        #    PermissionError = недостоверный (не смогли прочитать).
+        direct_read_worked = False
         for p in direct_paths:
             try:
-                with open(p, "r", encoding="utf-8", errors="replace") as f:
-                    access_granted = True
-                    if "org.corectrl" in f.read():
-                        return True
+                with open(p, "r", encoding="utf-8",
+                          errors="replace") as f:
+                    content = f.read()
+                direct_read_worked = True
+                if "org.corectrl" in content:
+                    return True
             except FileNotFoundError:
-                # Если файла нет, проверяем, существует ли директория
-                if os.path.isdir(os.path.dirname(p)):
-                    try:
-                        os.listdir(os.path.dirname(p))
-                        access_granted = True
-                    except Exception:
-                        pass
+                direct_read_worked = True
             except PermissionError:
-                # Нет прав на чтение, переходим к sudo
                 pass
             except Exception:
                 pass
 
-        # 2. Через sudo -n cat (требует активной сессии sudo)
+        # 2. Пробуем sudo -n (без пароля).
+        #    Если sudo отработал (rc=0 или "No such file") — доверяем
+        #    результату. Если sudo просит пароль — результат недостоверен.
+        sudo_worked = False
         for p in direct_paths:
             try:
                 r = subprocess.run(["sudo", "-n", "cat", p],
-                                   capture_output=True, text=True, timeout=3)
+                                   capture_output=True, text=True,
+                                   timeout=3)
                 if r.returncode == 0:
-                    access_granted = True
+                    sudo_worked = True
                     if "org.corectrl" in r.stdout:
                         return True
-                elif ("a password is required" not in r.stderr 
-                      and "no tty present" not in r.stderr):
-                    # Если ошибка не связана с паролем, считаем, что доступа нет
-                    if "No such file" in r.stderr:
-                        access_granted = True
+                elif "No such file" in (r.stderr or ""):
+                    sudo_worked = True
             except Exception:
                 continue
 
-        # 3. Перебор через sudo -n ls + cat
-        for d in ("/etc/polkit-1/rules.d",
-                  "/usr/share/polkit-1/rules.d",
-                  "/etc/polkit-1/localauthority/50-local.d"):
-            try:
-                r = subprocess.run(["sudo", "-n", "ls", d],
-                                   capture_output=True, text=True, timeout=3)
-                if r.returncode == 0:
-                    access_granted = True
-                    for fn in r.stdout.splitlines():
-                        fn = fn.strip()
-                        if not fn or fn.startswith("total"):
-                            continue
-                        if "corectrl" in fn.lower():
-                            return True
-                        full = os.path.join(d, fn)
-                        r2 = subprocess.run(
-                            ["sudo", "-n", "cat", full],
-                            capture_output=True, text=True, timeout=3)
-                        if (r2.returncode == 0 
-                            and "org.corectrl" in r2.stdout):
-                            return True
-            except Exception:
-                continue
-
-        # Если мы смогли получить доступ к системе (через sudo или напрямую),
-        # но не нашли правило — значит, его действительно нет (False).
-        # Если доступа не было — возвращаем None (неизвестно).
-        if access_granted:
+        # 3. Если хотя бы один из способов дал достоверный ответ,
+        #    значит правило отсутствует.
+        if direct_read_worked or sudo_worked:
             return False
         return None
 
@@ -6891,18 +6867,27 @@ class MainWindow:
             rows.append((line, "info"))
         return rows
 
-    def _status_tweaks(self, A):
         rows = [("", "info"), (self.t("st_tweaks"), "head")]
         for k in OPTIONS_META:
             label, _d, _c, short = self.om(k)
-            ok = A.get(k, False)
-            mark = self.t("yes") if ok else self.t("no")
+            val = A.get(k, None)
+
+            if val is True:
+                mark = self.t("yes")
+                tag = "ok"
+            elif val is False:
+                mark = self.t("no")
+                tag = "no"
+            else:
+                mark = self.t("unknown")
+                tag = "warn"
+
             extra = ""
-            if k == "shutdown_timeout" and ok:
+            if k == "shutdown_timeout" and val is True:
                 cur = self._shutdown_timeout_current()
                 if cur and cur != "?":
                     extra = " (%s)" % cur
-            elif k == "pipewire" and ok:
+            elif k == "pipewire" and val is True:
                 preset = self._pipewire_preset_current()
                 if preset and preset != "manual":
                     p = PIPEWIRE_PRESETS.get(preset, {})
@@ -6913,7 +6898,7 @@ class MainWindow:
                              % self.t("applied_manual")
                              .split("(")[-1].rstrip(")"))
             rows.append(("%-42s %-14s %s" % (label, mark + extra, short),
-                         "ok" if ok else "no"))
+                         tag))
         for mp in self.commit_state:
             val = self._commit_value_for_ui(mp) or \
                 self.t("commit_not_set")
