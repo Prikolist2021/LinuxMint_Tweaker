@@ -4440,19 +4440,15 @@ class MainWindow:
             self.log("Check corectrl failed: %s" % e, "error")
 
     def _corectrl_found(self, ops):
-        """Ищет правило Polkit для CoreCtrl.
-
-        Возвращает:
-        - True  — правило найдено;
-        - False — правило точно отсутствует;
-        - None  — не смогли проверить.
-        """
+        """Ищет правило Polkit для CoreCtrl. Возвращает True/False/None."""
+        import sys as _sys
         direct_paths = (
             "/etc/polkit-1/rules.d/90-corectrl.rules",
             "/usr/share/polkit-1/rules.d/90-corectrl.rules",
             "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla",
         )
         access_granted = False
+        print("DBG: _corectrl_found start", file=_sys.stderr)
 
         # 1. Прямое чтение
         for p in direct_paths:
@@ -4461,6 +4457,8 @@ class MainWindow:
                           errors="replace") as f:
                     access_granted = True
                     if "org.corectrl" in f.read():
+                        print("DBG: True via direct read %s" % p,
+                              file=_sys.stderr)
                         return True
             except FileNotFoundError:
                 if os.path.isdir(os.path.dirname(p)):
@@ -4480,18 +4478,25 @@ class MainWindow:
                 r = subprocess.run(["sudo", "-n", "cat", p],
                                    capture_output=True, text=True,
                                    timeout=3)
+                print("DBG: sudo -n cat %s -> rc=%d, stderr=%r"
+                      % (p, r.returncode, r.stderr[:80]),
+                      file=_sys.stderr)
                 if r.returncode == 0:
                     access_granted = True
                     if "org.corectrl" in r.stdout:
+                        print("DBG: True via sudo cat %s" % p,
+                              file=_sys.stderr)
                         return True
                 elif ("a password is required" not in r.stderr
                         and "no tty present" not in r.stderr):
                     if "No such file" in r.stderr:
                         access_granted = True
-            except Exception:
+            except Exception as e:
+                print("DBG: sudo cat exception: %r" % e,
+                      file=_sys.stderr)
                 continue
 
-        # 3. Перебор через sudo -n ls + cat
+        # 3. Перебор через sudo -n ls
         for d in ("/etc/polkit-1/rules.d",
                   "/usr/share/polkit-1/rules.d",
                   "/etc/polkit-1/localauthority/50-local.d"):
@@ -4499,6 +4504,9 @@ class MainWindow:
                 r = subprocess.run(["sudo", "-n", "ls", d],
                                    capture_output=True, text=True,
                                    timeout=3)
+                print("DBG: sudo -n ls %s -> rc=%d, stderr=%r"
+                      % (d, r.returncode, r.stderr[:80]),
+                      file=_sys.stderr)
                 if r.returncode == 0:
                     access_granted = True
                     for fn in r.stdout.splitlines():
@@ -4506,6 +4514,8 @@ class MainWindow:
                         if not fn or fn.startswith("total"):
                             continue
                         if "corectrl" in fn.lower():
+                            print("DBG: True via ls filename %s/%s"
+                                  % (d, fn), file=_sys.stderr)
                             return True
                         full = os.path.join(d, fn)
                         r2 = subprocess.run(
@@ -4513,10 +4523,16 @@ class MainWindow:
                             capture_output=True, text=True, timeout=3)
                         if (r2.returncode == 0
                                 and "org.corectrl" in r2.stdout):
+                            print("DBG: True via ls+cat %s" % full,
+                                  file=_sys.stderr)
                             return True
-            except Exception:
+            except Exception as e:
+                print("DBG: sudo ls exception: %r" % e,
+                      file=_sys.stderr)
                 continue
 
+        print("DBG: _corectrl_found end -> access_granted=%r"
+              % access_granted, file=_sys.stderr)
         if access_granted:
             return False
         return None
