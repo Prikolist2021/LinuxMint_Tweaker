@@ -782,3 +782,19 @@ STR = {
         "apps_careful_mark": "⚠",
     },
 }
+
+# ─── Список приложений (импорт из корневого tweaker_packages.py) ────────────
+# tweaker_packages.py лежит рядом с linux_tweaker.py (не внутри пакета).
+# Импортируем его с fallback'ом — если файла нет, вкладка «Приложения» пуста.
+try:
+    from tweaker_packages import REMOVABLE_PACKAGES
+except ImportError:
+    try:
+        import sys
+        import os as _os
+        _here = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        from tweaker_packages import REMOVABLE_PACKAGES
+    except ImportError:
+        REMOVABLE_PACKAGES = {}
