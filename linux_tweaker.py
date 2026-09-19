@@ -111,7 +111,7 @@ TIMEOUT_APT_SIMULATE = 60
 TIMEOUT_PKG_SIZE = 30
 
 # Бэкапы: сколько последних версий файла хранить
-BACKUP_KEEP_LAST = 5
+BACKUP_KEEP_LAST = 1
 
 # Быстрое выключение (systemd timeout)
 SHUTDOWN_TIMEOUT_VALUES = ["5s", "8s", "10s", "15s", "20s", "30s", "45s", "60s"]
