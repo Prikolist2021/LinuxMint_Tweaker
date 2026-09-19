@@ -5836,44 +5836,32 @@ class MainWindow:
 
     # ─── Копирование ────────────────────────────────────────────────────
 
-    def _make_copyable(self, w):
-        menu = Menu(self.root, tearoff=0)
-        menu.add_command(label=self.t("menu_copy"),
-                         command=lambda: self._copy_sel(w))
-        menu.add_command(label=self.t("menu_copy_all"),
-                         command=lambda: self._copy_all(w))
-        menu.add_command(label=self.t("menu_select_all"),
-                         command=lambda: self._select_all(w))
+        def on_menu(e):
+            # Закрываем меню, если кликнуть мимо
+            def close_menu(_e=None):
+                try:
+                    menu.unpost()
+                except Exception:
+                    pass
+                try:
+                    self.root.unbind("<Button-1>", bind_id)
+                except Exception:
+                    pass
+                try:
+                    self.root.unbind("<Escape>", bind_id_esc)
+                except Exception:
+                    pass
 
-        def on_copy(_e):
-            self._copy_sel(w)
+            bind_id = self.root.bind("<Button-1>", close_menu, add="+")
+            bind_id_esc = self.root.bind("<Escape>", close_menu, add="+")
+            try:
+                menu.tk_popup(e.x_root, e.y_root)
+            finally:
+                try:
+                    menu.grab_release()
+                except Exception:
+                    pass
             return "break"
-def on_menu(e):
-    # Закрываем меню, если кликнуть мимо
-    def close_menu(_e=None):
-        try:
-            menu.unpost()
-        except Exception:
-            pass
-        try:
-            self.root.unbind("<Button-1>", bind_id)
-        except Exception:
-            pass
-        try:
-            self.root.unbind("<Escape>", bind_id_esc)
-        except Exception:
-            pass
-
-    bind_id = self.root.bind("<Button-1>", close_menu, add="+")
-    bind_id_esc = self.root.bind("<Escape>", close_menu, add="+")
-    try:
-        menu.tk_popup(e.x_root, e.y_root)
-    finally:
-        try:
-            menu.grab_release()
-        except Exception:
-            pass
-    return "break"
 
         for seq in ("<Control-c>", "<Control-C>", "<Control-Insert>"):
             w.bind(seq, on_copy, add="+")
