@@ -2168,6 +2168,28 @@ class MainWindow:
                 label = "%s, %s" % (label, t)
             return label
         return cal
+    def _check_corectrl_status(self):
+        """Кнопка «проверить» для CoreCtrl: запрашивает sudo,
+        читает файл правила, обновляет бейдж."""
+        if self.is_running:
+            return
+        # Запрашиваем sudo (если ещё не аутентифицирован)
+        if not self.sudo.ensure():
+            self.log("sudo failed", "error")
+            return
+        # Перечитываем состояние и обновляем бейдж
+        try:
+            ops = SystemOps(self.sudo, self.state,
+                            lambda m, t="normal": None, True)
+            found = self._corectrl_found(ops)
+            self.applied["corectrl"] = found
+            self._update_badges()
+            if found:
+                self.log("CoreCtrl rule found", "success")
+            else:
+                self.log("CoreCtrl rule NOT found", "warning")
+        except Exception as e:
+            self.log("Check corectrl failed: %s" % e, "error")
 
     def _corectrl_found(self, ops):
         """Ищет правило Polkit для CoreCtrl.
