@@ -2113,7 +2113,7 @@ class MainWindow:
             traceback.print_exc()
             messagebox.showerror(
                 APP_NAME,
-                "UI rebuild failed: %s" % e,
+                "UI rebuild failed:\n%s\n\nSee terminal for traceback." % e,
                 parent=self.root)
             return
         self._run_bg("services", self._services_work)
