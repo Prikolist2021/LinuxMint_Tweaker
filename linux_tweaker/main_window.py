@@ -2206,35 +2206,59 @@ class MainWindow:
     def _corectrl_found(self, ops):
         """Ищет правило Polkit для CoreCtrl.
 
-        Каталог /etc/polkit-1/rules.d/ обычно имеет права 750 (root:polkitd),
-        поэтому обычный пользователь его не читает. Используем три уровня:
-        1) прямое чтение (работает, если права позволяют),
-        2) sudo -n cat (работает после первой sudo-аутентификации),
-        3) sudo -n ls + cat (полный перебор с sudo).
+        Возвращает:
+        - True  — правило найдено (org.corectrl присутствует в файле);
+        - False — правило точно отсутствует (проверили и не нашли);
+        - None  — не смогли проверить (нет доступа, sudo не активен).
         """
         direct_paths = (
             "/etc/polkit-1/rules.d/90-corectrl.rules",
             "/usr/share/polkit-1/rules.d/90-corectrl.rules",
             "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla",
         )
+        # access_granted: True, если хотя бы один способ дал нам доступ
+        # (значит, если ничего не нашли — файла действительно нет).
+        access_granted = False
+
         # 1. Прямое чтение (если права позволяют)
         for p in direct_paths:
             try:
                 with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    access_granted = True
                     if "org.corectrl" in f.read():
                         return True
+            except FileNotFoundError:
+                # Файл отсутствует — это не ошибка доступа.
+                # Если каталог читается, значит файла точно нет.
+                if os.path.isdir(os.path.dirname(p)):
+                    try:
+                        os.listdir(os.path.dirname(p))
+                        access_granted = True
+                    except Exception:
+                        pass
+            except PermissionError:
+                pass
             except Exception:
-                continue
+                pass
+
         # 2. Через sudo -n cat (если sudo-сессия активна)
         for p in direct_paths:
             try:
                 r = subprocess.run(["sudo", "-n", "cat", p],
                                    capture_output=True, text=True,
                                    timeout=3)
-                if r.returncode == 0 and "org.corectrl" in r.stdout:
-                    return True
+                if r.returncode == 0:
+                    access_granted = True
+                    if "org.corectrl" in r.stdout:
+                        return True
+                elif "a password is required" not in r.stderr \
+                        and "no tty present" not in r.stderr:
+                    # sudo сработал (не пароль), но файла нет
+                    if "No such file" in r.stderr:
+                        access_granted = True
             except Exception:
                 continue
+
         # 3. Перебор каталогов через sudo -n ls + cat
         for d in ("/etc/polkit-1/rules.d",
                   "/usr/share/polkit-1/rules.d",
@@ -2243,23 +2267,27 @@ class MainWindow:
                 r = subprocess.run(["sudo", "-n", "ls", d],
                                    capture_output=True, text=True,
                                    timeout=3)
-                if r.returncode != 0:
-                    continue
-                for fn in r.stdout.splitlines():
-                    fn = fn.strip()
-                    if not fn or fn.startswith("total"):
-                        continue
-                    if "corectrl" in fn.lower():
-                        return True
-                    full = os.path.join(d, fn)
-                    r2 = subprocess.run(["sudo", "-n", "cat", full],
-                                        capture_output=True, text=True,
-                                        timeout=3)
-                    if r2.returncode == 0 and "org.corectrl" in r2.stdout:
-                        return True
+                if r.returncode == 0:
+                    access_granted = True
+                    for fn in r.stdout.splitlines():
+                        fn = fn.strip()
+                        if not fn or fn.startswith("total"):
+                            continue
+                        if "corectrl" in fn.lower():
+                            return True
+                        full = os.path.join(d, fn)
+                        r2 = subprocess.run(["sudo", "-n", "cat", full],
+                                            capture_output=True, text=True,
+                                            timeout=3)
+                        if r2.returncode == 0 and "org.corectrl" in r2.stdout:
+                            return True
             except Exception:
                 continue
-        return False
+
+        # Ничего не нашли.
+        if access_granted:
+            return False
+        return None
 
     def _max_map_count_applied(self, mmc_content):
         m = re.search(r"^vm\.max_map_count=(\d+)\s*$", mmc_content, re.M)
@@ -2538,6 +2566,18 @@ class MainWindow:
                                       text_override=self.t("applied_manual"))
                 else:
                     self._style_badge(lbl, True, c)
+                continue
+            if k == "corectrl":
+                val = self.applied.get("corectrl", None)
+                if val is True:
+                    self._style_badge(lbl, True, c)
+                elif val is False:
+                    self._style_badge(lbl, False, c)
+                else:
+                    # None — не смогли проверить
+                    self._style_badge(lbl, False, c,
+                                      text_override=self.t("applied_unknown"))
+                    lbl.config(fg=c["yellow"])
                 continue
             self._style_badge(lbl, self.applied.get(k, False), c)
         for k, lbl in self.mount_badges.items():
