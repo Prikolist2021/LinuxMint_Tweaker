@@ -4439,7 +4439,7 @@ class MainWindow:
         except Exception as e:
             self.log("Check corectrl failed: %s" % e, "error")
 
-def _corectrl_found(self, ops):
+    def _corectrl_found(self, ops):
     """Возвращает True/False/None."""
     import sys as _sys
     direct_paths = (
