@@ -4440,56 +4440,90 @@ class MainWindow:
             self.log("Check corectrl failed: %s" % e, "error")
 
     def _corectrl_found(self, ops):
-    """Возвращает True/False/None."""
-    import sys as _sys
-    direct_paths = (
-        "/etc/polkit-1/rules.d/90-corectrl.rules",
-        "/usr/share/polkit-1/rules.d/90-corectrl.rules",
-        "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla",
-    )
+        """Ищет правило Polkit для CoreCtrl.
+        Возвращает:
+        - True  — правило найдено;
+        - False — правило точно отсутствует (файл прочитан и пуст/не тот);
+        - None  — не смогли проверить (нет прав или файл не найден).
+        """
+        direct_paths = (
+            "/etc/polkit-1/rules.d/90-corectrl.rules",
+            "/usr/share/polkit-1/rules.d/90-corectrl.rules",
+            "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla",
+        )
+        
+        # Флаг, показывающий, что мы вообще имеем доступ к системе для проверки
+        access_granted = False
+        
+        # 1. Прямое чтение (без sudo)
+        for p in direct_paths:
+            try:
+                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    access_granted = True
+                    if "org.corectrl" in f.read():
+                        return True
+            except FileNotFoundError:
+                # Если файла нет, проверяем, существует ли директория
+                if os.path.isdir(os.path.dirname(p)):
+                    try:
+                        os.listdir(os.path.dirname(p))
+                        access_granted = True
+                    except Exception:
+                        pass
+            except PermissionError:
+                # Нет прав на чтение, переходим к sudo
+                pass
+            except Exception:
+                pass
 
-    # 1. Прямое чтение — самый надёжный случай.
-    #    Если файл читается и в нём есть org.corectrl → True.
-    #    Если файл читается, но org.corectrl нет → False.
-    #    Если PermissionError → доступ не даёт однозначного ответа.
-    direct_read_worked = False
-    for p in direct_paths:
-        try:
-            with open(p, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-            direct_read_worked = True
-            if "org.corectrl" in content:
-                return True
-            # файл есть, но правила нет — продолжаем проверять другие
-        except FileNotFoundError:
-            direct_read_worked = True  # точно знаем, что файла нет
-        except PermissionError:
-            pass
-        except Exception:
-            pass
+        # 2. Через sudo -n cat (требует активной сессии sudo)
+        for p in direct_paths:
+            try:
+                r = subprocess.run(["sudo", "-n", "cat", p],
+                                   capture_output=True, text=True, timeout=3)
+                if r.returncode == 0:
+                    access_granted = True
+                    if "org.corectrl" in r.stdout:
+                        return True
+                elif ("a password is required" not in r.stderr 
+                      and "no tty present" not in r.stderr):
+                    # Если ошибка не связана с паролем, считаем, что доступа нет
+                    if "No such file" in r.stderr:
+                        access_granted = True
+            except Exception:
+                continue
 
-    # 2. Пробуем sudo -n (без пароля).
-    #    Если sudo не спрашивает пароль — можем доверять результату.
-    sudo_worked = False
-    for p in direct_paths:
-        try:
-            r = subprocess.run(["sudo", "-n", "cat", p],
-                               capture_output=True, text=True, timeout=3)
-            if r.returncode == 0:
-                sudo_worked = True
-                if "org.corectrl" in r.stdout:
-                    return True
-            elif "No such file" in (r.stderr or ""):
-                sudo_worked = True  # файла точно нет
-            # rc != 0 и не "No such file" — sudo не сработал (нужен пароль)
-        except Exception:
-            continue
+        # 3. Перебор через sudo -n ls + cat
+        for d in ("/etc/polkit-1/rules.d",
+                  "/usr/share/polkit-1/rules.d",
+                  "/etc/polkit-1/localauthority/50-local.d"):
+            try:
+                r = subprocess.run(["sudo", "-n", "ls", d],
+                                   capture_output=True, text=True, timeout=3)
+                if r.returncode == 0:
+                    access_granted = True
+                    for fn in r.stdout.splitlines():
+                        fn = fn.strip()
+                        if not fn or fn.startswith("total"):
+                            continue
+                        if "corectrl" in fn.lower():
+                            return True
+                        full = os.path.join(d, fn)
+                        r2 = subprocess.run(
+                            ["sudo", "-n", "cat", full],
+                            capture_output=True, text=True, timeout=3)
+                        if (r2.returncode == 0 
+                            and "org.corectrl" in r2.stdout):
+                            return True
+            except Exception:
+                continue
 
-    if sudo_worked:
-        return False  # доступа хватило, правила нет
-    if direct_read_worked:
-        return False  # файлов нет вообще — правила точно нет
-    return None       # не смогли проверить
+        # Если мы смогли получить доступ к системе (через sudo или напрямую),
+        # но не нашли правило — значит, его действительно нет (False).
+        # Если доступа не было — возвращаем None (неизвестно).
+        if access_granted:
+            return False
+        return None
 
     def _grub_has_token(self, grub, token):
         for line in grub.splitlines():
