@@ -631,6 +631,7 @@ STR = {
         "lbl_dry": "Сухой прогон", "lbl_terminal": "Терминальный вывод:",
         "lbl_search": "Поиск:", "btn_search_clear": "Сбросить",
         "lbl_show_only_available": "Только доступное",
+        "lbl_show_only_unapplied": "Показать неприменённое",
         "search_no_results": "Ничего не найдено по запросу «%s».",
         "lbl_group": "Группа:", "lbl_value": "Значение:",
         "lbl_schedule": "Расписание:", "lbl_mode": "Режим:",
@@ -780,6 +781,7 @@ STR = {
         "lbl_dry": "Dry run", "lbl_terminal": "Terminal output:",
         "lbl_search": "Search:", "btn_search_clear": "Reset",
         "lbl_show_only_available": "Available only",
+        "lbl_show_only_unapplied": "Only not applied",
         "search_no_results": "Nothing found for query “%s”.",
         "lbl_group": "Group:", "lbl_value": "Value:",
         "lbl_schedule": "Schedule:", "lbl_mode": "Mode:",
@@ -3772,9 +3774,12 @@ class MainWindow:
 
         self._tune_filter = StringVar(value="")
         self._show_only_available = BooleanVar(value=False)
+        self._show_only_unapplied = BooleanVar(value=False)
         self._tune_filter.trace_add(
             "write", lambda *a: self._rebuild_tune_list())
         self._show_only_available.trace_add(
+            "write", lambda *a: self._rebuild_tune_list())
+        self._show_only_unapplied.trace_add(
             "write", lambda *a: self._rebuild_tune_list())
 
         self.msg_queue = queue.Queue()
@@ -4368,6 +4373,8 @@ class MainWindow:
         elif kind == "applied":
             self.applied = item[1]
             self._update_badges()
+            if self._show_only_unapplied.get():
+                self._rebuild_tune_list()
         elif kind == "mount_applied":
             self.mount_applied = item[1]
             self._update_badges()
@@ -4904,6 +4911,13 @@ class MainWindow:
                     activeforeground=c["gray"],
                     selectcolor=c["bg"],
                     font=("DejaVu Sans", 9)).pack(side=LEFT)
+        Checkbutton(search_bar, text=self.t("lbl_show_only_unapplied"),
+                    variable=self._show_only_unapplied,
+                    bg=c["bg"], fg=c["gray"],
+                    activebackground=c["bg"],
+                    activeforeground=c["gray"],
+                    selectcolor=c["bg"],
+                    font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(12, 0))
 
         # Скролл-область с твиками
         scroll_frame = Frame(wrap, bg=c["bg"])
@@ -5108,6 +5122,7 @@ class MainWindow:
               [x for x in sorted(cats) if x not in order]
         query = self._tune_filter.get().strip().lower()
         show_only_avail = self._show_only_available.get()
+        show_only_unapplied = self._show_only_unapplied.get()
         disk_cat = self.om("ntfs3")[2]
         any_shown = False
         for cat in seq:
@@ -5117,6 +5132,8 @@ class MainWindow:
                     continue
                 label, desc, _c, short = self.om(k)
                 if show_only_avail and k in self.disabled_reasons:
+                    continue
+                if show_only_unapplied and self.applied.get(k, False):
                     continue
                 if (not query or query in label.lower()
                         or query in desc.lower()
