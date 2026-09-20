@@ -5131,10 +5131,13 @@ class MainWindow:
                 if k == "commit":
                     continue
                 label, desc, _c, short = self.om(k)
+                # Фильтр «только доступное»
                 if show_only_avail and k in self.disabled_reasons:
                     continue
-                if show_only_unapplied and self.applied.get(k, False):
+                # Фильтр «только неприменённое»
+                if show_only_unapplied and self.applied.get(k, False) is True:
                     continue
+                # Поиск
                 if (not query or query in label.lower()
                         or query in desc.lower()
                         or query in short.lower()):
