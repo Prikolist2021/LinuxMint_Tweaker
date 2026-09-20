@@ -4107,13 +4107,8 @@ class MainWindow:
                       encoding="utf-8", errors="replace") as f:
                 content = f.read()
             m = re.search(r"\[(\w+)\]", content)
-            result = m.group(1) if m else ""
-            print("DBG _thp_current: content=%r, want=%r, result=%r"
-                  % (content.strip(), self.thp_value.get(), result),
-                  file=sys.stderr)
-            return result
-        except Exception as e:
-            print("DBG _thp_current exception: %r" % e, file=sys.stderr)
+            return m.group(1) if m else ""
+        except Exception:
             return ""
 
     def _read_sysctl_int(self, path, default=""):
@@ -4630,7 +4625,10 @@ class MainWindow:
         j_ok = (re.search(r"^\s*Storage\s*=\s*volatile\s*$", j, re.M)
                 and re.search(r"^\s*RuntimeMaxUse\s*=\s*50M\s*$",
                               j, re.M))
-        thp_ok = self._grub_has_prefix(grub, "transparent_hugepage=")
+        thp_kernel = self._thp_current()
+        thp_want = self.thp_value.get()
+        thp_ok = (self._grub_has_prefix(grub, "transparent_hugepage=")
+                  or (thp_kernel and thp_kernel == thp_want))
         pipewire_preset = self._pipewire_preset_current()
         return {
             "journald": bool(j_ok),
@@ -6987,7 +6985,7 @@ class MainWindow:
                              % self.t("applied_manual")
                              .split("(")[-1].rstrip(")"))
             rows.append(("%-42s %-22s %s" % (label, mark + extra, short),
-                         "ok" if ok else "no"))
+                         tag))
         for mp in self.commit_state:
             val = self._commit_value_for_ui(mp) or \
                 self.t("commit_not_set")
