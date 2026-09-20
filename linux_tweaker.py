@@ -4105,9 +4105,15 @@ class MainWindow:
         try:
             with open("/sys/kernel/mm/transparent_hugepage/enabled", "r",
                       encoding="utf-8", errors="replace") as f:
-                m = re.search(r"\[(\w+)\]", f.read())
-                return m.group(1) if m else ""
-        except Exception:
+                content = f.read()
+            m = re.search(r"\[(\w+)\]", content)
+            result = m.group(1) if m else ""
+            print("DBG _thp_current: content=%r, want=%r, result=%r"
+                  % (content.strip(), self.thp_value.get(), result),
+                  file=sys.stderr)
+            return result
+        except Exception as e:
+            print("DBG _thp_current exception: %r" % e, file=sys.stderr)
             return ""
 
     def _read_sysctl_int(self, path, default=""):
@@ -6980,8 +6986,8 @@ class MainWindow:
                     extra = (" (%s)"
                              % self.t("applied_manual")
                              .split("(")[-1].rstrip(")"))
-            rows.append(("%-42s %-14s %s" % (label, mark + extra, short),
-                         tag))
+            rows.append(("%-42s %-22s %s" % (label, mark + extra, short),
+                         "ok" if ok else "no"))
         for mp in self.commit_state:
             val = self._commit_value_for_ui(mp) or \
                 self.t("commit_not_set")
