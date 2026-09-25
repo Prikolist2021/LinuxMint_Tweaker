@@ -52,6 +52,7 @@ import subprocess
 import time
 import shutil
 import glob
+import fnmatch
 import pwd
 import grp
 import threading
@@ -77,6 +78,12 @@ LICENSE_NAME = "MIT"
 
 # Файловые системы
 COMMIT_OK_FS = {"ext2", "ext3", "ext4"}
+
+# Файловые системы, для которых имеет смысл отключать fsck (pass=0)
+NOFSCK_OK_FS = {"ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs"}
+
+# Значения антенны для Realtek
+REALTEK_ANT_VALUES = ["default", "1", "2"]
 
 # Блокировка запуска
 LOCK_FILE = "~/.linux-tweaker.lock"
@@ -253,6 +260,23 @@ OPTIONS_META = {
     "bbr": {
         "ru": ("TCP BBR", "Ускоряет интернет и убирает задержки на нестабильных каналах. Работает сразу.", "Сеть", "быстрый интернет"),
         "en": ("TCP BBR", "Speeds up internet and cuts latency on unstable links. Works immediately.", "Network", "faster internet")},
+    "rtl_msi": {
+        "ru": ("Realtek Wi-Fi: MSI и антенна",
+               "Фикс для Wi-Fi-модулей Realtek (rtl8723ae, rtl8723be, "
+               "rtl8188ee и подобных): переключает прерывания в режим MSI "
+               "(msi=1) и при необходимости выбирает антенну (ant_sel=1 или 2). "
+               "Помогает при обрывах связи, низкой скорости и «пропадании» "
+               "Wi-Fi. Твик доступен только если в системе найден подходящий "
+               "модуль Realtek. Нужна перезагрузка.",
+               "Сеть", "Wi-Fi Realtek: MSI и антенна"),
+        "en": ("Realtek Wi-Fi: MSI and antenna",
+               "Fix for Realtek Wi-Fi modules (rtl8723ae, rtl8723be, "
+               "rtl8188ee and similar): switches interrupts to MSI mode "
+               "(msi=1) and optionally selects the antenna (ant_sel=1 or 2). "
+               "Helps with connection drops, low speed and “disappearing” "
+               "Wi-Fi. The tweak is only available if a matching Realtek "
+               "module is found. Needs reboot.",
+               "Network", "Realtek Wi-Fi: MSI and antenna")},
     "swap": {
         "ru": ("Тюнинг swap", "Настраивает, как охотно система выгружает память в подкачку. Меньше обращений к диску. Работает сразу.", "Память и swap", "поведение подкачки"),
         "en": ("Swap tuning", "Sets how eagerly memory goes to swap. Fewer disk accesses. Works immediately.", "Memory & swap", "swap behaviour")},
@@ -286,6 +310,29 @@ OPTIONS_META = {
     "commit": {
         "ru": ("commit=NN (fstab, только ext3/ext4)", "Реже сбрасывает служебную информацию на диск, меньше износа SSD. Работает ТОЛЬКО на ext3/ext4 — для NTFS, FAT32, exFAT, btrfs, xfs параметр не поддерживается и приведёт к ошибке монтирования (система может упасть в emergency-режим). ВНИМАНИЕ: при сбое питания возможна потеря последних записей. Нужна перезагрузка.", "Диски и файловые системы", "реже запись на ext4"),
         "en": ("commit=NN (fstab, ext3/ext4 only)", "Flushes disk metadata less often, less SSD wear. Works ONLY on ext3/ext4 — NTFS, FAT32, exFAT, btrfs, xfs do not support it and will fail to mount (system may drop into emergency mode). WARNING: power loss may lose last writes. Needs reboot.", "Drives & filesystems", "less ext4 disk writing")},
+    "nofsck": {
+        "ru": ("Отключить проверку дисков (fsck)",
+               "Выставляет в /etc/fstab последнее поле (pass) в 0 — "
+               "fsck для раздела при загрузке не запускается. Загрузка "
+               "быстрее, диск меньше изнашивается. Применяется к ext2/ext3/ext4, "
+               "xfs, btrfs, f2fs. Для btrfs и xfs это рекомендованный режим: "
+               "их fsck — заглушка, а целостность проверяется через scrub "
+               "во время работы. Для NTFS, FAT32 и exFAT параметр бесполезен "
+               "(проверка делается средствами Windows) — такие разделы твикер "
+               "пропускает. НЕ отключайте для корневого раздела ext*, если "
+               "бывали сбои питания. Нужна перезагрузка.",
+               "Диски и файловые системы", "проверка дисков при загрузке"),
+        "en": ("Disable disk check (fsck)",
+               "Sets the last field (pass) in /etc/fstab to 0 — fsck is not "
+               "run for the partition at boot. Boot is faster, the disk wears "
+               "less. Applies to ext2/ext3/ext4, xfs, btrfs, f2fs. For btrfs "
+               "and xfs this is the recommended mode: their fsck is a no-op, "
+               "and integrity is checked via scrub at runtime. For NTFS, "
+               "FAT32 and exFAT the parameter is useless (the check is done "
+               "by Windows) — the tweaker skips such partitions. Do NOT "
+               "disable for the root ext* partition if you have had power "
+               "failures. Needs reboot.",
+               "Drives & filesystems", "disk check at boot")},
     "tmpfs_tmp": {
         "ru": ("/tmp в ОЗУ (tmpfs, эксперимент)", "Монтирует /tmp в оперативной памяти. Меньше записей на диск, но данные исчезают при перезагрузке. НЕ включайте при гибернации, работе с большими временными файлами и малом объёме ОЗУ.", "Диски и файловые системы", "/tmp в оперативной памяти"),
         "en": ("/tmp in RAM (tmpfs, experimental)", "Mounts /tmp in RAM. Fewer disk writes, but data disappears on reboot. Do NOT enable with hibernation, large temp files or low RAM.", "Drives & filesystems", "/tmp in RAM")},
@@ -513,6 +560,10 @@ OPTIONS_HELP = {
         "ru": "BBR — это современный алгоритм управления перегрузками TCP, разработанный Google. Он определяет, с какой скоростью отправлять данные по сети, чтобы не перегружать канал и не терять пакеты. Старый алгоритм CUBIC работает хорошо на стабильных каналах, но BBR выигрывает на нестабильных.\n\nЭта опция включает BBR и очередь fq. На Wi-Fi, VPN, мобильном интернете и дальних серверах скорость загрузки становится выше, а задержки — меньше. На стабильном кабеле разница почти не заметна.\n\nНе включайте, если у вас стабильный проводной интернет.\n\nПараметр применяется сразу, перезагрузка не нужна.",
         "en": "BBR is a modern TCP congestion-control algorithm developed by Google. It decides at what rate to send data over the network so the link is not overloaded and packets are not lost. The older CUBIC algorithm works well on stable links, but BBR wins on unstable ones.\n\nThis option enables BBR and the fq queue. On Wi-Fi, VPN, mobile internet and remote servers, download speed increases and latency drops. On a stable cable the difference is barely noticeable.\n\nDo not enable it if you have a stable wired internet connection.\n\nThe parameter applies immediately, no reboot needed.",
     },
+    "rtl_msi": {
+        "ru": "Модули Wi-Fi Realtek (rtl8723ae, rtl8723be, rtl8188ee, rtl8192ce и другие) часто страдают от обрывов связи, низкой скорости и «пропадания» сети. Это связано с тем, как драйвер обрабатывает прерывания и выбирает антенну.\n\nДва параметра решают большинство проблем:\n\n• msi=1 — включает режим MSI (Message Signaled Interrupts). Убирает конфликты прерываний с другими устройствами и часто лечит обрывы связи.\n\n• ant_sel=1 или ant_sel=2 — выбирает активную антенну. На ноутбуках с двумя антеннами (main и aux) драйвер по умолчанию может использовать неправильную, из-за чего сигнал слабый. Переключение на другую антенну часто кардинально улучшает приём.\n\nЗначение ant_sel=default означает «не трогать антенну», применять только msi=1.\n\nТвик создаёт файл /etc/modprobe.d/rtlwifi-tweaker.conf с нужными параметрами. Модуль перезагружается только после перезагрузки системы.\n\nТвик доступен только если в системе реально найден один из поддерживаемых модулей Realtek. Проверить можно командой: lsmod | grep rtl.",
+        "en": "Realtek Wi-Fi modules (rtl8723ae, rtl8723be, rtl8188ee, rtl8192ce and others) often suffer from connection drops, low speed and “disappearing” network. This is due to how the driver handles interrupts and selects the antenna.\n\nTwo parameters solve most problems:\n\n• msi=1 — enables MSI (Message Signaled Interrupts). Removes interrupt conflicts with other devices and often cures connection drops.\n\n• ant_sel=1 or ant_sel=2 — selects the active antenna. On laptops with two antennas (main and aux) the driver may use the wrong one by default, making the signal weak. Switching to the other antenna often dramatically improves reception.\n\nant_sel=default means “do not touch the antenna”, apply only msi=1.\n\nThe tweak creates /etc/modprobe.d/rtlwifi-tweaker.conf with the needed parameters. The module reloads only after a system reboot.\n\nThe tweak is available only if one of the supported Realtek modules is actually found. Check with: lsmod | grep rtl.",
+    },
     "swap": {
         "ru": "Swap (подкачка) — это область на диске или в сжатой памяти, куда система складывает редко используемые данные, когда оперативной памяти не хватает. Насколько охотно система это делает — задаётся числом vm.swappiness от 0 до 200.\n\nВысокое значение (например, 150) означает: система активно переносит данные в swap. Это выгодно, если swap — это zram (сжатая память в ОЗУ). Низкое значение (10) означает: система старается держать данные в ОЗУ. Это выгодно, если swap на диске.\n\nПараметр применяется сразу через sysctl, перезагрузка не нужна. Откат возвращает значение 60.",
         "en": "Swap is a region on disk or in compressed memory where the system stores rarely used data when RAM runs low. How eagerly it does this is controlled by vm.swappiness, a number from 0 to 200.\n\nA high value (say 150) means the system actively moves data to swap. This is good if swap is zram (compressed memory in RAM). A low value (10) means the system tries to keep data in RAM. This is good if swap is on a disk.\n\nThe parameter applies immediately via sysctl, no reboot needed. Rolling back restores the value 60.",
@@ -556,6 +607,80 @@ OPTIONS_HELP = {
     "commit": {
         "ru": "Параметр commit=NN заставляет файловую систему реже сбрасывать накопленные данные на диск: не раз в 5 секунд по умолчанию, а раз в NN секунд. Это уменьшает число операций записи и продлевает жизнь SSD.\n\nВАЖНО: параметр понимают ТОЛЬКО файловые системы семейства ext — ext2, ext3, ext4. Для NTFS, FAT32, exFAT, btrfs, xfs, f2fs и других он неизвестен: в лучшем случае ядро его проигнорирует, в худшем — откажется монтировать раздел, и система при загрузке упадёт в emergency-режим.\n\nПоэтому в этом твикере для commit= показываются только разделы с ext2/ext3/ext4.\n\nВНИМАНИЕ: чем больше интервал, тем выше риск потерять последние записанные данные при внезапном отключении питания. Разумные значения — 60–120 секунд.\n\nИзменения записываются в /etc/fstab и вступают в силу после перезагрузки.",
         "en": "The commit=NN parameter makes the file system flush accumulated data to disk less often: not every 5 seconds by default, but every NN seconds. This reduces write operations and extends SSD life.\n\nIMPORTANT: only file systems of the ext family support this — ext2, ext3, ext4. For NTFS, FAT32, exFAT, btrfs, xfs, f2fs and others the parameter is unknown: at best the kernel silently ignores it, at worst it refuses to mount the partition and the system drops into emergency mode on boot.\n\nTherefore in this tweaker only partitions with ext2/ext3/ext4 are shown for commit=.\n\nWARNING: the longer the interval, the higher the risk of losing the latest written data on sudden power loss. Reasonable values are 60–120 seconds.\n\nChanges are written to /etc/fstab and take effect after a reboot.",
+    },
+    "nofsck": {
+        "ru": "В /etc/fstab у каждой строки есть два числа в конце: dump и pass.\n\n"
+              "• dump — резервное копирование (почти всегда 0, не трогаем).\n"
+              "• pass — порядок проверки ФС при загрузке:\n"
+              "    0 — не проверять,\n"
+              "    1 — проверить первым (корневой раздел),\n"
+              "    2 — проверить после корня (остальные разделы).\n\n"
+              "Этот твик ставит pass=0 для подходящих разделов — "
+              "fsck для них не запускается.\n\n"
+              "К каким ФС применяется и почему:\n\n"
+              "• ext2, ext3, ext4 — да. Проверка бывает долгой и обычно "
+              "не нужна. Оговорка: для корневого раздела ext4 при частых "
+              "сбоях питания лучше оставить pass=1.\n\n"
+              "• btrfs — да, и это рекомендованный режим. fsck.btrfs — "
+              "заглушка (no-op): она существует только для совместимости "
+              "с fstab и ничего не делает. Целостность Btrfs проверяется "
+              "встроенными механизмами во время работы: контрольные суммы "
+              "блоков, самовосстановление из зеркал, команда btrfs scrub "
+              "для онлайн-проверки. Опасная btrfs check --repair не "
+              "запускается автоматически, поэтому отключение pass ничего "
+              "не ломает.\n\n"
+              "• xfs — да. fsck.xfs — тоже заглушка, для XFS "
+              "рекомендуется pass=0.\n\n"
+              "• f2fs — да. ФС рассчитана на работу без регулярной проверки.\n\n"
+              "• NTFS, FAT32, exFAT — твикер пропускает. Поле pass "
+              "технически записать можно, но Linux проверку этих ФС "
+              "не делает — она выполняется средствами Windows (chkdsk). "
+              "Отключать нечего.\n\n"
+              "Когда НЕ отключать:\n"
+              "• корневой раздел ext* на машине, которая бывала "
+              "в сбоях питания или с ошибками ФС — fsck помогает "
+              "восстановить структуру;\n"
+              "• если вы не уверены в состоянии диска (проверьте "
+              "сначала smartctl -a).\n\n"
+              "Изменения записываются в /etc/fstab и вступают в силу "
+              "после перезагрузки. Откат возвращает pass=1 для корня "
+              "и pass=2 для остальных разделов.",
+        "en": "In /etc/fstab every line ends with two numbers: dump and pass.\n\n"
+              "• dump — backup flag (almost always 0, we leave it alone).\n"
+              "• pass — filesystem check order at boot:\n"
+              "    0 — do not check,\n"
+              "    1 — check first (root partition),\n"
+              "    2 — check after root (other partitions).\n\n"
+              "This tweak sets pass=0 for suitable partitions — "
+              "fsck is not run for them.\n\n"
+              "Which filesystems it applies to and why:\n\n"
+              "• ext2, ext3, ext4 — yes. The check can be slow and is "
+              "usually not needed. Caveat: for the root ext4 partition on "
+              "a machine with frequent power failures, better keep pass=1.\n\n"
+              "• btrfs — yes, and this is the recommended mode. fsck.btrfs "
+              "is a no-op: it exists only for fstab compatibility and does "
+              "nothing. Btrfs integrity is checked by built-in mechanisms "
+              "at runtime: block checksums, self-healing from mirrors, and "
+              "btrfs scrub for online verification. The dangerous "
+              "btrfs check --repair is not run automatically, so disabling "
+              "pass breaks nothing.\n\n"
+              "• xfs — yes. fsck.xfs is also a no-op, pass=0 is "
+              "recommended for XFS.\n\n"
+              "• f2fs — yes. The filesystem is designed to run without "
+              "regular checks.\n\n"
+              "• NTFS, FAT32, exFAT — the tweaker skips them. pass can "
+              "technically be written, but Linux does not run the check "
+              "for these filesystems — it is done by Windows (chkdsk). "
+              "There is nothing to disable.\n\n"
+              "When NOT to disable:\n"
+              "• the root ext* partition on a machine that has had power "
+              "failures or filesystem errors — fsck helps restore "
+              "the structure;\n"
+              "• if you are unsure about the disk health (check with "
+              "smartctl -a first).\n\n"
+              "Changes are written to /etc/fstab and take effect after "
+              "a reboot. Rollback restores pass=1 for root and pass=2 "
+              "for the rest.",
     },
     "tmpfs_tmp": {
         "ru": "РАСШИРЕННЫЙ ТВИК. Включайте только если понимаете риск.\n\nМонтирует /tmp как tmpfs — то есть в оперативной памяти. Файлы в /tmp исчезают при перезагрузке, диск не получает постоянные записи.\n\nВНИМАНИЕ — несколько важных предупреждений:\n\n1. ГИБЕРНАЦИЯ. tmpfs использует оперативную память и его страницы могут быть выгружены в swap. Если swap-раздел мал или отсутствует, гибернация может сломаться. У некоторых пользователей система перестаёт выходить из ждущего режима.\n\n2. ПОТЕРЯ ДАННЫХ. Всё, что лежит в /tmp, исчезнет после выключения или перезагрузки. Отдельные приложения могут рассчитывать на сохранение временных файлов в течение работы системы — после перезагрузки они их не найдут.\n\n3. РАЗМЕР. Параметр size=512M — это верхний предел, а не резервирование. Если приложение попытается записать больше, оно упадёт с ошибкой «no space left on device».\n\n4. НЕ ПУТАТЬ С /var/tmp. /var/tmp по определению предназначен для данных, сохраняющихся между перезагрузками. Его в tmpfs монтировать нельзя.\n\nОткат: удалить строку из /etc/fstab, перезагрузиться.",
@@ -601,6 +726,7 @@ OPTION_FILES = {
     "mesa": ["/etc/environment"],
     "pipewire": ["{home}/.config/pipewire/pipewire.conf.d/10-sound.conf"],
     "bbr": ["/etc/sysctl.d/99-bbr.conf"],
+    "rtl_msi": ["/etc/modprobe.d/rtlwifi-tweaker.conf"],
     "swap": ["/etc/sysctl.d/99-gaming-swap.conf"],
     "zram": ["/etc/systemd/zram-generator.conf"],
     "zswap": ["/etc/default/grub"],
@@ -612,6 +738,7 @@ OPTION_FILES = {
     "max_map_count": ["/etc/sysctl.d/99-gaming-mmap.conf"],
     "ntfs3": ["/usr/lib/modprobe.d/mint-blacklist-ntfs3.conf"],
     "commit": ["/etc/fstab"],
+    "nofsck": ["/etc/fstab"],
     "tmpfs_tmp": ["/etc/fstab"],
     "aliases": ["{home}/.bashrc"],
     "autoupdate": ["/etc/systemd/system/biweekly-upgrade.timer",
@@ -630,8 +757,7 @@ STR = {
         "theme_dark": "Тёмная тема", "theme_light": "Светлая тема",
         "lbl_dry": "Сухой прогон", "lbl_terminal": "Терминальный вывод:",
         "lbl_search": "Поиск:", "btn_search_clear": "Сбросить",
-        "lbl_show_only_available": "Только доступное",
-        "lbl_show_only_unapplied": "Показать неприменённое",
+        "lbl_show_only_unapplied": "Показать неприменённые",
         "search_no_results": "Ничего не найдено по запросу «%s».",
         "lbl_group": "Группа:", "lbl_value": "Значение:",
         "lbl_schedule": "Расписание:", "lbl_mode": "Режим:",
@@ -714,8 +840,6 @@ STR = {
         "tw_name": "Твик", "kn_param": "Параметр", "kn_val": "Значение",
         "sudo_title": "sudo", "sudo_prompt": "Пароль sudo (попытка %d из 3):",
         "sudo_wrong": "Неверный пароль или нет прав sudo.",
-        "autoupdate_warn": "Включено автообновление по расписанию. Твикер автоматически отключит apt-daily, apt-daily-upgrade и unattended-upgrades, чтобы обновления не выполнялись дважды. Встроенное автообновление Mint (mintupdate) останется как есть — отключите его вручную, если не хотите дублирования.",
-        "shutdown_timeout_warn": "ВНИМАНИЕ: этот твик сокращает время ожидания закрытия приложений при выключении ПК с 90 до 8 секунд (по умолчанию).\n\nЕсли в момент выключения приложение сохраняло данные (база данных, торрент, редактор), его могут убить до завершения записи.\n\nДля обычного домашнего ПК риск минимальный. Для систем с базами данных или активной записью — не включайте.\n\nИзменения вступают в силу после перезагрузки.",
         "viewer": "Просмотр файла",
         "viewer_ext": "Открыть во внешнем редакторе",
         "about_title": "О твикере",
@@ -734,6 +858,7 @@ STR = {
         "msg_running_title": "Уже запущено",
         "msg_running_text": "Linux Tweaker уже запущен.",
         "result_ok": "Готово: %d применено, %d пропущено, %d ошибок",
+        "result_text": "%d применено / %d пропущено / %d ошибок",
         "reason_raid": "у вас есть RAID",
         "reason_itco_not_intel": "не Intel-чипсет",
         "reason_itco_no_module": "модуль iTCO_wdt не поддерживается ядром",
@@ -747,6 +872,21 @@ STR = {
         "reason_mint_only": "только для Linux Mint",
         "reason_pipewire_inactive": "PipeWire не используется",
         "reason_no_ntfs": "нет NTFS-разделов",
+        "reason_no_rtl": "нет подходящих модулей Realtek",
+        "rtl_default": "По умолчанию",
+        "rtl_ant_1": "Антенна 1 (ant_sel=1)",
+        "rtl_ant_2": "Антенна 2 (ant_sel=2)",
+        "fsck_title": "Диски: отключение проверки при загрузке",
+        "fsck_desc": (
+            "Устанавливает последнее поле (pass) в /etc/fstab в 0, чтобы "
+            "не запускать проверку файловой системы при загрузке. В первую "
+            "очередь безопасно для btrfs и xfs (их fsck — заглушка, "
+            "целостность проверяется через scrub). Для ext2/ext3/ext4 "
+            "отключайте обдуманно: после сбоя питания быстрая проверка "
+            "может быть полезной. Для NTFS/FAT/exFAT параметр бесполезен. "
+            "Вступает в силу после перезагрузки."
+        ),
+        "fsck_short": "отключение проверки дисков",
         "apps_search": "Поиск:",
         "apps_refresh": "Обновить",
         "apps_clear": "Снять выделение",
@@ -770,6 +910,7 @@ STR = {
         "apps_failed": "Не удалось удалить пакеты.",
         "apps_installed": "установлен",
         "apps_careful_mark": "⚠",
+        "apps_group_hint": " (удалится группой)",
     },
     "en": {
         "tab_tune": "Tuning", "tab_serv": "Services", "tab_stat": "Status",
@@ -780,7 +921,6 @@ STR = {
         "theme_dark": "Dark theme", "theme_light": "Light theme",
         "lbl_dry": "Dry run", "lbl_terminal": "Terminal output:",
         "lbl_search": "Search:", "btn_search_clear": "Reset",
-        "lbl_show_only_available": "Available only",
         "lbl_show_only_unapplied": "Only not applied",
         "search_no_results": "Nothing found for query “%s”.",
         "lbl_group": "Group:", "lbl_value": "Value:",
@@ -863,8 +1003,6 @@ STR = {
         "tw_name": "Tweak", "kn_param": "Parameter", "kn_val": "Value",
         "sudo_title": "sudo", "sudo_prompt": "sudo password (attempt %d of 3):",
         "sudo_wrong": "Wrong password or no sudo rights.",
-        "autoupdate_warn": "Scheduled auto-update enabled. The tweaker will automatically mask apt-daily, apt-daily-upgrade and unattended-upgrades so updates do not run twice. Mint's built-in auto-update (mintupdate) is left as is — disable it manually if you do not want duplicates.",
-        "shutdown_timeout_warn": "WARNING: this tweak cuts the app-close timeout at shutdown from 90 to 8 seconds (default).\n\nIf an app was saving data at shutdown (database, torrent, editor), it may be killed before finishing the write.\n\nFor a normal home PC the risk is minimal. For systems with databases or active writes — do not enable.\n\nChanges take effect after a reboot.",
         "viewer": "File viewer",
         "viewer_ext": "Open in external editor",
         "about_title": "About",
@@ -883,6 +1021,7 @@ STR = {
         "msg_running_title": "Already running",
         "msg_running_text": "Linux Tweaker is already running.",
         "result_ok": "Done: %d applied, %d skipped, %d failed",
+        "result_text": "%d applied / %d skipped / %d failed",
         "reason_raid": "RAID detected",
         "reason_itco_not_intel": "not an Intel system",
         "reason_itco_no_module": "iTCO_wdt module not available",
@@ -896,6 +1035,20 @@ STR = {
         "reason_mint_only": "Linux Mint only",
         "reason_pipewire_inactive": "PipeWire is not in use",
         "reason_no_ntfs": "no NTFS partitions",
+        "reason_no_rtl": "no supported Realtek module",
+        "rtl_default": "Default",
+        "rtl_ant_1": "Antenna 1 (ant_sel=1)",
+        "rtl_ant_2": "Antenna 2 (ant_sel=2)",
+        "fsck_title": "Disks: disable boot filesystem check",
+        "fsck_desc": (
+            "Sets the last field (pass) in /etc/fstab to 0 so the filesystem "
+            "check is not started at boot. It is primarily safe for btrfs and "
+            "xfs (their fsck is a no-op, integrity is verified via scrub). "
+            "For ext2/ext3/ext4 disable thoughtfully: after a power failure "
+            "a boot check can be useful. For NTFS/FAT/exFAT the parameter is "
+            "meaningless. Takes effect after reboot."
+        ),
+        "fsck_short": "disable disk check",
         "apps_search": "Search:",
         "apps_refresh": "Refresh",
         "apps_clear": "Deselect",
@@ -919,6 +1072,7 @@ STR = {
         "apps_failed": "Failed to remove packages.",
         "apps_installed": "installed",
         "apps_careful_mark": "⚠",
+        "apps_group_hint": " (group removal)",
     },
 }
 
@@ -935,6 +1089,61 @@ except ImportError:
     except ImportError:
         REMOVABLE_PACKAGES = {}
 
+if not isinstance(REMOVABLE_PACKAGES, dict):
+    REMOVABLE_PACKAGES = {}
+
+# ============================================================================
+# ДОПОЛНИТЕЛЬНЫЕ ПАКЕТЫ ДЛЯ ВКЛАДКИ «ПРИЛОЖЕНИЯ»
+# ============================================================================
+ADDITIONAL_REMOVABLE_PACKAGES = {
+    "libreoffice-*": {
+        "ru": (
+            "LibreOffice (все компоненты)",
+            "Удаляет сразу все установленные пакеты LibreOffice по маске libreoffice-*.",
+            "Офис",
+            True
+        ),
+        "en": (
+            "LibreOffice (all components)",
+            "Removes all installed LibreOffice packages matching libreoffice-*.",
+            "Office",
+            True
+        ),
+    },
+    "onboard": {
+        "ru": (
+            "OnBoard",
+            "Экранная клавиатура. Не нужна, если вы не пользуетесь сенсорным вводом или специальными возможностями.",
+            "Утилиты",
+            False
+        ),
+        "en": (
+            "OnBoard",
+            "On-screen keyboard. Not needed unless you use touch input or accessibility.",
+            "Utilities",
+            False
+        ),
+    },
+    "mintchat": {
+        "ru": (
+            "Matrix (чат Linux Mint)",
+            "Встроенный клиент Matrix для доступа к чату поддержки Linux Mint. "
+            "Это веб-обёртка над Element. Можно удалить, если не пользуетесь.",
+            "Интернет",
+            False
+        ),
+        "en": (
+            "Matrix (Linux Mint chat)",
+            "Built-in Matrix client for the Linux Mint support chat. "
+            "It is a web wrapper around Element. Can be removed if unused.",
+            "Internet",
+            False
+        ),
+    },
+}
+
+for _k, _v in ADDITIONAL_REMOVABLE_PACKAGES.items():
+    REMOVABLE_PACKAGES.setdefault(_k, _v)
 # ============================================================================
 # БЛОК 7. УТИЛИТЫ
 # ============================================================================
@@ -1103,8 +1312,7 @@ def parse_mounts():
                 if len(parts) < 4:
                     continue
                 dev, mp, fstype, opts = parts[0], parts[1], parts[2], parts[3]
-                mp = mp.replace("\\040", " ").replace("\\011", "\t") \
-                       .replace("\\012", "\n").replace("\\134", "\\")
+                mp = unescape_fstab_token(mp)
                 if not dev.startswith("/dev/"):
                     continue
                 if fstype not in ("ext2", "ext3", "ext4", "xfs", "btrfs",
@@ -1169,6 +1377,11 @@ def find_steam_libraries(user_home):
 def fs_supports_commit(fstype):
     """True, если ФС поддерживает параметр commit= (ext2/3/4)."""
     return (fstype or "").lower() in COMMIT_OK_FS
+
+
+def fs_supports_nofsck(fstype):
+    """True, если ФС имеет смысл отключать fsck (pass=0)."""
+    return (fstype or "").lower() in NOFSCK_OK_FS
 
 
 def format_size(bytes_val):
@@ -1406,6 +1619,93 @@ def estimate_packages_size(pkgs):
         return "?"
 
 
+def unescape_fstab_token(s):
+    """Раскодирует спец-последовательности fstab."""
+    return (s or "") \
+        .replace("\\040", " ") \
+        .replace("\\011", "\t") \
+        .replace("\\012", "\n") \
+        .replace("\\134", "\\")
+
+
+def escape_fstab_token(s):
+    """Кодирует пробелы и служебные символы для fstab."""
+    return (s or "") \
+        .replace("\\", "\\\\") \
+        .replace(" ", "\\040") \
+        .replace("\t", "\\011") \
+        .replace("\n", "\\012")
+
+
+def expand_package_pattern(pkgs, installed=None):
+    """Раскрывает пакеты с масками, например libreoffice-*."""
+    if not pkgs:
+        return []
+    if installed is None:
+        installed = installed_packages_set()
+
+    out = []
+    for p in pkgs:
+        if not p:
+            continue
+        if any(ch in p for ch in "*?["):
+            try:
+                rx = re.compile(fnmatch.translate(p))
+            except Exception:
+                continue
+            for ip in installed:
+                if any(ch in ip for ch in "*?["):
+                    continue
+                if rx.match(ip):
+                    out.append(ip)
+        else:
+            out.append(p)
+    return sorted(set(out))
+
+
+def rtl_wifi_fix_candidates():
+    """
+    Возвращает dict:
+      { "rtl8723ae": {"msi": True, "ant_sel": True}, ... }
+    только для загруженных Realtek-модулей с подходящими параметрами.
+    """
+    caps = {}
+    try:
+        with open("/proc/modules", "r", encoding="utf-8",
+                  errors="replace") as f:
+            loaded = [ln.split()[0] for ln in f if ln.strip()]
+    except Exception:
+        loaded = []
+
+    for mod in loaded:
+        if not re.match(r"^rtl8[0-9a-z]+$", mod):
+            continue
+
+        has_msi = os.path.exists("/sys/module/%s/parameters/msi" % mod)
+        has_ant = os.path.exists("/sys/module/%s/parameters/ant_sel" % mod)
+
+        if not (has_msi or has_ant):
+            try:
+                r = subprocess.run(
+                    ["modinfo", "-F", "parm", mod],
+                    capture_output=True,
+                    text=True,
+                    timeout=TIMEOUT_QUICK
+                )
+                parm = r.stdout or ""
+                if re.search(r"\bmsi\b", parm):
+                    has_msi = True
+                if re.search(r"\bant_sel\b", parm):
+                    has_ant = True
+            except Exception:
+                pass
+
+        if has_msi or has_ant:
+            caps[mod] = {"msi": has_msi, "ant_sel": has_ant}
+
+    return caps
+
+
 def apt_dry_run_purge(pkgs):
     """apt-get -s purge. Возвращает (explicit, deps, system_hits, ok)."""
     if not pkgs:
@@ -1573,6 +1873,8 @@ class SystemState:
         self.nmi_watchdog_in_grub = False
         self.current_max_map_count = "1048576"
         self.has_ntfs_partitions = False
+        self.rtl_wifi_caps = {}
+        self.rtl_wifi_modules = []
 
     def detect(self):
         """Полный детект состояния системы."""
@@ -1681,6 +1983,10 @@ class SystemState:
         # NTFS
         self.has_ntfs_partitions = self._detect_ntfs_partitions()
 
+        # Realtek Wi-Fi
+        self.rtl_wifi_caps = rtl_wifi_fix_candidates()
+        self.rtl_wifi_modules = sorted(self.rtl_wifi_caps.keys())
+
     def _detect_swap(self):
         """Определяет наличие swap и его тип."""
         self.has_swap = False
@@ -1739,6 +2045,7 @@ class SystemState:
         except Exception:
             pass
         return "root"
+
 
 # ============================================================================
 # БЛОК 10. SYSTEMMOPS: БАЗА (файлы, бэкапы, sudo_run)
@@ -2386,6 +2693,7 @@ class SystemOps:
         self.log("✓ shutdown timeout reset to 90s", "success")
         return True
 
+
 # ============================================================================
 # БЛОК 12. SYSTEMMOPS: GPU, ПАМЯТЬ, СЕТЬ
 # ============================================================================
@@ -2511,7 +2819,6 @@ class SystemOps:
             path = ("/etc/polkit-1/localauthority/50-local.d/"
                     "90-corectrl.pkla")
         if self.write_file(path, content, chmod="644", mkdir=True):
-            # Делаем каталог читаемым, чтобы детект работал без sudo
             pdir = os.path.dirname(path)
             if pdir and os.path.isdir(pdir):
                 self.sudo_run(["chmod", "755", pdir], ignore_error=True)
@@ -2583,6 +2890,13 @@ class SystemOps:
         self.log("✓ PipeWire configured (%s)" % preset_key, "success")
         return True
 
+    def rollback_pipewire(self, params=None):
+        path = os.path.join(self.state.user_home, ".config", "pipewire",
+                            "pipewire.conf.d", "10-sound.conf")
+        self.remove_user_file(path)
+        self.log("✓ PipeWire config removed", "success")
+        return True
+
     # ─── Сеть: BBR ──────────────────────────────────────────────────────
 
     def apply_bbr(self, params=None):
@@ -2610,6 +2924,63 @@ class SystemOps:
                      % (cur or "?"), "warning")
             return False
         self.log("✓ TCP BBR enabled", "success")
+        return True
+
+    def rollback_bbr(self, params=None):
+        self._rm("/etc/sysctl.d/99-bbr.conf")
+        self.sudo_run(["sysctl", "-w",
+                       "net.ipv4.tcp_congestion_control=cubic"],
+                      ignore_error=True)
+        self.sudo_run(["sysctl", "-w",
+                       "net.core.default_qdisc=pfifo_fast"],
+                      ignore_error=True)
+        self.log("✓ BBR and fq reverted", "success")
+        return True
+
+    # ─── Сеть: Realtek Wi-Fi fix ────────────────────────────────────────
+
+    def apply_rtl_msi(self, params=None):
+        params = params or {}
+        ant = str(params.get("rtl_ant_sel", "default")).strip()
+        if ant not in REALTEK_ANT_VALUES:
+            ant = "default"
+
+        caps = rtl_wifi_fix_candidates() or getattr(
+            self.state, "rtl_wifi_caps", {})
+        if not caps:
+            self.log("No suitable Realtek modules found", "warning")
+            return None
+
+        lines = ["# Created by Linux Tweaker"]
+        any_line = False
+
+        for mod in sorted(caps):
+            c = caps[mod]
+            opts = []
+            if c.get("msi"):
+                opts.append("msi=1")
+            if ant in ("1", "2") and c.get("ant_sel"):
+                opts.append("ant_sel=%s" % ant)
+            if opts:
+                lines.append("options %s %s" % (mod, " ".join(opts)))
+                any_line = True
+
+        if not any_line:
+            self.log("No supported Realtek module options to write",
+                     "warning")
+            return None
+
+        content = "\n".join(lines) + "\n"
+        if not self.write_file("/etc/modprobe.d/rtlwifi-tweaker.conf",
+                               content, chmod="644", mkdir=True):
+            return False
+        self.log("✓ Realtek Wi-Fi fix written (reboot to apply)",
+                 "success")
+        return True
+
+    def rollback_rtl_msi(self, params=None):
+        self._rm("/etc/modprobe.d/rtlwifi-tweaker.conf")
+        self.log("✓ Realtek Wi-Fi fix removed", "success")
         return True
 
     # ─── Память: swap ───────────────────────────────────────────────────
@@ -2658,6 +3029,12 @@ class SystemOps:
         self.log("✓ swappiness=%d" % iv, "success")
         return True
 
+    def rollback_swap(self, params=None):
+        self._rm("/etc/sysctl.d/99-gaming-swap.conf")
+        self.log("✓ swappiness: file removed; live value reverts "
+                 "to stock after reboot", "success")
+        return True
+
     # ─── Память: zram, zswap, THP ───────────────────────────────────────
 
     def apply_zram(self, params=None):
@@ -2675,6 +3052,18 @@ class SystemOps:
             return True
         return False
 
+    def rollback_zram(self, params=None):
+        path = "/etc/systemd/zram-generator.conf"
+        content = self.read_file(path) or ""
+        if re.search(r"zram-size\s*=\s*ram-size", content):
+            self._rm(path)
+            self.sudo_run(["systemctl", "daemon-reload"],
+                          ignore_error=True)
+            self.log("✓ zram config removed", "success")
+        else:
+            self.log("zram config not ours, left untouched", "info")
+        return True
+
     def apply_zswap(self, params=None):
         if not self.state.has_swap:
             self.log("No swap found, zswap skipped", "warning")
@@ -2684,10 +3073,20 @@ class SystemOps:
             pl.append("zswap.zpool=z3fold")
         return self.add_grub_params(pl)
 
+    def rollback_zswap(self, params=None):
+        return self._remove_grub_params(["zswap.enabled=1",
+                                         "zswap.compressor=zstd",
+                                         "zswap.zpool=z3fold"])
+
     def apply_thp(self, params=None):
         params = params or {}
         val = params.get("thp_value", "madvise")
         return self._grub_set_param("transparent_hugepage=%s" % val)
+
+    def rollback_thp(self, params=None):
+        return self._remove_grub_params(["transparent_hugepage=always",
+                                         "transparent_hugepage=madvise",
+                                         "transparent_hugepage=never"])
 
     # ─── sysctl: кэш, NUMA, REISUB ──────────────────────────────────────
 
@@ -2751,8 +3150,14 @@ class SystemOps:
     def apply_sysctl_cache(self, params=None):
         return self._sysctl_set("vm.vfs_cache_pressure", "50")
 
+    def rollback_sysctl_cache(self, params=None):
+        return self._sysctl_del("vm.vfs_cache_pressure", "100")
+
     def apply_sysctl_numa(self, params=None):
         return self._sysctl_set("kernel.numa_balancing", "0")
+
+    def rollback_sysctl_numa(self, params=None):
+        return self._sysctl_del("kernel.numa_balancing", "1")
 
     def apply_reisub(self, params=None):
         path = "/etc/sysctl.d/99-sysrq.conf"
@@ -2772,6 +3177,13 @@ class SystemOps:
                      % (cur or "?"), "warning")
             return False
         self.log("✓ Magic SysRq (REISUB) enabled", "success")
+        return True
+
+    def rollback_reisub(self, params=None):
+        self._rm("/etc/sysctl.d/99-sysrq.conf")
+        self.sudo_run(["sysctl", "-w", "kernel.sysrq=176"],
+                      ignore_error=True)
+        self.log("✓ kernel.sysrq back to 176", "success")
         return True
 
     # ─── Игры: max_map_count, ntsync ────────────────────────────────────
@@ -2829,6 +3241,11 @@ class SystemOps:
                      "warning")
             return False
         self.log("✓ ntsync autoloaded", "success")
+        return True
+
+    def rollback_ntsync(self, params=None):
+        self._rm("/etc/modules-load.d/ntsync.conf")
+        self.log("✓ ntsync removed", "success")
         return True
 
     # ─── Диски: tmpfs /tmp ──────────────────────────────────────────────
@@ -2983,6 +3400,7 @@ class SystemOps:
         idents = []
         if dev:
             idents = self._device_identifiers(dev)
+
         for i, line in enumerate(lines):
             s = line.strip()
             if not s or s.startswith("#"):
@@ -2990,13 +3408,22 @@ class SystemOps:
             f = s.split()
             if len(f) < 4:
                 continue
-            if f[1] == mp:
+
+            mp_field = unescape_fstab_token(f[1])
+            if mp_field == mp or f[1] == mp:
                 return i, f
+
             if idents:
-                first_lower = f[0].lower()
+                first_raw = f[0]
+                first_unescaped = unescape_fstab_token(first_raw)
+                first_lower = first_raw.lower()
+                first_unescaped_lower = first_unescaped.lower()
+
                 for ident in idents:
-                    if first_lower == ident.lower():
+                    il = ident.lower()
+                    if first_lower == il or first_unescaped_lower == il:
                         return i, f
+
         return None, None
 
     def _dev_of(self, mp):
@@ -3217,6 +3644,89 @@ class SystemOps:
                         return True
         return False
 
+    # ─── fstab: pass=0 (nofsck) ─────────────────────────────────────────
+
+    def _mount_pass_edit(self, mp, disable=True):
+        """Ставит pass=0 (disable=True) или восстановленный pass
+        в /etc/fstab для точки монтирования."""
+        path = "/etc/fstab"
+        fstype = self._fstype_of_mp(mp)
+        if fstype and not fs_supports_nofsck(fstype):
+            self.log("Skipped %s (%s): fsck option not applicable here"
+                     % (mp, fstype), "warning")
+            return None
+        content = self.read_file(path)
+        if not content:
+            self.log("Cannot read /etc/fstab", "error")
+            return False
+        dev = self._dev_of(mp)
+        lines = lines_in(content)
+        idx, parts = self._fstab_find(lines, mp, dev)
+        if idx is None:
+            self.log("%s not found in fstab — skipped" % mp, "warning")
+            return None
+
+        while len(parts) < 6:
+            parts.append("0")
+
+        if disable:
+            new_pass = "0"
+        else:
+            if mp == "/" and fstype in ("ext2", "ext3", "ext4"):
+                new_pass = "1"
+            elif fstype in ("ext2", "ext3", "ext4", "f2fs"):
+                new_pass = "2"
+            else:
+                new_pass = "0"
+
+        # dump (parts[4]) не трогаем — почти всегда 0
+        if parts[5] == new_pass:
+            self.log("fstab %s already has pass=%s" % (mp, new_pass),
+                     "info")
+            return True
+
+        parts[5] = new_pass
+        lines[idx] = "\t".join(parts)
+
+        if not self.write_file(path, "\n".join(lines) + "\n", backup=True):
+            return False
+        if not self.verify_fstab():
+            self.log("fstab verification failed after pass edit on %s"
+                     % mp, "error")
+            return False
+        if disable:
+            self.log("✓ fstab %s: fsck disabled (pass=0)" % mp, "success")
+        else:
+            self.log("✓ fstab %s: fsck restored (pass=%s)"
+                     % (mp, new_pass), "success")
+        return True
+
+    def apply_nofsck(self, mps):
+        if self.dry_run:
+            for mp in mps:
+                self.log("[DRY RUN] fstab %s pass=0" % mp, "warning")
+            return True
+        res = [self._mount_pass_edit(mp, True) for mp in mps]
+        if all(r is None for r in res):
+            return None
+        if any(r is False for r in res):
+            return False
+        return True
+
+    def rollback_nofsck(self, mps):
+        if self.dry_run:
+            for mp in mps:
+                self.log("[DRY RUN] fstab %s pass restored" % mp,
+                         "warning")
+            return True
+        res = [self._mount_pass_edit(mp, False) for mp in mps]
+        if all(r is None for r in res):
+            return None
+        if any(r is False for r in res):
+            return False
+        self.log("✓ fstab fsck settings restored", "success")
+        return True
+
     # ─── Steam: симлинки compatdata ─────────────────────────────────────
 
     def apply_steam_links(self, libs):
@@ -3389,6 +3899,38 @@ class SystemOps:
         self.log("✓ commands added to .bashrc", "success")
         return True
 
+    def rollback_aliases(self, params=None):
+        bashrc = os.path.join(self.state.user_home, ".bashrc")
+        content = self.read_file(bashrc)
+        if not content:
+            self.log(".bashrc not found", "info")
+            return True
+        sm = "# >>> system-tuneup commands >>>"
+        em = "# <<< system-tuneup commands <<<"
+        lines, skip = [], False
+        for line in lines_in(content):
+            if line.strip() == sm:
+                skip = True
+                continue
+            if line.strip() == em:
+                skip = False
+                continue
+            if not skip:
+                lines.append(line)
+        if len(lines) == len(lines_in(content)):
+            self.log("Command block not found", "info")
+            return True
+        if not self.write_file(bashrc, "\n".join(lines) + "\n",
+                               backup=True):
+            return False
+        if self.state.user_name and self.state.user_name != "root":
+            self.sudo_run(["chown",
+                           "%s:%s" % (self.state.user_name,
+                                      self.state.user_name),
+                           bashrc], ignore_error=True)
+        self.log("✓ commands removed from .bashrc", "success")
+        return True
+
     # ─── Автообновления ─────────────────────────────────────────────────
 
     def _mask_apt_daily(self):
@@ -3512,12 +4054,20 @@ class SystemOps:
 
     # ─── Удаление приложений ────────────────────────────────────────────
 
+    def _apps_expand_groups(self, pkgs):
+        """Если среди выбранных есть записи из ADDITIONAL_REMOVABLE_PACKAGES
+        с маской (например, libreoffice-*), вернуть как есть — раскрытие
+        делает expand_package_pattern."""
+        return list(pkgs)
+
     def apps_purge(self, pkgs):
-        """Удаляет пакеты через apt purge + autoremove. Возвращает (ok, freed)."""
+        """Удаляет пакеты через apt purge + autoremove.
+        Возвращает (ok, freed)."""
         if self.dry_run:
             self.log("[DRY RUN] apt purge " + " ".join(pkgs), "warning")
             return True, "?"
-        freed = estimate_packages_size(pkgs)
+        freed = estimate_packages_size([p for p in pkgs
+                                        if "*" not in p and "?" not in p])
         env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
         if not self.sudo_run(["apt-get", "purge", "-y"] + list(pkgs),
                              err_msg="apt purge failed",
@@ -3558,6 +4108,7 @@ class SystemOps:
             self.log("Line not found in %s" % path, "info")
             return True
         return self.write_file(path, "\n".join(new) + "\n", backup=True)
+
 
 # ============================================================================
 # БЛОК 14. SYSTEMMOPS: ROLLBACK
@@ -3638,103 +4189,6 @@ class SystemOps:
                           r"^\s*MESA_SHADER_CACHE_MAX_SIZE=.*")
         self.log("✓ MESA cache removed", "success")
         return True
-
-    def rollback_pipewire(self, params=None):
-        path = os.path.join(self.state.user_home, ".config", "pipewire",
-                            "pipewire.conf.d", "10-sound.conf")
-        self.remove_user_file(path)
-        self.log("✓ PipeWire config removed", "success")
-        return True
-
-    def rollback_bbr(self, params=None):
-        self._rm("/etc/sysctl.d/99-bbr.conf")
-        self.sudo_run(["sysctl", "-w",
-                       "net.ipv4.tcp_congestion_control=cubic"],
-                      ignore_error=True)
-        self.sudo_run(["sysctl", "-w",
-                       "net.core.default_qdisc=pfifo_fast"],
-                      ignore_error=True)
-        self.log("✓ BBR and fq reverted", "success")
-        return True
-
-    def rollback_swap(self, params=None):
-        self._rm("/etc/sysctl.d/99-gaming-swap.conf")
-        self.log("✓ swappiness: file removed; live value reverts "
-                 "to stock after reboot", "success")
-        return True
-
-    def rollback_zram(self, params=None):
-        path = "/etc/systemd/zram-generator.conf"
-        content = self.read_file(path) or ""
-        if re.search(r"zram-size\s*=\s*ram-size", content):
-            self._rm(path)
-            self.sudo_run(["systemctl", "daemon-reload"],
-                          ignore_error=True)
-            self.log("✓ zram config removed", "success")
-        else:
-            self.log("zram config not ours, left untouched", "info")
-        return True
-
-    def rollback_zswap(self, params=None):
-        return self._remove_grub_params(["zswap.enabled=1",
-                                         "zswap.compressor=zstd",
-                                         "zswap.zpool=z3fold"])
-
-    def rollback_thp(self, params=None):
-        return self._remove_grub_params(["transparent_hugepage=always",
-                                         "transparent_hugepage=madvise",
-                                         "transparent_hugepage=never"])
-
-    def rollback_sysctl_cache(self, params=None):
-        return self._sysctl_del("vm.vfs_cache_pressure", "100")
-
-    def rollback_sysctl_numa(self, params=None):
-        return self._sysctl_del("kernel.numa_balancing", "1")
-
-    def rollback_reisub(self, params=None):
-        self._rm("/etc/sysctl.d/99-sysrq.conf")
-        self.sudo_run(["sysctl", "-w", "kernel.sysrq=176"],
-                      ignore_error=True)
-        self.log("✓ kernel.sysrq back to 176", "success")
-        return True
-
-    def rollback_ntsync(self, params=None):
-        self._rm("/etc/modules-load.d/ntsync.conf")
-        self.log("✓ ntsync removed", "success")
-        return True
-
-    def rollback_aliases(self, params=None):
-        bashrc = os.path.join(self.state.user_home, ".bashrc")
-        content = self.read_file(bashrc)
-        if not content:
-            self.log(".bashrc not found", "info")
-            return True
-        sm = "# >>> system-tuneup commands >>>"
-        em = "# <<< system-tuneup commands <<<"
-        lines, skip = [], False
-        for line in lines_in(content):
-            if line.strip() == sm:
-                skip = True
-                continue
-            if line.strip() == em:
-                skip = False
-                continue
-            if not skip:
-                lines.append(line)
-        if len(lines) == len(lines_in(content)):
-            self.log("Command block not found", "info")
-            return True
-        if not self.write_file(bashrc, "\n".join(lines) + "\n",
-                               backup=True):
-            return False
-        if self.state.user_name and self.state.user_name != "root":
-            self.sudo_run(["chown",
-                           "%s:%s" % (self.state.user_name,
-                                      self.state.user_name),
-                           bashrc], ignore_error=True)
-        self.log("✓ commands removed from .bashrc", "success")
-        return True
-
 # ============================================================================
 # БЛОК 15. MAINWINDOW: ЯДРО И ХЕЛПЕРЫ (детекты)
 # ============================================================================
@@ -3753,17 +4207,20 @@ class MainWindow:
         self.mount_applied = {}
         self.steam_applied = {}
         self.commit_applied_per_mp = {}
+        self.fsck_applied = {}
 
         self.badges = {}
         self.mount_badges = {}
         self.steam_badges = {}
         self.commit_badges = {}
+        self.fsck_badges = {}
         self.option_widgets = {}
 
         self.opts_state = {k: BooleanVar(value=False) for k in OPTIONS_META}
         self.mount_state = {}
         self.steam_state = {}
         self.commit_state = {}
+        self.fsck_state = {}
 
         self.disabled_reasons = {}
 
@@ -3773,11 +4230,8 @@ class MainWindow:
         self._svc_sort_reverse = False
 
         self._tune_filter = StringVar(value="")
-        self._show_only_available = BooleanVar(value=False)
         self._show_only_unapplied = BooleanVar(value=False)
         self._tune_filter.trace_add(
-            "write", lambda *a: self._rebuild_tune_list())
-        self._show_only_available.trace_add(
             "write", lambda *a: self._rebuild_tune_list())
         self._show_only_unapplied.trace_add(
             "write", lambda *a: self._rebuild_tune_list())
@@ -3788,6 +4242,10 @@ class MainWindow:
 
         self._ram_cache = None
         self._zfs_button = None
+        self._svc_result_lbl = None
+        self._apps_result_lbl = None
+        self._result_lbl = None
+        self._result_hide_ids = {}
 
         self.max_map_count_value = StringVar(value=MAX_MAP_COUNT_DEFAULT)
         self.tmpfs_size_value = StringVar(value="512M")
@@ -3797,8 +4255,13 @@ class MainWindow:
         self.pipewire_preset_value = StringVar(
             value=self._pipewire_preset_label(PIPEWIRE_PRESET_DEFAULT))
 
+        self.rtl_ant_sel_key = "default"
+        self.rtl_ant_sel_value = StringVar(
+            value=self._rtl_ant_sel_label("default"))
+
         self.apps_checked = set()
         self._installed_packages = None
+        self._real_installed_packages = None
         self._apps_filter = StringVar(value="")
         self._apps_filter.trace_add("write", lambda *a: self._apps_render())
         self._apps_canvas = None
@@ -3845,6 +4308,8 @@ class MainWindow:
             if fs_supports_commit(m.get("fstype", "")):
                 for mp in m["mps"]:
                     self.commit_state[mp] = BooleanVar(value=False)
+            for mp in m["mps"]:
+                self.fsck_state[mp] = BooleanVar(value=False)
 
         # Библиотеки Steam
         self.steam_items = []
@@ -3871,8 +4336,6 @@ class MainWindow:
         self._theme_btn = None
         self._lang_btn = None
         self._about_btn = None
-        self._result_lbl = None
-        self._result_hide_id = None
 
         self._dry_var = BooleanVar(value="--dry-run" in sys.argv)
         self._compute_disabled_reasons()
@@ -3958,6 +4421,8 @@ class MainWindow:
             r["ntfs3"] = self.t("reason_no_ntfs")
         if not getattr(self.state, "pipewire_active", False):
             r["pipewire"] = self.t("reason_pipewire_inactive")
+        if not getattr(self.state, "rtl_wifi_modules", []):
+            r["rtl_msi"] = self.t("reason_no_rtl")
         self.disabled_reasons = r
 
     # ─── Вспомогательные ────────────────────────────────────────────────
@@ -4275,9 +4740,116 @@ class MainWindow:
             res[mp] = self._commit_is_effective(val)
         return res
 
-    def _detect_pipewire_preset(self, ops):
-        """Возвращает текущий применённый пресет PipeWire."""
-        return self._pipewire_preset_current()
+    def _detect_fsck(self, ops):
+        """Определяет, применён ли pass=0 к каждому разделу."""
+        content = ops.read_file("/etc/fstab") or ""
+        lines = lines_in(content)
+        res = {}
+        for mp in self.fsck_state:
+            dev = None
+            for m in self.mount_items:
+                if mp in m["mps"]:
+                    dev = m["dev"]
+                    break
+            idx, parts = ops._fstab_find(lines, mp, dev)
+            ok = idx is not None and len(parts) >= 6 and parts[5] == "0"
+            res[mp] = ok
+        return res
+
+    def _pipewire_preset_label(self, key):
+        p = PIPEWIRE_PRESETS[key]
+        return "%s — %s" % (p["label_%s" % self.lang],
+                            p["desc_%s" % self.lang])
+
+    def _pipewire_preset_strings(self):
+        """Возвращает список строк для dropdown PipeWire."""
+        result = []
+        for key in ("default", "gaming", "recording"):
+            p = PIPEWIRE_PRESETS[key]
+            label = p["label_%s" % self.lang]
+            desc = p["desc_%s" % self.lang]
+            result.append("%s — %s" % (label, desc))
+        return result
+
+    def _pipewire_preset_on_select(self):
+        cur = self.pipewire_preset_value.get()
+        for key in ("default", "gaming", "recording"):
+            if cur == self._pipewire_preset_label(key):
+                self.pipewire_preset_key = key
+                return
+
+    # ─── Realtek ant_sel UI ───────────────────────────────────────────
+    def _rtl_ant_sel_label(self, key):
+        if key == "1":
+            return self.t("rtl_ant_1")
+        if key == "2":
+            return self.t("rtl_ant_2")
+        return self.t("rtl_default")
+
+    def _rtl_ant_sel_strings(self):
+        return [self._rtl_ant_sel_label(k) for k in ("default", "1", "2")]
+
+    def _rtl_ant_sel_on_select(self):
+        cur = self.rtl_ant_sel_value.get()
+        for key in ("default", "1", "2"):
+            if cur == self._rtl_ant_sel_label(key):
+                self.rtl_ant_sel_key = key
+                return
+
+    def _rtl_ant_sel_current_key(self):
+        path = "/etc/modprobe.d/rtlwifi-tweaker.conf"
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception:
+            content = ""
+
+        mods = getattr(self.state, "rtl_wifi_modules", [])
+        for mod in mods:
+            m = re.search(
+                r"^\s*options\s+%s\s+.*\bant_sel=(\d+)\b" % re.escape(mod),
+                content,
+                re.M
+            )
+            if m and m.group(1) in ("1", "2"):
+                return m.group(1)
+
+        for mod in mods:
+            p = "/sys/module/%s/parameters/ant_sel" % mod
+            if os.path.exists(p):
+                try:
+                    with open(p, "r") as f:
+                        v = f.read().strip()
+                    if v in ("1", "2"):
+                        return v
+                except Exception:
+                    pass
+
+        return "default"
+
+    def _rtl_ant_sel_current_label(self):
+        return self._rtl_ant_sel_label(self._rtl_ant_sel_current_key())
+
+    def _rtl_msi_applied(self, ops):
+        content = ops.read_file(
+            "/etc/modprobe.d/rtlwifi-tweaker.conf") or ""
+        if not content.strip():
+            return False
+
+        mods = getattr(self.state, "rtl_wifi_modules", [])
+        if not mods:
+            mods = sorted(rtl_wifi_fix_candidates().keys())
+
+        for mod in mods:
+            rx = re.compile(
+                r"^\s*options\s+%s\s+.*\b(msi=1|ant_sel=\d+)\b"
+                % re.escape(mod),
+                re.M
+            )
+            if rx.search(content):
+                return True
+
+        return False
 
     def _shutdown_timeout_applied(self):
         """True, если DefaultTimeoutStopSec отличается от дефолта."""
@@ -4384,6 +4956,9 @@ class MainWindow:
         elif kind == "commit_applied":
             self.commit_applied_per_mp = item[1]
             self._update_badges()
+        elif kind == "fsck_applied":
+            self.fsck_applied = item[1]
+            self._update_badges()
         elif kind == "schedule":
             if self._sched_lbl is not None:
                 self._sched_lbl.config(
@@ -4399,7 +4974,11 @@ class MainWindow:
             body, pkgs = item[1]
             self._apps_show_confirm(body, pkgs)
         elif kind == "result":
-            self._show_result(item[1], item[2], item[3])
+            self._show_tab_result("tune", item[1], item[2], item[3])
+        elif kind == "svc_result":
+            self._show_tab_result("svc", item[1], item[2], item[3])
+        elif kind == "apps_result":
+            self._show_tab_result("apps", item[1], item[2], item[3])
         elif kind == "toast":
             self.log(item[1][0], item[1][1])
 
@@ -4415,46 +4994,72 @@ class MainWindow:
         self._terminal.configure(state=DISABLED)
 
     def _show_result(self, ok, skip, fail):
-        """Показывает краткий индикатор результата рядом с Применить."""
-        if self._result_lbl is None or not self._result_lbl.winfo_exists():
+        """Совместимость со старыми вызовами."""
+        self._show_tab_result("tune", ok, skip, fail)
+
+    def _show_tab_result(self, tab, ok, skip, fail):
+        """Показывает локализованный индикатор результата на вкладке."""
+        attr = {
+            "tune": "_result_lbl",
+            "svc": "_svc_result_lbl",
+            "apps": "_apps_result_lbl",
+        }.get(tab)
+
+        lbl = getattr(self, attr, None) if attr else None
+        if lbl is None:
             return
+
+        try:
+            if not lbl.winfo_exists():
+                return
+        except Exception:
+            return
+
         c = self.colors()
         if fail == 0 and ok > 0:
-            mark = "✓"
-            col = c["green"]
+            mark, col = "✓", c["green"]
         elif fail == 0 and ok == 0:
-            mark = "•"
-            col = c["gray"]
+            mark, col = "•", c["gray"]
         elif fail < ok:
-            mark = "⚠"
-            col = c["yellow"]
+            mark, col = "⚠", c["yellow"]
         else:
-            mark = "✗"
-            col = c["red"]
-        text = "%s  %d ok / %d skip / %d fail" % (mark, ok, skip, fail)
-        self._result_lbl.config(text=text, fg=col)
-        if self._result_hide_id is not None:
+            mark, col = "✗", c["red"]
+
+        txt = ("%s  " + self.t("result_text")) % (mark, ok, skip, fail)
+        lbl.config(text=txt, fg=col)
+
+        old = self._result_hide_ids.get(tab)
+        if old is not None:
             try:
-                self.root.after_cancel(self._result_hide_id)
+                self.root.after_cancel(old)
             except Exception:
                 pass
-        self._result_hide_id = self.root.after(
-            5000, lambda: self._result_lbl.config(text=""))
 
-    # ─── Детект: corectrl, max_map_count, grub, applied ─────────────────
+        def hide():
+            try:
+                if lbl.winfo_exists():
+                    lbl.config(text="")
+            except Exception:
+                pass
+
+        self._result_hide_ids[tab] = self.root.after(5000, hide)
+
+    # ─── Детект: applied ────────────────────────────────────────────────
 
     def _applied_work(self):
         ops = SystemOps(self.sudo, self.state,
                         lambda m, t="normal": None, True)
         ops.mount_items = self.mount_items
         ops.commit_targets = [mp for mp in self.commit_state]
+
         try:
             self.msg_queue.put(("applied", self._detect_applied(ops)))
-            self.msg_queue.put(("mount_applied", self._detect_mount()))
+            self.msg_queue.put(("mount_applied", self._detect_mount(ops)))
             self.msg_queue.put(("steam_applied", self._detect_steam()))
             self.msg_queue.put(("schedule", self._schedule_text()))
             self.msg_queue.put(("commit_applied",
                                 self._detect_commit_per_mp(ops)))
+            self.msg_queue.put(("fsck_applied", self._detect_fsck(ops)))
         except Exception:
             traceback.print_exc()
 
@@ -4512,18 +5117,15 @@ class MainWindow:
     def _corectrl_found(self, ops):
         """Ищет правило Polkit для CoreCtrl.
         Возвращает:
-        - True  — правило найдено (файл прочитан и содержит org.corectrl);
-        - False — правило точно отсутствует (ВСЕ пути проверены достоверно);
-        - None  — не смогли проверить (часть путей недоступна без пароля).
+        - True  — правило найдено;
+        - False — правило точно отсутствует;
+        - None  — не смогли проверить.
         """
         direct_paths = (
             "/etc/polkit-1/rules.d/90-corectrl.rules",
             "/usr/share/polkit-1/rules.d/90-corectrl.rules",
             "/etc/polkit-1/localauthority/50-local.d/90-corectrl.pkla",
         )
-        # 1. Прямое чтение без sudo.
-        #    FileNotFoundError = файла точно нет (достоверно).
-        #    PermissionError = файл есть, но недоступен (НЕдостоверно).
         direct_decisive = True
         for p in direct_paths:
             try:
@@ -4537,7 +5139,6 @@ class MainWindow:
                 direct_decisive = False
             except Exception:
                 direct_decisive = False
-        # 2. sudo -n (сработает только при живой sudo-сессии).
         sudo_decisive = True
         for p in direct_paths:
             try:
@@ -4550,12 +5151,9 @@ class MainWindow:
                 elif "No such file" in (r.stderr or ""):
                     continue
                 else:
-                    # просит пароль / нет tty — результат недостоверен
                     sudo_decisive = False
             except Exception:
                 sudo_decisive = False
-        # 3. Вывод: «точно нет» только если хотя бы один способ
-        #    достоверно проверил ВСЕ пути.
         if direct_decisive or sudo_decisive:
             return False
         return None
@@ -4563,6 +5161,7 @@ class MainWindow:
     def _max_map_count_applied(self, mmc_content):
         return bool(re.search(r"^vm\.max_map_count=\d+\s*$",
                               mmc_content, re.M))
+
     def _vrr_applied(self, ops):
         content = ops.read_file(
             "/etc/X11/xorg.conf.d/20-amdgpu.conf") or ""
@@ -4589,6 +5188,7 @@ class MainWindow:
             if token in raw.split():
                 return True
         return False
+
     def _grub_has_prefix(self, grub, prefix):
         for line in grub.splitlines():
             s = line.strip()
@@ -4658,6 +5258,7 @@ class MainWindow:
             "mesa": "MESA_SHADER_CACHE_MAX_SIZE=4G" in env,
             "pipewire": bool(pipewire_preset),
             "bbr": sv("net.ipv4.tcp_congestion_control") == "bbr",
+            "rtl_msi": self._rtl_msi_applied(ops),
             "swap": sw_ok,
             "zram": self._zram_applied(ops),
             "zswap": (self._grub_has_token(grub, "zswap.enabled=1")
@@ -4682,36 +5283,28 @@ class MainWindow:
             "aliases": "system-tuneup" in bashrc,
             "autoupdate": ops.service_enabled(
                 "biweekly-upgrade.timer") == "enabled",
+            "nofsck": any(self._detect_fsck(ops).values()),
         }
 
-    def _detect_mount(self):
-        try:
-            with open("/etc/fstab", "r", encoding="utf-8",
-                      errors="replace") as f:
-                content = f.read()
-        except Exception:
-            content = ""
+    def _detect_mount(self, ops):
+        content = ops.read_file("/etc/fstab") or ""
+        lines = lines_in(content)
         res = {}
         for m in self.mount_items:
             oks = []
             for mp in m["mps"]:
+                idx, parts = ops._fstab_find(lines, mp, m["dev"])
                 ok = False
-                for line in lines_in(content):
-                    s = line.strip()
-                    if not s or s.startswith("#"):
-                        continue
-                    f2 = s.split()
-                    if len(f2) >= 4 and f2[1] == mp:
-                        opts = f2[3].split(",")
-                        ok = "noatime" in opts
-                        break
+                if idx is not None and len(parts) >= 4:
+                    ok = "noatime" in parts[3].split(",")
                 oks.append(ok)
-            res[m["mps"][0]] = all(oks)
+            res[m["mps"][0]] = all(oks) if oks else False
         return res
 
     def _detect_steam(self):
         return {lib: os.path.islink(os.path.join(lib, "compatdata"))
                 for lib in self.steam_items}
+
 
 # ============================================================================
 # БЛОК 16. MAINWINDOW: UI-КАРКАС
@@ -4904,20 +5497,13 @@ class MainWindow:
                activebackground=c["button_hover"],
                relief=FLAT, padx=10, pady=2,
                font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(0, 8))
-        Checkbutton(search_bar, text=self.t("lbl_show_only_available"),
-                    variable=self._show_only_available,
-                    bg=c["bg"], fg=c["gray"],
-                    activebackground=c["bg"],
-                    activeforeground=c["gray"],
-                    selectcolor=c["bg"],
-                    font=("DejaVu Sans", 9)).pack(side=LEFT)
         Checkbutton(search_bar, text=self.t("lbl_show_only_unapplied"),
                     variable=self._show_only_unapplied,
                     bg=c["bg"], fg=c["gray"],
                     activebackground=c["bg"],
                     activeforeground=c["gray"],
                     selectcolor=c["bg"],
-                    font=("DejaVu Sans", 9)).pack(side=LEFT, padx=(12, 0))
+                    font=("DejaVu Sans", 9)).pack(side=LEFT)
 
         # Скролл-область с твиками
         scroll_frame = Frame(wrap, bg=c["bg"])
@@ -4958,6 +5544,11 @@ class MainWindow:
                    bg=c["button"], fg=c["fg"],
                    activebackground=c["button_hover"],
                    relief=FLAT, padx=12, pady=6).pack(side=LEFT, padx=2)
+
+        self._svc_result_lbl = Label(bar, text="", bg=c["bg"], fg=c["gray"],
+                                     font=("DejaVu Sans", 10, "bold"))
+        self._svc_result_lbl.pack(side=LEFT, padx=(16, 0))
+
         tree_wrap = Frame(wrap, bg=c["bg"])
         tree_wrap.pack(fill=BOTH, expand=True)
         cols = ("sel", "name", "state", "run", "desc", "q")
@@ -5062,6 +5653,12 @@ class MainWindow:
                bg=c["button"], fg=c["fg"],
                activebackground=c["button_hover"],
                relief=FLAT, padx=12, pady=6).pack(side=LEFT, padx=2)
+
+        self._apps_result_lbl = Label(bar, text="", bg=c["bg"],
+                                      fg=c["gray"],
+                                      font=("DejaVu Sans", 10, "bold"))
+        self._apps_result_lbl.pack(side=LEFT, padx=(16, 0))
+
         search_bar = Frame(wrap, bg=c["bg"])
         search_bar.pack(fill=X, pady=(0, 6))
         Label(search_bar, text=self.t("apps_search"),
@@ -5109,6 +5706,7 @@ class MainWindow:
         self.mount_badges = {}
         self.steam_badges = {}
         self.commit_badges = {}
+        self.fsck_badges = {}
         self.option_widgets = {}
         self._sched_lbl = None
         self._thp_lbl = None
@@ -5121,7 +5719,6 @@ class MainWindow:
         seq = [x for x in order if x in cats] + \
               [x for x in sorted(cats) if x not in order]
         query = self._tune_filter.get().strip().lower()
-        show_only_avail = self._show_only_available.get()
         show_only_unapplied = self._show_only_unapplied.get()
         disk_cat = self.om("ntfs3")[2]
         any_shown = False
@@ -5130,14 +5727,13 @@ class MainWindow:
             for k in cats[cat]:
                 if k == "commit":
                     continue
-                label, desc, _c, short = self.om(k)
-                # Фильтр «только доступное»
-                if show_only_avail and k in self.disabled_reasons:
+                # Недоступные скрываем ВСЕГДА
+                if k in self.disabled_reasons:
                     continue
                 # Фильтр «только неприменённое»
                 if show_only_unapplied and self.applied.get(k, False) is True:
                     continue
-                # Поиск
+                label, desc, _c, short = self.om(k)
                 if (not query or query in label.lower()
                         or query in desc.lower()
                         or query in short.lower()):
@@ -5317,6 +5913,21 @@ class MainWindow:
             combo.pack(side=LEFT)
             combo.bind("<<ComboboxSelected>>",
                        lambda e: self._pipewire_preset_on_select())
+        elif key == "rtl_msi":
+            Label(top, text=self.t("lbl_mode"), bg=c["panel"],
+                  fg=c["gray"],
+                  font=("DejaVu Sans", 9)).pack(side=LEFT,
+                                                padx=(10, 2))
+            combo = ttk.Combobox(
+                top, textvariable=self.rtl_ant_sel_value,
+                values=self._rtl_ant_sel_strings(),
+                state="disabled" if disabled else "readonly",
+                width=28,
+                font=("DejaVu Sans", 9),
+                style="TCombobox")
+            combo.pack(side=LEFT)
+            combo.bind("<<ComboboxSelected>>",
+                       lambda e: self._rtl_ant_sel_on_select())
 
         # Текущее значение — подпись справа
         cur_label = None
@@ -5344,6 +5955,9 @@ class MainWindow:
             cur_label = self.t("cur_value") % self._ntfs3_current()
         elif key == "ntsync":
             cur_label = self.t("cur_value") % self._ntsync_current()
+        elif key == "rtl_msi":
+            cur_label = (self.t("cur_value")
+                         % self._rtl_ant_sel_current_label())
         if cur_label:
             Label(top, text=cur_label, bg=c["panel"], fg=c["gray"],
                   font=("DejaVu Sans", 8)).pack(side=LEFT, padx=(8, 0))
@@ -5410,27 +6024,6 @@ class MainWindow:
                 relief=FLAT, padx=10, pady=4,
                 font=("DejaVu Sans", 9))
             self._zfs_button.pack(anchor=W, padx=(24, 0), pady=(4, 0))
-    def _pipewire_preset_label(self, key):
-        p = PIPEWIRE_PRESETS[key]
-        return "%s — %s" % (p["label_%s" % self.lang],
-                            p["desc_%s" % self.lang])
-
-    def _pipewire_preset_strings(self):
-        """Возвращает список строк для dropdown PipeWire."""
-        result = []
-        for key in ("default", "gaming", "recording"):
-            p = PIPEWIRE_PRESETS[key]
-            label = p["label_%s" % self.lang]
-            desc = p["desc_%s" % self.lang]
-            result.append("%s — %s" % (label, desc))
-        return result
-
-    def _pipewire_preset_on_select(self):
-        cur = self.pipewire_preset_value.get()
-        for key in ("default", "gaming", "recording"):
-            if cur == self._pipewire_preset_label(key):
-                self.pipewire_preset_key = key
-                return
 
     def _build_disk_extras(self):
         c = self.colors()
@@ -5580,6 +6173,64 @@ class MainWindow:
                   justify=LEFT, wraplength=820,
                   font=("DejaVu Sans", 9)).pack(
                 fill=X, padx=(24, 8), pady=(0, 4))
+        if self.mount_items:
+            top = Frame(self._tune_inner, bg=c["panel"])
+            top.pack(fill=X, padx=8, pady=(10, 2))
+            Label(top, text="─── %s ───" % self.t("fsck_title"),
+                  bg=c["panel"], fg=c["yellow"], anchor=W,
+                  font=("DejaVu Sans", 10, "bold")).pack(side=LEFT)
+            fb = Button(top, text=self.t("btn_file"),
+                        command=lambda: self._open_path("/etc/fstab"),
+                        bg=c["button"], fg=c["blue"],
+                        activebackground=c["button_hover"],
+                        activeforeground=c["blue"],
+                        relief=FLAT, padx=6, pady=0,
+                        font=("DejaVu Sans", 8))
+            fb._keep_fg = c["blue"]
+            fb.pack(side=LEFT, padx=(8, 0))
+            qb = Button(top, text=self.t("btn_q"),
+                        command=lambda: self._show_option_help("fsck"),
+                        bg=c["button"], fg=c["blue"],
+                        activebackground=c["button_hover"],
+                        activeforeground=c["blue"],
+                        relief=FLAT, padx=6, pady=0,
+                        font=("DejaVu Sans", 8, "bold"))
+            qb._keep_fg = c["blue"]
+            qb.pack(side=LEFT, padx=(2, 0))
+            Label(self._tune_inner, text=self.t("fsck_desc"),
+                  bg=c["panel"], fg=c["gray"], anchor=W,
+                  justify=LEFT, wraplength=820,
+                  font=("DejaVu Sans", 9)).pack(
+                fill=X, padx=(24, 8), pady=(0, 4))
+            for m in self.mount_items:
+                for mp in m["mps"]:
+                    row = Frame(self._tune_inner, bg=c["panel"])
+                    row.pack(fill=X, padx=24, pady=1)
+                    chk = Checkbutton(row, text="",
+                                      variable=self.fsck_state[mp],
+                                      bg=c["panel"], fg=c["fg"],
+                                      activebackground=c["panel"],
+                                      activeforeground=c["fg"],
+                                      selectcolor=c["panel"], anchor=W)
+                    chk.pack(side=LEFT)
+                    dev_short = os.path.basename(m["dev"])
+                    mp_str = mp
+                    if len(mp_str) > 22:
+                        mp_str = mp_str[:19] + "…"
+                    info = self._disk_info(mp)
+                    size_str = (human_size(info[0] * 1024 ** 3)
+                                if info else "?")
+                    label_text = "%-10s %-22s %-6s %-8s" % (
+                        dev_short, mp_str, m.get("fstype", ""), size_str)
+                    Label(row, text=label_text, bg=c["panel"],
+                          fg=c["fg"], anchor=W, font=mono).pack(
+                        side=LEFT, padx=(4, 0))
+                    badge = Label(row, text="…", bg=c["panel"],
+                                  fg=c["gray"],
+                                  font=("DejaVu Sans", 9, "bold"),
+                                  anchor=W)
+                    badge.pack(side=LEFT, padx=(12, 0))
+                    self.fsck_badges[mp] = badge
         if self.steam_items:
             top = Frame(self._tune_inner, bg=c["panel"])
             top.pack(fill=X, padx=8, pady=(10, 2))
@@ -5620,22 +6271,47 @@ class MainWindow:
                 badge.pack(side=LEFT, padx=(12, 0))
                 self.steam_badges[lib] = badge
 
+
 # ============================================================================
 # БЛОК 17. MAINWINDOW: ВКЛАДКА ПРИЛОЖЕНИЯ
 # ============================================================================
 
+    def _fmt_pkg_list(self, items, limit=14):
+        items = list(items)
+        if len(items) <= limit:
+            return ", ".join(items)
+        return ", ".join(items[:limit]) + " … (+%d)" % (len(items) - limit)
+
     def _apps_load_installed(self):
-        try:
-            from tweaker_packages import REMOVABLE_PACKAGES  # noqa: F401
-        except ImportError:
+        if not is_debian_based():
+            self._real_installed_packages = set()
             self._installed_packages = set()
             self.msg_queue.put(("apps_redraw", None))
             return
-        self._installed_packages = installed_packages_set()
+
+        try:
+            real = installed_packages_set()
+        except Exception:
+            real = set()
+
+        augmented = set(real)
+
+        for pkg in REMOVABLE_PACKAGES.keys():
+            if any(ch in pkg for ch in "*?["):
+                try:
+                    rx = re.compile(fnmatch.translate(pkg))
+                    if any(rx.match(ip) for ip in real):
+                        augmented.add(pkg)
+                except Exception:
+                    pass
+
+        self._real_installed_packages = real
+        self._installed_packages = augmented
         self.msg_queue.put(("apps_redraw", None))
 
     def _apps_refresh(self):
         self._installed_packages = None
+        self._real_installed_packages = None
         self._run_bg("apps_load", self._apps_load_installed)
 
     def _apps_render(self):
@@ -5664,14 +6340,23 @@ class MainWindow:
                                                  pady=20)
             return
         query = self._apps_filter.get().strip().lower()
+        real = self._real_installed_packages or set()
         cats = {}
         for pkg, meta in REMOVABLE_PACKAGES.items():
-            if pkg not in self._installed_packages:
-                continue
+            is_mask = any(ch in pkg for ch in "*?[")
+            if is_mask:
+                # Показываем маску, только если есть хоть один матч
+                if pkg not in self._installed_packages:
+                    continue
+            else:
+                if pkg not in real:
+                    continue
             lang_meta = meta.get(self.lang) or meta.get("en")
             if not lang_meta:
                 continue
             label, desc, cat, careful = lang_meta
+            if is_mask:
+                desc += self.t("apps_group_hint")
             if (query and query not in pkg.lower()
                     and query not in label.lower()
                     and query not in desc.lower()):
@@ -5730,11 +6415,19 @@ class MainWindow:
     def _apps_update_status(self):
         if self._apps_status is None:
             return
+
         if not self.apps_checked:
             self._apps_status.config(text=self.t("apps_selected_none"))
             return
-        count = len(self.apps_checked)
-        size = estimate_packages_size(list(self.apps_checked))
+
+        real = getattr(self, "_real_installed_packages", None)
+        if real is None:
+            real = installed_packages_set()
+
+        expanded = expand_package_pattern(list(self.apps_checked), real)
+        count = len(expanded)
+        size = estimate_packages_size(expanded) if expanded else "0 B"
+
         self._apps_status.config(
             text=self.t("apps_selected") % (count, size))
 
@@ -5754,25 +6447,55 @@ class MainWindow:
         self._run_bg("apps_dry", self._apps_dry_run_work, pkgs)
 
     def _apps_dry_run_work(self, pkgs):
-        explicit, deps, system_hits, ok = apt_dry_run_purge(pkgs)
+        real = getattr(self, "_real_installed_packages", None)
+        if real is None:
+            real = installed_packages_set()
+
+        expanded = expand_package_pattern(pkgs, real)
+        if not expanded:
+            self.log("No packages to remove after expanding patterns",
+                     "warning")
+            self.msg_queue.put(("apps_result", 0, 0, 0))
+            return
+
+        explicit, deps, system_hits, ok = apt_dry_run_purge(expanded)
+
         if not ok:
             self.log("apt simulation failed — cannot confirm removal list",
                      "error")
+            return
+
         size = estimate_packages_size(explicit + deps)
-        lines = [self.t("apps_confirm_will_remove"),
-                 "  " + ", ".join(explicit)]
+
+        lines = [
+            self.t("apps_confirm_will_remove"),
+            "  " + self._fmt_pkg_list(explicit),
+        ]
+
         if deps:
-            lines += ["", self.t("apps_confirm_deps"),
-                      "  " + ", ".join(deps)]
-        lines += ["", "%s %s" % (self.t("apps_confirm_size"), size)]
+            lines += [
+                "",
+                self.t("apps_confirm_deps"),
+                "  " + self._fmt_pkg_list(deps),
+            ]
+
+        lines += [
+            "",
+            "%s %s" % (self.t("apps_confirm_size"), size),
+        ]
+
         if system_hits:
-            lines += ["",
-                      self.t("apps_confirm_system_warn"),
-                      "  " + ", ".join(system_hits),
-                      self.t("apps_confirm_system_hint")]
+            lines += [
+                "",
+                self.t("apps_confirm_system_warn"),
+                "  " + self._fmt_pkg_list(system_hits),
+                self.t("apps_confirm_system_hint"),
+            ]
+
         lines += ["", self.t("apps_confirm_no_rollback")]
+
         body = "\n".join(lines)
-        self.msg_queue.put(("apps_confirm", (body, pkgs)))
+        self.msg_queue.put(("apps_confirm", (body, expanded)))
 
     def _apps_show_confirm(self, body, pkgs):
         answer = messagebox.askyesno(self.t("apps_confirm_title"), body,
@@ -5789,24 +6512,50 @@ class MainWindow:
     def _apps_remove_work(self, pkgs):
         ops = SystemOps(self.sudo, self.state, self.log,
                         self._dry_var.get())
+
         try:
             ok, freed = ops.apps_purge(pkgs)
+
             if ok:
                 if self._dry_var.get():
                     self.log(self.t("apps_done_dry") % len(pkgs),
                              "success")
+                    self.msg_queue.put(("apps_result", 0, len(pkgs), 0))
                 else:
                     self.log(self.t("apps_done") % (len(pkgs), freed),
                              "success")
                     self.apps_checked.clear()
+                    self.msg_queue.put(("apps_result", len(pkgs), 0, 0))
             else:
                 self.log(self.t("apps_failed"), "error")
+                self.msg_queue.put(("apps_result", 0, 0, 1))
+
         except Exception as e:
             self.log("Critical error: %s" % e, "error")
+            self.msg_queue.put(("apps_result", 0, 0, 1))
+
         finally:
             self.msg_queue.put(("running", False))
+
             if not self._dry_var.get():
-                self._installed_packages = installed_packages_set()
+                try:
+                    real = installed_packages_set()
+                except Exception:
+                    real = set()
+
+                augmented = set(real)
+                for pkg in REMOVABLE_PACKAGES.keys():
+                    if any(ch in pkg for ch in "*?["):
+                        try:
+                            rx = re.compile(fnmatch.translate(pkg))
+                            if any(rx.match(ip) for ip in real):
+                                augmented.add(pkg)
+                        except Exception:
+                            pass
+
+                self._real_installed_packages = real
+                self._installed_packages = augmented
+
             self.msg_queue.put(("apps_redraw", None))
 
 
@@ -5874,7 +6623,6 @@ class MainWindow:
             return "break"
 
         def on_menu(e):
-            # Закрываем меню, если кликнуть мимо
             def close_menu(_e=None):
                 try:
                     menu.unpost()
@@ -6147,6 +6895,8 @@ class MainWindow:
                 dict(zip(ru_vals, en_vals)).get(current, current))
         self.pipewire_preset_value.set(
             self._pipewire_preset_label(self.pipewire_preset_key))
+        self.rtl_ant_sel_value.set(
+            self._rtl_ant_sel_label(self.rtl_ant_sel_key))
         self._rebuild_ui()
 
     def _rebuild_ui(self):
@@ -6154,6 +6904,7 @@ class MainWindow:
         saved_mounts = {k: v.get() for k, v in self.mount_state.items()}
         saved_steam = {k: v.get() for k, v in self.steam_state.items()}
         saved_commit = {k: v.get() for k, v in self.commit_state.items()}
+        saved_fsck = {k: v.get() for k, v in self.fsck_state.items()}
         try:
             for child in self.root.winfo_children():
                 child.destroy()
@@ -6163,6 +6914,7 @@ class MainWindow:
         self.mount_badges = {}
         self.steam_badges = {}
         self.commit_badges = {}
+        self.fsck_badges = {}
         self.option_widgets = {}
         self._sched_lbl = None
         self._thp_lbl = None
@@ -6175,6 +6927,8 @@ class MainWindow:
         self._about_btn = None
         self._zfs_button = None
         self._result_lbl = None
+        self._svc_result_lbl = None
+        self._apps_result_lbl = None
         self._apps_status = None
         self._apps_canvas = None
         self._apps_inner = None
@@ -6196,12 +6950,18 @@ class MainWindow:
         for k in list(self.commit_state.keys()):
             self.commit_state[k] = BooleanVar(
                 value=saved_commit.get(k, False))
+        for k in list(self.fsck_state.keys()):
+            self.fsck_state[k] = BooleanVar(
+                value=saved_fsck.get(k, False))
         try:
             self.state.zfs_installed = zfs_packages_installed()
             self.state.zfs_used = zfs_in_use()
             self.state.pipewire_active = pipewire_active()
             self.state.nmi_watchdog_active = nmi_watchdog_active()
             self.state.nmi_watchdog_in_grub = nmi_watchdog_in_grub()
+            self.state.rtl_wifi_caps = rtl_wifi_fix_candidates()
+            self.state.rtl_wifi_modules = sorted(
+                self.state.rtl_wifi_caps.keys())
             with open("/proc/sys/vm/max_map_count", "r") as f:
                 self.state.current_max_map_count = f.read().strip()
         except Exception:
@@ -6223,6 +6983,7 @@ class MainWindow:
         self._run_bg("applied", self._applied_work)
         self._run_bg("status", self._status_work)
         self._run_bg("apps_load", self._apps_load_installed)
+
 
 # ============================================================================
 # БЛОК 19. MAINWINDOW: СЛУЖБЫ
@@ -6353,8 +7114,6 @@ class MainWindow:
             self._services_tree.selection_remove(
                 self._services_tree.selection())
             self._show_service_help(name)
-
-
 # ============================================================================
 # БЛОК 20. MAINWINDOW: БЕЙДЖИ И ZFS
 # ============================================================================
@@ -6382,7 +7141,6 @@ class MainWindow:
                 elif val is False:
                     self._style_badge(lbl, False, c)
                 else:
-                    # None — не смогли проверить
                     self._style_badge(
                         lbl, False, c,
                         text_override=self.t("applied_unknown"))
@@ -6402,6 +7160,10 @@ class MainWindow:
                 continue
             ok = self.commit_applied_per_mp.get(k, False)
             self._style_badge(lbl, ok, c)
+        for k, lbl in self.fsck_badges.items():
+            if lbl is None or not lbl.winfo_exists():
+                continue
+            self._style_badge(lbl, self.fsck_applied.get(k, False), c)
         if self._thp_lbl is not None and self._thp_lbl.winfo_exists():
             cur = self._thp_current() or "?"
             fmt = self.t("thp_cur")
@@ -6461,8 +7223,12 @@ class MainWindow:
             if ok:
                 self.log("ZFS packages removed. Rolling back requires "
                          "'sudo apt install zfsutils-linux'.", "info")
+                self.msg_queue.put(("apps_result", 0, 0, 0))
+            else:
+                self.msg_queue.put(("apps_result", 0, 0, 1))
         except Exception as e:
             self.log("Critical error: %s" % e, "error")
+            self.msg_queue.put(("apps_result", 0, 0, 1))
         finally:
             self.state.zfs_installed = zfs_packages_installed()
             self.state.zfs_used = zfs_in_use()
@@ -6470,6 +7236,7 @@ class MainWindow:
             self._run_bg("applied", self._applied_work)
             self._run_bg("status", self._status_work)
             self._run_bg("services", self._services_work)
+
 
 # ============================================================================
 # БЛОК 21. MAINWINDOW: APPLY / ROLLBACK / ВЫБОР
@@ -6480,20 +7247,29 @@ class MainWindow:
             messagebox.showinfo(APP_NAME, self.t("msg_run"),
                                 parent=self.root)
             return
+
         selected = [k for k, v in self.opts_state.items()
                     if v.get() and k not in self.disabled_reasons]
+
         mount_sel = [mp for m in self.mount_items
                      if self.mount_state[m["mps"][0]].get()
                      for mp in m["mps"]]
+
         steam_sel = [l for l in self.steam_items
                      if self.steam_state[l].get()]
+
         commit_sel = [mp for mp, v in self.commit_state.items()
                       if v.get()]
+
+        fsck_sel = [mp for mp, v in self.fsck_state.items()
+                    if v.get()]
+
         if (not selected and not mount_sel and not steam_sel
-                and not commit_sel):
+                and not commit_sel and not fsck_sel):
             messagebox.showwarning(APP_NAME, self.t("msg_noopt"),
                                    parent=self.root)
             return
+
         params = {
             "corectrl_group": self.corectrl_group.get(),
             "swap_value": self.swap_value.get(),
@@ -6504,66 +7280,78 @@ class MainWindow:
             "tmpfs_size_value": self.tmpfs_size_value.get(),
             "shutdown_timeout_value": self.shutdown_timeout_value.get(),
             "pipewire_preset": self.pipewire_preset_key,
+            "rtl_ant_sel": self.rtl_ant_sel_key,
         }
+
         dry = self._dry_var.get()
-        if ("autoupdate" in selected and not dry
-                and params["update_schedule"]
-                not in ("Отключено", "Disabled")):
-            messagebox.showinfo(APP_NAME, self.t("autoupdate_warn"),
-                                parent=self.root)
-        if "shutdown_timeout" in selected and not dry:
-            messagebox.showinfo(APP_NAME,
-                                self.t("shutdown_timeout_warn"),
-                                parent=self.root)
-        needs_sudo = bool(mount_sel or commit_sel or steam_sel
+
+        # Намеренно без messagebox-предупреждений при применении:
+        # вся информация — в справке по кнопке «?».
+
+        needs_sudo = bool(mount_sel or commit_sel or steam_sel or fsck_sel
                           or any(k != "pipewire" for k in selected))
+
         if not dry and needs_sudo and not self.sudo.ensure():
             self.log("sudo failed", "error")
             return
+
         self._ram_cache = None
         self.is_running = True
         self._set_running(True)
+
         if self._result_lbl is not None:
             self._result_lbl.config(text="")
+
         self.msg_queue.put(("progress", 0))
         self.msg_queue.put(("statusbar", self.t("running")))
+
         self._run_bg("apply", self._apply_work, selected, mount_sel,
-                     steam_sel, commit_sel, params, dry)
+                     steam_sel, commit_sel, fsck_sel, params, dry)
 
     def _apply_work(self, selected, mount_sel, steam_sel, commit_sel,
-                    params, dry):
+                    fsck_sel, params, dry):
         ops = SystemOps(self.sudo, self.state, self.log, dry)
         ops.mount_items = self.mount_items
         ops.commit_targets = commit_sel
+
         total = len(selected) + (1 if mount_sel else 0) + \
-            (1 if steam_sel else 0) + (1 if commit_sel else 0)
+            (1 if steam_sel else 0) + (1 if commit_sel else 0) + \
+            (1 if fsck_sel else 0)
+
         if total == 0:
             self._finish_run(0, 0, 0)
             return
+
         done = 0
         ok_count = skip_count = fail_count = 0
+
         self.log("=" * 60, "highlight")
         self.log("APPLY START" if self.lang == "en"
                  else "ЗАПУСК ТЮНИНГА", "highlight")
+
         try:
             for k in selected:
                 label = self.om(k)[0]
                 self.log("→ %s" % label, "info")
+
                 result = None
                 try:
                     result = getattr(ops, "apply_%s" % k)(params)
                 except Exception as e:
                     self.log("Error in %s: %s" % (k, e), "error")
                     result = False
+
                 if result is False:
                     fail_count += 1
                 elif result is None:
                     skip_count += 1
                 else:
                     ok_count += 1
+
                 done += 1
                 self.msg_queue.put(("progress",
                                     int(done / total * 90)))
+
             if mount_sel:
                 self.log("→ %s" % self.t("mount_title"), "info")
                 r = ops.apply_mount_opts(mount_sel)
@@ -6576,6 +7364,7 @@ class MainWindow:
                 done += 1
                 self.msg_queue.put(("progress",
                                     int(done / total * 90)))
+
             if commit_sel:
                 self.log("→ %s" % self.t("commit_title"), "info")
                 r = ops.apply_commit(params)
@@ -6588,6 +7377,20 @@ class MainWindow:
                 done += 1
                 self.msg_queue.put(("progress",
                                     int(done / total * 90)))
+
+            if fsck_sel:
+                self.log("→ %s" % self.t("fsck_title"), "info")
+                r = ops.apply_nofsck(fsck_sel)
+                if r is False:
+                    fail_count += 1
+                elif r is None:
+                    skip_count += 1
+                else:
+                    ok_count += 1
+                done += 1
+                self.msg_queue.put(("progress",
+                                    int(done / total * 90)))
+
             if steam_sel:
                 self.log("→ %s" % self.t("steam_title"), "info")
                 r = ops.apply_steam_links(steam_sel)
@@ -6600,14 +7403,18 @@ class MainWindow:
                 done += 1
                 self.msg_queue.put(("progress",
                                     int(done / total * 90)))
+
             if not dry:
                 ops.finalize_grub()
+
             self.msg_queue.put(("progress", 100))
             self.msg_queue.put(("statusbar", self.t("done")))
             self.log("Done", "success")
+
         except Exception as e:
             self.log("Critical error: %s" % e, "error")
             fail_count += 1
+
         finally:
             self._finish_run(ok_count, skip_count, fail_count)
 
@@ -6616,70 +7423,95 @@ class MainWindow:
             messagebox.showinfo(APP_NAME, self.t("msg_run"),
                                 parent=self.root)
             return
+
         selected = [k for k, v in self.opts_state.items()
                     if v.get() and k not in self.disabled_reasons]
+
         mount_sel = [mp for m in self.mount_items
                      if self.mount_state[m["mps"][0]].get()
                      for mp in m["mps"]]
+
         steam_sel = [l for l in self.steam_items
                      if self.steam_state[l].get()]
+
         commit_sel = [mp for mp, v in self.commit_state.items()
                       if v.get()]
+
+        fsck_sel = [mp for mp, v in self.fsck_state.items()
+                    if v.get()]
+
         if (not selected and not mount_sel and not steam_sel
-                and not commit_sel):
+                and not commit_sel and not fsck_sel):
             messagebox.showwarning(APP_NAME, self.t("msg_noopt"),
                                    parent=self.root)
             return
+
         dry = self._dry_var.get()
-        needs_sudo = bool(mount_sel or commit_sel or steam_sel
+
+        needs_sudo = bool(mount_sel or commit_sel or steam_sel or fsck_sel
                           or any(k != "pipewire" for k in selected))
+
         if not dry and needs_sudo and not self.sudo.ensure():
             self.log("sudo failed", "error")
             return
+
         self._ram_cache = None
         self.is_running = True
         self._set_running(True)
+
         if self._result_lbl is not None:
             self._result_lbl.config(text="")
+
         self.msg_queue.put(("progress", 0))
         self.msg_queue.put(("statusbar", self.t("running")))
+
         self._run_bg("rollback", self._rollback_work, selected, mount_sel,
-                     steam_sel, commit_sel, dry)
+                     steam_sel, commit_sel, fsck_sel, dry)
 
     def _rollback_work(self, selected, mount_sel, steam_sel, commit_sel,
-                       dry):
+                       fsck_sel, dry):
         ops = SystemOps(self.sudo, self.state, self.log, dry)
         ops.mount_items = self.mount_items
         ops.commit_targets = commit_sel
+
         total = len(selected) + (1 if mount_sel else 0) + \
-            (1 if steam_sel else 0) + (1 if commit_sel else 0)
+            (1 if steam_sel else 0) + (1 if commit_sel else 0) + \
+            (1 if fsck_sel else 0)
+
         if total == 0:
             self._finish_run(0, 0, 0)
             return
+
         done = 0
         ok_count = skip_count = fail_count = 0
+
         self.log("=" * 60, "highlight")
         self.log("ROLLBACK START" if self.lang == "en"
                  else "ЗАПУСК ОТКАТА", "highlight")
+
         try:
             for k in selected:
                 label = self.om(k)[0]
                 self.log("→ %s" % label, "info")
+
                 result = None
                 try:
                     result = getattr(ops, "rollback_%s" % k)()
                 except Exception as e:
                     self.log("Error in %s: %s" % (k, e), "error")
                     result = False
+
                 if result is False:
                     fail_count += 1
                 elif result is None:
                     skip_count += 1
                 else:
                     ok_count += 1
+
                 done += 1
                 self.msg_queue.put(("progress",
                                     int(done / total * 90)))
+
             if mount_sel:
                 r = ops.rollback_mount_opts(mount_sel)
                 if r is False:
@@ -6691,6 +7523,7 @@ class MainWindow:
                 done += 1
                 self.msg_queue.put(("progress",
                                     int(done / total * 90)))
+
             if commit_sel:
                 r = ops.rollback_commit({})
                 if r is False:
@@ -6702,6 +7535,19 @@ class MainWindow:
                 done += 1
                 self.msg_queue.put(("progress",
                                     int(done / total * 90)))
+
+            if fsck_sel:
+                r = ops.rollback_nofsck(fsck_sel)
+                if r is False:
+                    fail_count += 1
+                elif r is None:
+                    skip_count += 1
+                else:
+                    ok_count += 1
+                done += 1
+                self.msg_queue.put(("progress",
+                                    int(done / total * 90)))
+
             if steam_sel:
                 r = ops.rollback_steam_links(steam_sel)
                 if r is False:
@@ -6713,16 +7559,21 @@ class MainWindow:
                 done += 1
                 self.msg_queue.put(("progress",
                                     int(done / total * 90)))
+
             if not dry:
                 ops.finalize_grub()
+
             self.msg_queue.put(("progress", 100))
             self.msg_queue.put(("statusbar", self.t("done")))
             self.log("Rollback done", "success")
+
         except Exception as e:
             self.log("Critical error: %s" % e, "error")
             fail_count += 1
+
         finally:
             self._finish_run(ok_count, skip_count, fail_count)
+
     def _finish_run(self, ok_count, skip_count, fail_count):
         self.msg_queue.put(("running", False))
         self.msg_queue.put(("result", ok_count, skip_count, fail_count))
@@ -6756,6 +7607,8 @@ class MainWindow:
             var.set(True)
         for var in self.commit_state.values():
             var.set(True)
+        for var in self.fsck_state.values():
+            var.set(True)
 
     def reset_options(self):
         for var in self.opts_state.values():
@@ -6765,6 +7618,8 @@ class MainWindow:
         for var in self.steam_state.values():
             var.set(False)
         for var in self.commit_state.values():
+            var.set(False)
+        for var in self.fsck_state.values():
             var.set(False)
 
     def select_all_services(self):
@@ -6821,18 +7676,32 @@ class MainWindow:
     def _enable_work(self, names):
         ops = SystemOps(self.sudo, self.state, self.log,
                         self._dry_var.get())
+
+        ok_count = 0
+        skip_count = 0
+        fail_count = 0
+
         for name in names:
             if ops.dry_run:
                 ops.log("[DRY RUN] enable %s" % name, "warning")
+                skip_count += 1
                 continue
-            ok = ops.sudo_run(["systemctl", "unmask", name],
-                              ignore_error=True)
+
+            ok1 = ops.sudo_run(["systemctl", "unmask", name],
+                               ignore_error=True)
             ok2 = ops.sudo_run(["systemctl", "enable", "--now", name],
                                ignore_error=True)
-            if ok or ok2:
+
+            if ok1 or ok2:
                 ops.log("✓ %s enabled" % name, "success")
+                ok_count += 1
             else:
                 ops.log("Cannot enable %s" % name, "warning")
+                fail_count += 1
+
+        self.msg_queue.put(("svc_result", ok_count, skip_count, fail_count))
+        self.msg_queue.put(("statusbar", self.t("done")))
+
         self._run_bg("services", self._services_work)
         self._run_bg("status", self._status_work)
 
@@ -6853,21 +7722,36 @@ class MainWindow:
     def _disable_work(self, names):
         ops = SystemOps(self.sudo, self.state, self.log,
                         self._dry_var.get())
+
+        ok_count = 0
+        skip_count = 0
+        fail_count = 0
+
         for name in names:
             if ops.dry_run:
                 ops.log("[DRY RUN] disable %s" % name, "warning")
+                skip_count += 1
                 continue
+
             ok = ops.sudo_run(["systemctl", "disable", "--now", name],
                               ignore_error=True)
+
             if (name.startswith("avahi")
                     or name.startswith("bluetooth")
                     or name.startswith("apport")):
                 ok = ops.sudo_run(["systemctl", "mask", name],
                                   ignore_error=True) or ok
+
             if ok:
                 ops.log("✓ %s disabled" % name, "success")
+                ok_count += 1
             else:
                 ops.log("Cannot disable %s" % name, "warning")
+                fail_count += 1
+
+        self.msg_queue.put(("svc_result", ok_count, skip_count, fail_count))
+        self.msg_queue.put(("statusbar", self.t("done")))
+
         self._run_bg("services", self._services_work)
         self._run_bg("status", self._status_work)
 
@@ -7022,6 +7906,12 @@ class MainWindow:
                          % (self.t("mount_short"), mark,
                             ", ".join(m["mps"])),
                          "ok" if ok else "no"))
+        for mp in self.fsck_state:
+            ok = self.fsck_applied.get(mp, False)
+            mark = self.t("yes") if ok else self.t("no")
+            rows.append(("%-42s %-14s %s"
+                         % (self.t("fsck_short"), mark, mp),
+                         "ok" if ok else "no"))
         for lib in self.steam_items:
             ok = self.steam_applied.get(lib, False)
             mark = self.t("yes") if ok else self.t("no")
@@ -7162,6 +8052,7 @@ class MainWindow:
         }
         return mapping.get(value, value)
 
+
 # ============================================================================
 # БЛОК 23. MAINWINDOW: ДИАЛОГИ И ЗАКРЫТИЕ
 # ============================================================================
@@ -7178,6 +8069,8 @@ class MainWindow:
                 title = self.t("mount_title")
             elif key == "commit":
                 title = self.t("commit_title")
+            elif key == "fsck":
+                title = self.t("fsck_title")
             else:
                 title = self.t("steam_title")
             self._open_info_dialog(title, txt)
@@ -7407,4 +8300,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main()           
