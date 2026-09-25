@@ -4248,6 +4248,8 @@ class MainWindow:
         self._result_hide_ids = {}
 
         self.max_map_count_value = StringVar(value=MAX_MAP_COUNT_DEFAULT)
+        self.max_map_count_value.trace_add(
+            "write", lambda *a: self._update_badges())
         self.tmpfs_size_value = StringVar(value="512M")
         self.shutdown_timeout_value = StringVar(
             value=SHUTDOWN_TIMEOUT_DEFAULT)
@@ -4258,6 +4260,12 @@ class MainWindow:
         self.rtl_ant_sel_key = "default"
         self.rtl_ant_sel_value = StringVar(
             value=self._rtl_ant_sel_label("default"))
+        self.max_map_count_value.trace_add(
+            "write", lambda *a: self._update_badges())
+        self.thp_value.trace_add(
+            "write", lambda *a: self._update_badges())
+        self.shutdown_timeout_value.trace_add(
+            "write", lambda *a: self._update_badges())
 
         self.apps_checked = set()
         self._installed_packages = None
@@ -5159,8 +5167,19 @@ class MainWindow:
         return None
 
     def _max_map_count_applied(self, mmc_content):
-        return bool(re.search(r"^vm\.max_map_count=\d+\s*$",
-                              mmc_content, re.M))
+        # 1. Файл твикера существует и в нём есть vm.max_map_count
+        if re.search(r"^vm\.max_map_count=\d+\s*$", mmc_content, re.M):
+            return True
+        # 2. Файла нет, но текущее ядровое значение совпадает с выбранным
+        try:
+            want = str(self.max_map_count_value.get()).strip()
+            cur = self._read_sysctl_int(
+                "/proc/sys/vm/max_map_count", "")
+            if want and cur and cur == want:
+                return True
+        except Exception:
+            pass
+        return False
 
     def _vrr_applied(self, ops):
         content = ops.read_file(
@@ -5285,7 +5304,36 @@ class MainWindow:
                 "biweekly-upgrade.timer") == "enabled",
             "nofsck": any(self._detect_fsck(ops).values()),
         }
-
+       
+    def _disk_extras_all_applied(self):
+        """True, если ВСЕ пункты дисковых секций (mount, commit, fsck,
+        steam) применены. Используется для фильтра «только неприменённые»."""
+        # mount
+        for m in self.mount_items:
+            key = m["mps"][0]
+            if not self.mount_applied.get(key, False):
+                return False
+        # commit (только для ext-разделов)
+        for mp in self.commit_state:
+            fstype = ""
+            for m in self.mount_items:
+                if mp in m["mps"]:
+                    fstype = m.get("fstype", "").lower()
+                    break
+            if not fs_supports_commit(fstype):
+                continue
+            if not self.commit_applied_per_mp.get(mp, False):
+                return False
+        # fsck
+        for mp in self.fsck_state:
+            if not self.fsck_applied.get(mp, False):
+                return False
+        # steam
+        for lib in self.steam_items:
+            if not self.steam_applied.get(lib, False):
+                return False
+        return True
+       
     def _detect_mount(self, ops):
         content = ops.read_file("/etc/fstab") or ""
         lines = lines_in(content)
@@ -5739,9 +5787,13 @@ class MainWindow:
                         or query in short.lower()):
                     matches.append(k)
             show_disk_extras = (cat == disk_cat and not query)
+            if show_disk_extras and show_only_unapplied:
+                # Считаем «секция применена», если все её пункты применены
+                show_disk_extras = not self._disk_extras_all_applied()
             if not matches and not show_disk_extras:
                 continue
             any_shown = True
+            ...
             hdr = Label(self._tune_inner, text="─── %s ───" % cat,
                         bg=c["panel"], fg=c["yellow"], anchor=W,
                         font=("DejaVu Sans", 10, "bold"))
@@ -7119,6 +7171,9 @@ class MainWindow:
 # ============================================================================
 
     def _update_badges(self):
+        if not hasattr(self, "badges"):
+            return
+        c = self.colors()       
         c = self.colors()
         for k, lbl in self.badges.items():
             if lbl is None or not lbl.winfo_exists():
