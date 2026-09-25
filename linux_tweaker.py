@@ -4248,8 +4248,6 @@ class MainWindow:
         self._result_hide_ids = {}
 
         self.max_map_count_value = StringVar(value=MAX_MAP_COUNT_DEFAULT)
-        self.max_map_count_value.trace_add(
-            "write", lambda *a: self._update_badges())
         self.tmpfs_size_value = StringVar(value="512M")
         self.shutdown_timeout_value = StringVar(
             value=SHUTDOWN_TIMEOUT_DEFAULT)
@@ -4260,12 +4258,6 @@ class MainWindow:
         self.rtl_ant_sel_key = "default"
         self.rtl_ant_sel_value = StringVar(
             value=self._rtl_ant_sel_label("default"))
-        self.max_map_count_value.trace_add(
-            "write", lambda *a: self._update_badges())
-        self.thp_value.trace_add(
-            "write", lambda *a: self._update_badges())
-        self.shutdown_timeout_value.trace_add(
-            "write", lambda *a: self._update_badges())
 
         self.apps_checked = set()
         self._installed_packages = None
@@ -4294,6 +4286,15 @@ class MainWindow:
         self.commit_value = StringVar(value="60")
         self.thp_value = StringVar(value="madvise")
         self.schedule_value = StringVar(value=self._schedule_values()[2])
+
+        # Мгновенное обновление бейджей при смене значений в UI
+        # (ставим здесь, когда все StringVar уже объявлены)
+        self.max_map_count_value.trace_add(
+            "write", lambda *a: self._update_badges())
+        self.thp_value.trace_add(
+            "write", lambda *a: self._update_badges())
+        self.shutdown_timeout_value.trace_add(
+            "write", lambda *a: self._update_badges())
 
         # Разделы
         mounts, seen = [], set()
@@ -7172,8 +7173,7 @@ class MainWindow:
 
     def _update_badges(self):
         if not hasattr(self, "badges"):
-            return
-        c = self.colors()       
+            return     
         c = self.colors()
         for k, lbl in self.badges.items():
             if lbl is None or not lbl.winfo_exists():
