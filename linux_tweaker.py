@@ -69,10 +69,9 @@ from tkinter import (Tk, Toplevel, Frame, Label, Button, Checkbutton, Entry,
                      messagebox, simpledialog, PhotoImage)
 from tkinter import ttk, scrolledtext
 
-
 APP_NAME = "Linux Tweaker"
-APP_VERSION = "0.6.0"
-APP_BUILD_DATE = "19.09.2026"
+APP_VERSION = "0.7.0"
+APP_BUILD_DATE = "01.10.2026"
 GITHUB_URL = "https://github.com/Prikolist2021/LinuxMint_Tweaker"
 LICENSE_NAME = "MIT"
 
@@ -703,7 +702,10 @@ OPTIONS_HELP = {
         "en": "Steam games under Proton (technology that runs Windows games on Linux) keep their data in the compatdata folder: settings, saves, installed libraries. By default this folder lives in the home directory — in ~/.steam/steam/steamapps/compatdata.\n\nIf the Steam library is on another disk, for example on an NTFS partition, the game cannot find the data in the home folder. A compatdata symlink (link) inside the library solves this: it points to the home folder, and games see their data again.\n\nThe option works immediately, no reboot needed. If the compatdata folder already exists with data, it is left untouched so saves are not lost. Rolling back removes only the created symlinks.",
     },
 }
-
+# Дисковая секция «отключение проверки при загрузке» использует
+# ключ "fsck" для справки, а текст хранится под ключом "nofsck".
+if "nofsck" in OPTIONS_HELP:
+    OPTIONS_HELP["fsck"] = OPTIONS_HELP["nofsck"]
 # ============================================================================
 # БЛОК 6. ПУТИ И СТРОКИ UI (OPTION_FILES, STR)
 # ============================================================================
@@ -3701,7 +3703,24 @@ class SystemOps:
                      % (mp, new_pass), "success")
         return True
 
+    def _normalize_nofsck_mps(self, mps):
+        """Если mps пришли как словарь параметров из общего твика,
+        превратить их в список поддерживаемых точек монтирования.
+        Если пришёл список mp — отфильтровать пустые."""
+        if mps is None or isinstance(mps, dict):
+            out = []
+            for m in getattr(self, "mount_items", []) or []:
+                if fs_supports_nofsck(m.get("fstype", "")):
+                    out.extend(m.get("mps", []))
+            return out
+        return [mp for mp in mps if mp]
+
     def apply_nofsck(self, mps):
+        mps = self._normalize_nofsck_mps(mps)
+        if not mps:
+            self.log("No supported partitions for fsck disable",
+                     "warning")
+            return None
         if self.dry_run:
             for mp in mps:
                 self.log("[DRY RUN] fstab %s pass=0" % mp, "warning")
@@ -3714,6 +3733,9 @@ class SystemOps:
         return True
 
     def rollback_nofsck(self, mps):
+        mps = self._normalize_nofsck_mps(mps)
+        if not mps:
+            return True
         if self.dry_run:
             for mp in mps:
                 self.log("[DRY RUN] fstab %s pass restored" % mp,
@@ -4314,11 +4336,14 @@ class MainWindow:
             self.mount_state[it["mp"]] = BooleanVar(value=False)
         self.mount_items = mounts
         for m in self.mount_items:
+        for m in self.mount_items:
             if fs_supports_commit(m.get("fstype", "")):
                 for mp in m["mps"]:
                     self.commit_state[mp] = BooleanVar(value=False)
-            for mp in m["mps"]:
-                self.fsck_state[mp] = BooleanVar(value=False)
+
+            if fs_supports_nofsck(m.get("fstype", "")):
+                for mp in m["mps"]:
+                    self.fsck_state[mp] = BooleanVar(value=False)
 
         # Библиотеки Steam
         self.steam_items = []
@@ -5773,9 +5798,9 @@ class MainWindow:
         any_shown = False
         for cat in seq:
             matches = []
-            for k in cats[cat]:
-                if k == "commit":
-                    continue
+                for k in cats[cat]:
+                    if k in ("commit", "nofsck"):
+                        continue
                 # Недоступные скрываем ВСЕГДА
                 if k in self.disabled_reasons:
                     continue
@@ -6081,10 +6106,14 @@ class MainWindow:
     def _build_disk_extras(self):
         c = self.colors()
         mono = ("DejaVu Sans Mono", 9)
-        if self.mount_items:
+        fsck_supported = [
+            m for m in self.mount_items
+            if fs_supports_nofsck(m.get("fstype", ""))
+        ]
+        if fsck_supported:
             top = Frame(self._tune_inner, bg=c["panel"])
             top.pack(fill=X, padx=8, pady=(10, 2))
-            Label(top, text="─── %s ───" % self.t("mount_title"),
+            Label(top, text="─── %s ───" % self.t("fsck_title"),
                   bg=c["panel"], fg=c["yellow"], anchor=W,
                   font=("DejaVu Sans", 10, "bold")).pack(side=LEFT)
             fb = Button(top, text=self.t("btn_file"),
@@ -6097,7 +6126,7 @@ class MainWindow:
             fb._keep_fg = c["blue"]
             fb.pack(side=LEFT, padx=(8, 0))
             qb = Button(top, text=self.t("btn_q"),
-                        command=lambda: self._show_option_help("mount"),
+                        command=lambda: self._show_option_help("fsck"),
                         bg=c["button"], fg=c["blue"],
                         activebackground=c["button_hover"],
                         activeforeground=c["blue"],
@@ -6105,40 +6134,42 @@ class MainWindow:
                         font=("DejaVu Sans", 8, "bold"))
             qb._keep_fg = c["blue"]
             qb.pack(side=LEFT, padx=(2, 0))
-            Label(self._tune_inner, text=self.t("mount_desc"),
+            Label(self._tune_inner, text=self.t("fsck_desc"),
                   bg=c["panel"], fg=c["gray"], anchor=W,
                   justify=LEFT, wraplength=820,
                   font=("DejaVu Sans", 9)).pack(
                 fill=X, padx=(24, 8), pady=(0, 4))
-            for m in self.mount_items:
-                row = Frame(self._tune_inner, bg=c["panel"])
-                row.pack(fill=X, padx=24, pady=1)
-                key = m["mps"][0]
-                chk = Checkbutton(row, text="",
-                                  variable=self.mount_state[key],
-                                  bg=c["panel"], fg=c["fg"],
-                                  activebackground=c["panel"],
-                                  activeforeground=c["fg"],
-                                  selectcolor=c["panel"], anchor=W)
-                chk.pack(side=LEFT)
-                dev_short = os.path.basename(m["dev"])
-                mp_str = ", ".join(m["mps"])
-                if len(mp_str) > 22:
-                    mp_str = mp_str[:19] + "…"
-                info = self._disk_info(m["mps"][0])
-                size_str = (human_size(info[0] * 1024 ** 3)
-                            if info else "?")
-                label_text = "%-10s %-22s %-6s %-8s" % (
-                    dev_short, mp_str, m.get("fstype", ""), size_str)
-                Label(row, text=label_text, bg=c["panel"],
-                      fg=c["fg"], anchor=W, font=mono).pack(
-                    side=LEFT, padx=(4, 0))
-                badge = Label(row, text="…", bg=c["panel"],
-                              fg=c["gray"],
-                              font=("DejaVu Sans", 9, "bold"),
-                              anchor=W)
-                badge.pack(side=LEFT, padx=(12, 0))
-                self.mount_badges[key] = badge
+            for m in fsck_supported:
+                for mp in m["mps"]:
+                    if mp not in self.fsck_state:
+                        continue
+                    row = Frame(self._tune_inner, bg=c["panel"])
+                    row.pack(fill=X, padx=24, pady=1)
+                    chk = Checkbutton(row, text="",
+                                      variable=self.fsck_state[mp],
+                                      bg=c["panel"], fg=c["fg"],
+                                      activebackground=c["panel"],
+                                      activeforeground=c["fg"],
+                                      selectcolor=c["panel"], anchor=W)
+                    chk.pack(side=LEFT)
+                    dev_short = os.path.basename(m["dev"])
+                    mp_str = mp
+                    if len(mp_str) > 22:
+                        mp_str = mp_str[:19] + "…"
+                    info = self._disk_info(mp)
+                    size_str = (human_size(info[0] * 1024 ** 3)
+                                if info else "?")
+                    label_text = "%-10s %-22s %-6s %-8s" % (
+                        dev_short, mp_str, m.get("fstype", ""), size_str)
+                    Label(row, text=label_text, bg=c["panel"],
+                          fg=c["fg"], anchor=W, font=mono).pack(
+                        side=LEFT, padx=(4, 0))
+                    badge = Label(row, text="…", bg=c["panel"],
+                                  fg=c["gray"],
+                                  font=("DejaVu Sans", 9, "bold"),
+                                  anchor=W)
+                    badge.pack(side=LEFT, padx=(12, 0))
+                    self.fsck_badges[mp] = badge
         if self.commit_state:
             top = Frame(self._tune_inner, bg=c["panel"])
             top.pack(fill=X, padx=8, pady=(10, 2))
@@ -7817,10 +7848,10 @@ class MainWindow:
 
     def _status_work(self):
         try:
+            self._compute_disabled_reasons()
             self._status_inner()
         except Exception:
             traceback.print_exc()
-
     def _status_hardware(self, A):
         rows = [(self.t("st_hw"), "head")]
         bits = 64 if sys.maxsize > 2 ** 32 else 32
@@ -7917,6 +7948,12 @@ class MainWindow:
     def _status_tweaks(self, A):
         rows = [("", "info"), (self.t("st_tweaks"), "head")]
         for k in OPTIONS_META:
+            # Недоступные в этой системе — не показываем
+            if k in self.disabled_reasons:
+                continue
+            # commit и nofsck показаны ниже по разделам
+            if k in ("commit", "nofsck"):
+                continue
             label, _d, _c, short = self.om(k)
             val = A.get(k, None)
             if val is True:
@@ -8111,21 +8148,26 @@ class MainWindow:
 # ============================================================================
 # БЛОК 23. MAINWINDOW: ДИАЛОГИ И ЗАКРЫТИЕ
 # ============================================================================
-
     def _show_option_help(self, key):
         try:
+            title_override = None
+            if key == "fsck":
+                title_override = self.t("fsck_title")
+                key = "nofsck"
+
             txt = OPTIONS_HELP.get(key, {}).get(self.lang, "")
             if not txt:
                 self.log("No help for %s" % key, "info")
                 return
-            if key in OPTIONS_META:
+
+            if title_override is not None:
+                title = title_override
+            elif key in OPTIONS_META:
                 title = self.om(key)[0]
             elif key == "mount":
                 title = self.t("mount_title")
             elif key == "commit":
                 title = self.t("commit_title")
-            elif key == "fsck":
-                title = self.t("fsck_title")
             else:
                 title = self.t("steam_title")
             self._open_info_dialog(title, txt)
