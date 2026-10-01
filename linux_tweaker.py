@@ -5797,9 +5797,9 @@ class MainWindow:
         any_shown = False
         for cat in seq:
             matches = []
-                for k in cats[cat]:
-                    if k in ("commit", "nofsck"):
-                        continue
+            for k in cats[cat]:
+                if k in ("commit", "nofsck"):
+                    continue
                 # Недоступные скрываем ВСЕГДА
                 if k in self.disabled_reasons:
                     continue
@@ -5818,7 +5818,6 @@ class MainWindow:
             if not matches and not show_disk_extras:
                 continue
             any_shown = True
-            ...
             hdr = Label(self._tune_inner, text="─── %s ───" % cat,
                         bg=c["panel"], fg=c["yellow"], anchor=W,
                         font=("DejaVu Sans", 10, "bold"))
