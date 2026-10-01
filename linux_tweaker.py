@@ -4336,7 +4336,6 @@ class MainWindow:
             self.mount_state[it["mp"]] = BooleanVar(value=False)
         self.mount_items = mounts
         for m in self.mount_items:
-        for m in self.mount_items:
             if fs_supports_commit(m.get("fstype", "")):
                 for mp in m["mps"]:
                     self.commit_state[mp] = BooleanVar(value=False)
